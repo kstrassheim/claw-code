@@ -54,7 +54,7 @@ jobs:
       - name: Set Terraform environment variables
         run: |
           echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
-          echo "ARM_FEDERATED_TOKEN_FILE=${{ runner.temp }}/azure_federated_token" >> $GITHUB_ENV
+          echo "ARM_OIDC_TOKEN_FILE=${{ runner.temp }}/azure_federated_token" >> $GITHUB_ENV
           echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
           echo "TF_VAR_env=dev" >> $GITHUB_ENV
           # ArgoCD OIDC — these come from GitHub Actions secrets (TF_VAR_*)
