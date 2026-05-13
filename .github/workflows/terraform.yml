@@ -57,6 +57,9 @@ jobs:
           echo "ARM_FEDERATED_TOKEN_FILE=${{ runner.temp }}/azure_federated_token" >> $GITHUB_ENV
           echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
           echo "TF_VAR_env=dev" >> $GITHUB_ENV
+          # ArgoCD OIDC — these come from GitHub Actions secrets (TF_VAR_*)
+          echo "TF_VAR_entra_client_secret=${{ secrets.TF_VAR_entra_client_secret }}" >> $GITHUB_ENV
+          echo "TF_VAR_entra_tenant_id=${{ secrets.TF_VAR_entra_tenant_id }}" >> $GITHUB_ENV
 
       - name: Terraform Init
         id: init
