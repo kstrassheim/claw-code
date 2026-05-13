@@ -9,13 +9,9 @@ on:
       - '**.tfvars'
       - '**.yaml'
       - '!.github/workflows/**'
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '**.tf'
-      - '**.tfvars'
-      - '**.yaml'
-      - '!.github/workflows/**'
+
+# Run plan+apply on merge to main (no PR trigger needed — environment: dev covers the auth claim)
+# The dev environment's OIDC federated credential matches this push event.
 
 # Ensure only one run per PR/branch at a time
 concurrency:
@@ -37,6 +33,7 @@ jobs:
   terraform:
     name: Terraform Plan
     runs-on: ubuntu-latest
+    environment: dev
 
     steps:
       - name: Checkout
@@ -64,6 +61,7 @@ jobs:
           # ArgoCD OIDC — these come from GitHub Actions secrets (TF_VAR_*)
           echo "TF_VAR_entra_client_secret=${{ secrets.TF_VAR_entra_client_secret }}" >> $GITHUB_ENV
           echo "TF_VAR_entra_tenant_id=${{ secrets.TF_VAR_entra_tenant_id }}" >> $GITHUB_ENV
+          echo "TF_VAR_cluster_name=claw-code-aks" >> $GITHUB_ENV
 
       - name: Terraform Init
         id: init
