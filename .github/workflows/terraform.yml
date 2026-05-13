@@ -37,7 +37,6 @@ jobs:
   terraform:
     name: Terraform Plan
     runs-on: ubuntu-latest
-    environment: dev
 
     steps:
       - name: Checkout
