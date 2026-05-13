@@ -25,7 +25,7 @@ terraform {
     storage_account_name = "mytofustates"
     container_name      = "claw-code"
     key                 = "dev.tfstate"
-    use_azuread_auth    = true
+    use_oidc            = true
   }
 }
 
