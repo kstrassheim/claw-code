@@ -1,0 +1,132 @@
+name: Terraform Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+      - '**.yaml'
+      - '!.github/workflows/**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+      - '!.github/workflows/**'
+
+# Ensure only one run per PR/branch at a time
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TERRAFORM_VERSION: "1.13.0"
+
+jobs:
+  terraform:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    environment: dev  # Required: federated credential on MI must match this environment
+
+    permissions:
+      id-token: write  # Required for Azure OIDC token exchange
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: true
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials for Terraform providers
+        run: |
+          az aks get-credentials \
+            --resource-group claw-code \
+            --name claw-code-aks \
+            --file /tmp/kubeconfig_clawcode \
+            --admin
+
+      - name: Set Terraform environment variables
+        run: |
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+          echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
+          echo "TF_VAR_env=dev" >> $GITHUB_ENV
+          echo "TF_VAR_entra_client_secret=${{ secrets.TF_VAR_entra_client_secret }}" >> $GITHUB_ENV
+          echo "TF_VAR_entra_tenant_id=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
+
+      - name: Terraform Init
+        id: init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=terraform" \
+            -backend-config="storage_account_name=mytofustates" \
+            -backend-config="container_name=claw-code" \
+            -backend-config="key=dev.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -out=tfplan
+          echo "plan_exit_code=$?" >> $GITHUB_ENV
+
+      - name: Upload Terraform Plan artifact
+        uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: terraform-plan
+          path: tfplan
+          retention-days: 7
+
+      - name: Show Plan Summary (for PR reviews)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "## Terraform Plan Summary" >> $GITHUB_STEP_SUMMARY
+          terraform show --json tfplan 2>/dev/null | \
+            jq -r '[
+              (.resources | length) as $total |
+              "### Resources: \($total)",
+              "",
+              (.resource_changes | group_by(.type) | map("\(.[0].type): \(length)") | join("\n"))
+            ] | join("\n")' >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Terraform Apply (on merge to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "Running fresh plan on merge to main..."
+          terraform plan -out=tfplan_main
+          echo "plan_exit_code=$?" >> $GITHUB_ENV
+          terraform apply -auto-approve tfplan_main
+
+      - name: Upload Terraform Output artifact (on apply success)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          terraform output -json > terraform_output.json
+
+      - name: Upload Terraform Output artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-output
+          path: terraform_output.json
+          retention-days: 30

@@ -1,0 +1,111 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-sync-scripts
+  namespace: openclaw
+data:
+  sync-minimax.sh: |
+    #!/bin/sh
+    set -e
+    KEY=$(kubectl get secret openclaw-secrets -n openclaw -o jsonpath='{.data.MINIMAX_API_KEY}' 2>/dev/null | base64 -d || echo "")
+    if [ -n "$KEY" ] && [ "$KEY" != "REPLACE_WITH_MINIMAX_KEY" ] && [ "$KEY" != "null" ]; then
+      echo "MINIMAX_API_KEY detected — patching openclaw-config to enable MiniMax"
+      kubectl patch configmap openclaw-config -n openclaw --type merge -p '{"data":{"openclaw.json":"{\"agents\":{\"defaults\":{\"model\":{\"primary\":\"mistral/mistral-large-latest\"},\"compaction\":{\"mode\":\"safeguard\"},\"blockStreamingDefault\":\"on\",\"bootstrapMaxChars\":30000,\"bootstrapTotalMaxChars\":120000,\"models\":{\"mistral/mistral-large-latest\":{},\"mistral/mistral-small-latest\":{},\"mistral/magistral-medium-latest\":{},\"mistral/codestral-latest\":{},\"mistral/ministral-8b-latest\":{},\"minimax/MiniMax-M2.7\":{},\"minimax/MiniMax-M2.7-highspeed\":{}}},\"models\":{\"mistral\":{\"baseUrl\":\"https://api.mistral.ai/v1\",\"apiKey\":\"'${MISTRAL_API_KEY}'\",\"api\":\"anthropic-messages\",\"models\":[{\"id\":\"mistral-large-latest\",\"name\":\"Mistral Large\",\"maxTokens\":131072},{\"id\":\"mistral-small-latest\",\"name\":\"Mistral Small\",\"maxTokens\":131072},{\"id\":\"magistral-medium-latest\",\"name\":\"Magistral Medium\",\"maxTokens\":131072},{\"id\":\"codestral-latest\",\"name\":\"Codestral\",\"maxTokens\":81920}]},\"minimax\":{\"baseUrl\":\"https://api.minimax.io/anthropic\",\"apiKey\":\"'${MINIMAX_API_KEY}'\",\"api\":\"anthropic-messages\",\"models\":[{\"id\":\"MiniMax-M2.7\",\"name\":\"MiniMax M2.7\",\"maxTokens\":16384,\"params\":{\"num_ctx\":65536}},{\"id\":\"MiniMax-M2.7-highspeed\",\"name\":\"MiniMax M2.7 HighSpeed\",\"maxTokens\":16384,\"params\":{\"num_ctx\":65536}}]}},\"plugins\":{\"enabled\":true,\"config\":{\"openclaw\":{\"enabled\":true},\"github-copilot\":{\"enabled\":true},\"mistral\":{\"enabled\":true},\"minimax\":{\"enabled\":true},\"clawhub\":{\"enabled\":true,\"config\":{\"discovery\":{\"enabled\":true}}}}},\"commands\":{\"native\":\"auto\",\"nativeSkills\":\"auto\",\"restart\":true,\"ownerDisplay\":\"raw\"},\"channels\":{\"telegram\":{\"enabled\":false}},\"gateway\":{\"port\":18789,\"mode\":\"local\",\"bind\":\"lan\",\"trustedProxies\":[\"10.0.0.0/8\"],\"controlUi\":{\"allowedOrigins\":[\"*\"]}}}}"}}}'
+    else
+      echo "MINIMAX_API_KEY not set or placeholder — MiniMax stays disabled"
+    fi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw
+  namespace: openclaw
+  labels:
+    app: openclaw
+    environment: dev
+    project: claw-code
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openclaw
+  template:
+    metadata:
+      labels:
+        app: openclaw
+      annotations:
+        checksum/tools-md: "sha256:use-real-hash-after-first-sync"
+    spec:
+      initContainers:
+        - name: sync-control-ui
+          image: mainpi.local:30500/openclaw/claw-code:latest
+          imagePullPolicy: Always
+          command:
+            - /bin/sh
+            - /scripts/sync-minimax.sh
+          env:
+            - name: MISTRAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: MISTRAL_API_KEY
+            - name: MINIMAX_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: MINIMAX_API_KEY
+                  optional: true
+          volumeMounts:
+            - name: sync-scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 100m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      containers:
+        - name: openclaw
+          image: mainpi.local:30500/openclaw/claw-code:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 18789
+              name: web
+            - containerPort: 18790
+              name: bridge
+          envFrom:
+            - configMapRef:
+                name: openclaw-tools-md
+            - configMapRef:
+                name: openclaw-config
+            - secretRef:
+                name: openclaw-secrets
+          volumeMounts:
+            - name: workspace
+              mountPath: /home/node/.openclaw/workspace
+            - name: tools-md
+              mountPath: /home/node/.openclaw/workspace/TOOLS.md
+              subPath: TOOLS.md
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+            limits:
+              cpu: 4000m
+              memory: 8Gi
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: openclaw-workspace
+        - name: tools-md
+          configMap:
+            name: openclaw-tools-md
+        - name: sync-scripts
+          configMap:
+            name: openclaw-sync-scripts
