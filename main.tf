@@ -23,9 +23,9 @@ terraform {
   backend "azurerm" {
     resource_group_name  = "terraform"
     storage_account_name = "mytofustates"
-    container_name       = "claw-code"
-    key                  = "dev.tfstate"
-    use_azuread_auth     = true
+    container_name      = "claw-code"
+    key                 = "dev.tfstate"
+    use_azuread_auth    = true
   }
 }
 
@@ -61,6 +61,9 @@ locals {
   storage_account_name = var.storage_account_name
   namespace           = var.namespace
   aks_version         = "1.31"
+  # Entra tenant ID for ArgoCD OIDC — replace with your actual tenant ID
+  # or pass via TF_VAR_entra_tenant_id in the workflow.
+  entra_tenant_id     = "1e1e851f-618f-40d4-9c2d-45355ad039a9"
 }
 
 # Get existing resource group
@@ -68,7 +71,7 @@ data "azurerm_resource_group" "rg" {
   name = local.resource_group_name
 }
 
-# Get the deploy managed identity (github-claw-code or github-claw-code-dev)
+# Get the deploy managed identity (github-claw-code)
 data "azurerm_user_assigned_identity" "deploy_identity" {
   name                = "github-claw-code"
   resource_group_name = data.azurerm_resource_group.rg.name
@@ -79,7 +82,6 @@ data "azuread_service_principal" "deploy_identity_principal" {
 }
 
 # Assign Owner to deploy identity so it can manage AKS resources
-# (The user said Contributor access is already there, but Owner is needed for some AKS operations)
 resource "azuread_service_principal_role_assignment" "deploy_identity_owner" {
   role_definition_id = "8e3af841-a98f-49bf-91df-df956c3c9783"  # Owner
   principal_id       = data.azurerm_user_assigned_identity.deploy_identity.principal_id
@@ -87,7 +89,7 @@ resource "azuread_service_principal_role_assignment" "deploy_identity_owner" {
   scope              = data.azurerm_resource_group.rg.id
 }
 
-# Create storage account for PV (Azure Files)
+# Create storage account for PV (Azure Files) — name from TF var (clwcodecodev)
 resource "azurerm_storage_account" "pv" {
   name                     = local.storage_account_name
   resource_group_name      = data.azurerm_resource_group.rg.name
@@ -117,11 +119,11 @@ resource "azurerm_storage_account_primary_access_key" "pv" {
 # Create the AKS cluster
 resource "azurerm_kubernetes_cluster" "aks" {
   name                = local.cluster_name
-  resource_group_name = data.azurerm_resource_group.rg.name
+  resource_group_name  = data.azurerm_resource_group.rg.name
   location            = data.azurerm_resource_group.rg.location
   dns_prefix          = "claw-code"
   kubernetes_version  = local.aks_version
-  sku_tier            = "Free"  # Use Paid for production (required for some features)
+  sku_tier            = "Free"
 
   default_node_pool {
     name                = "default"
@@ -138,26 +140,23 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 
   azure_active_directory_role_based_access_control {
-    managed                = true
-    azure_rbac_enabled      = true
-    admin_group_object_ids  = []  # Add your group's object ID here for cluster admin access
+    managed               = true
+    azure_rbac_enabled     = true
+    admin_group_object_ids = []  # Add your Entra group's Object ID here for cluster admin access
   }
 
-  # Enable keyvault-secrets-store CSI driver for Azure Key Vault provider
   key_vault_secrets_provider {
     secret_rotation_enabled = false
   }
 
-  # oms_agent for Azure Monitor
   oms_agent {
     log_analytics_workspace_id = azurerm_log_analytics_workspace.aks.id
   }
 
-  # Network profile (Azure CNI)
   network_profile {
-    network_plugin     = "azure"
-    load_balancer_sku  = "standard"
-    outbound_type      = "loadBalancer"
+    network_plugin    = "azure"
+    load_balancer_sku = "standard"
+    outbound_type     = "loadBalancer"
   }
 
   tags = {
@@ -203,16 +202,23 @@ resource "kubernetes_service_account" "deploy_identity" {
   mount_path = "/var/run/secrets/azure"
 }
 
-# Grant the deploy identity storage account contributor role (it needs this to create PVs)
+# Grant the deploy identity storage account contributor role
 resource "azurerm_role_assignment" "deploy_identity_storage_contributor" {
-  scope              = azurerm_storage_account.pv.id
-  role_definition_name = "Storage Account Contributor"
-  principal_id       = data.azurerm_user_assigned_identity.deploy_identity.principal_id
+  scope                    = azurerm_storage_account.pv.id
+  role_definition_name     = "Storage Account Contributor"
+  principal_id             = data.azurerm_user_assigned_identity.deploy_identity.principal_id
 }
 
 # =============================================================================
-# ArgoCD Installation via Helm
+# ArgoCD Installation via Helm — Entra/OIDC-only auth (no local passwords)
 # =============================================================================
+# Prerequisites for Entra/OIDC login:
+# 1. Register an Entra application at portal.azure.com → App registrations.
+#    Set the redirect URI to: https://argocd.claw-code.internal/auth/callback
+# 2. Add the "ArgoCD" API scope under Expose an API (or use any valid scope).
+# 3. Create a client secret; add AZ_CLIENT_SECRET to GitHub Actions secrets.
+# 4. Update argocd.oidc.config.clientSecret to use ${AZ_CLIENT_SECRET}
+#    and pass TF_VAR_entra_client_secret in the workflow.
 resource "helm_release" "argocd" {
   name       = "argocd"
   repository = "https://argoproj.github.io/argocd-helm/"
@@ -238,49 +244,44 @@ server:
           - argocd.claw-code.internal
 
 configs:
-  secret:
-    # Initial admin password - CHANGE THIS after first login
-    # Password: admin
-    argocdServerAdminPassword: "$2a$10$rSzGhJNKh6IJNiKqW0P3/.nqFYmQbN0rF5N3P0vZJqN2k7M9QfXLi"  # admin
   rbac:
     policy.default: "role:readonly"
-    # Allow admins to manage applications
     policy.csv: |
       g, system:authenticated, role:readonly
       g, argocd-admins, role:admin
-  # OIDC configuration (Entra ID)
-  cmp:
-    create: true
 
-# Disable Dex (use direct Entra/OIDC instead)
 dex:
   enabled: false
 
-# Disable notifications (not needed)
 notifications:
   enabled: false
+
+server:
+  replicas: 1
+  extraArgs:
+    - --insecure
+  configMap:
+    "oidc.config": |
+      name: Entra ID
+      issuer: https://login.microsoftonline.com/${local.entra_tenant_id}/oauth2/v2.0
+      clientID: ${data.azurerm_user_assigned_identity.deploy_identity.client_id}
+      clientSecret: ${AZ_CLIENT_SECRET}
+      requestedScopes:
+        - openid
+        - profile
+        - email
+        - offline_access
+        - api://${data.azurerm_user_assigned_identity.deploy_identity.client_id}/ArgoCD
+      requestedAudiences:
+        - api://${data.azurerm_user_assigned_identity.deploy_identity.client_id}/ArgoCD
+
+url: https://argocd.claw-code.internal
+controller:
+  replicas: 1
+repoServer:
+  replicas: 1
 EOF
   ]
-
-  set {
-    name  = "server.extraArgs"
-    value = "--insecure"
-  }
-
-  set {
-    name  = "server.replicas"
-    value = "1"
-  }
-
-  set {
-    name  = "controller.replicas"
-    value = "1"
-  }
-
-  set {
-    name  = "repoServer.replicas"
-    value = "1"
-  }
 
   depends_on = [azurerm_kubernetes_cluster.aks]
 }
@@ -288,6 +289,10 @@ EOF
 # =============================================================================
 # Kyverno Installation via Helm with default-deny-all policy
 # =============================================================================
+# NOTE: Kyverno is running in AUDIT mode (backgroundScanning.enforcement: Audit).
+# It will NOT block pods — only report violations. To enforce policies,
+# change backgroundScanning.enforcement to "Enforce" and add
+# PolicyExceptions for allowed workloads.
 resource "helm_release" "kyverno" {
   name       = "kyverno"
   repository = "https://kyverno.github.io/kyverno/"
@@ -297,19 +302,11 @@ resource "helm_release" "kyverno" {
   create_namespace = true
 
   values = [<<EOF
-# Install CRDs
 installCRDs: true
-
-# Replicas
- replicaCount: 1
-
-# Background scanning (report-only mode, doesn't block)
- backgroundScanning:
-   enabled: true
-   enforcement: "Audit"
-
-# Audit mode - doesn't block, just reports violations
-# Change to "Enforce" to actually enforce policies
+replicaCount: 1
+backgroundScanning:
+  enabled: true
+  enforcement: "Audit"
 policy:
   asBackend: false
 EOF
@@ -318,7 +315,8 @@ EOF
   depends_on = [azurerm_kubernetes_cluster.aks]
 }
 
-# Default-deny-all NetworkPolicy
+# Default-deny-all NetworkPolicy — blocks ALL ingress/egress by default.
+# Add explicit allow policies for each required access pattern.
 resource "kubernetes_network_policy_v1" "default_deny_all" {
   metadata {
     name      = "default-deny-all"
@@ -330,7 +328,7 @@ resource "kubernetes_network_policy_v1" "default_deny_all" {
   }
 }
 
-# Allow DNS egress for all pods (required for cluster operation)
+# Allow DNS egress (required for cluster DNS resolution)
 resource "kubernetes_network_policy_v1" "allow_dns" {
   metadata {
     name      = "allow-dns"
@@ -359,6 +357,24 @@ resource "kubernetes_network_policy_v1" "allow_dns" {
   }
 }
 
+# Allow HTTPS/443 egress (needed for cloud API calls, OIDC, image pulls, etc.)
+resource "kubernetes_network_policy_v1" "allow_https" {
+  metadata {
+    name      = "allow-https"
+    namespace = local.namespace
+  }
+  spec {
+    pod_selector {}
+    egress {
+      - ports {
+          protocol = "TCP"
+          port     = "443"
+        }
+    }
+    policy_types = ["Egress"]
+  }
+}
+
 # =============================================================================
 # Terraform Output
 # =============================================================================
@@ -373,7 +389,7 @@ output "aks_fqdn" {
 }
 
 output "storage_account_name" {
-  description = "PV storage account name"
+  description = "PV storage account name (from TF var — clwcodecodev, NOT mytofustates)"
   value       = azurerm_storage_account.pv.name
 }
 
@@ -389,7 +405,7 @@ output "storage_share_name" {
 }
 
 output "argocd_url" {
-  description = "ArgoCD URL"
+  description = "ArgoCD URL (Entra/OIDC login — register app first, see README)"
   value       = "https://argocd.claw-code.internal"
 }
 
@@ -397,4 +413,9 @@ output "kubeconfig" {
   description = "Raw kubeconfig for the AKS cluster"
   value       = azurerm_kubernetes_cluster.aks.kube_config_raw
   sensitive   = true
+}
+
+output "deploy_identity_client_id" {
+  description = "Client ID of the github-claw-code MI (used for Entra app registration OIDC clientID)"
+  value       = data.azurerm_user_assigned_identity.deploy_identity.client_id
 }
