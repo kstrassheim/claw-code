@@ -77,9 +77,6 @@ data "azurerm_user_assigned_identity" "deploy_identity" {
   resource_group_name = data.azurerm_resource_group.rg.name
 }
 
-data "azuread_service_principal" "deploy_identity_principal" {
-  client_id = data.azurerm_user_assigned_identity.deploy_identity.client_id
-}
 
 # NOTE: Owner role on MI SP not needed — MI has Contributor on RG via Entra RBAC.
 # azuread_service_principal_role_assignment causes plan failures.
