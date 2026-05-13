@@ -93,6 +93,7 @@ resource "azurerm_storage_account" "pv" {
   account_replication_type                         = "LRS"
   min_tls_version                                  = "TLS1_2"
   https_traffic_only_enabled = true
+  allow_shared_key_access    = false  # Entra-only auth — no access keys
 
   tags = {
     environment = var.env

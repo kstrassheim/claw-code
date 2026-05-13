@@ -9,12 +9,6 @@ on:
       - '**.tfvars'
       - '**.yaml'
       - '!.github/workflows/**'
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '**.tf'
-      - '**.tfvars'
-      - '!.github/workflows/**'
 
 # Ensure only one run per PR/branch at a time
 concurrency:
@@ -66,7 +60,6 @@ jobs:
           echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
           echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
           echo "TF_VAR_env=dev" >> $GITHUB_ENV
-          echo "TF_VAR_entra_client_secret=${{ secrets.TF_VAR_entra_client_secret }}" >> $GITHUB_ENV
           echo "TF_VAR_entra_tenant_id=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
 
       - name: Terraform Init
@@ -92,14 +85,12 @@ jobs:
 
       - name: Upload Terraform Plan artifact
         uses: actions/upload-artifact@v4
-        if: github.event_name == 'pull_request'
         with:
           name: terraform-plan
           path: tfplan
           retention-days: 7
 
-      - name: Show Plan Summary (for PR reviews)
-        if: github.event_name == 'pull_request'
+      - name: Show Plan Summary
         run: |
           echo "## Terraform Plan Summary" >> $GITHUB_STEP_SUMMARY
           terraform show --json tfplan 2>/dev/null | \
@@ -118,7 +109,7 @@ jobs:
           echo "plan_exit_code=$?" >> $GITHUB_ENV
           terraform apply -auto-approve tfplan_main
 
-      - name: Upload Terraform Output artifact (on apply success)
+      - name: Upload Terraform Output artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           terraform output -json > terraform_output.json
