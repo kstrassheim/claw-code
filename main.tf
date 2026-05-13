@@ -205,8 +205,7 @@ resource "azurerm_role_assignment" "deploy_identity_storage_contributor" {
 #    Set the redirect URI to: https://argocd.claw-code.internal/auth/callback
 # 2. Add the "ArgoCD" API scope under Expose an API (or use any valid scope).
 # 3. Create a client secret; add AZ_CLIENT_SECRET to GitHub Actions secrets.
-# 4. Update argocd.oidc.config.clientSecret to use ${AZ_CLIENT_SECRET}
-#    and pass TF_VAR_entra_client_secret in the workflow.
+# 4. ArgoCD OIDC client secret is passed via var.entra_client_secret (TF_VAR_entra_client_secret in CI).
 resource "helm_release" "argocd" {
   name       = "argocd"
   repository = "https://argoproj.github.io/argocd-helm/"
@@ -253,7 +252,7 @@ server:
       name: Entra ID
       issuer: https://login.microsoftonline.com/${local.entra_tenant_id}/oauth2/v2.0
       clientID: ${data.azurerm_user_assigned_identity.deploy_identity.client_id}
-      clientSecret: ${AZ_CLIENT_SECRET}
+      clientSecret: ${var.entra_client_secret}
       requestedScopes:
         - openid
         - profile
