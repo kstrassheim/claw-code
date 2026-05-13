@@ -81,13 +81,8 @@ data "azuread_service_principal" "deploy_identity_principal" {
   client_id = data.azurerm_user_assigned_identity.deploy_identity.client_id
 }
 
-# Assign Owner to deploy identity so it can manage AKS resources
-resource "azuread_service_principal_role_assignment" "deploy_identity_owner" {
-  role_definition_id = "8e3af841-a98f-49bf-91df-df956c3c9783"  # Owner
-  principal_id       = data.azurerm_user_assigned_identity.deploy_identity.principal_id
-  principal_type     = "ServicePrincipal"
-  scope              = data.azurerm_resource_group.rg.id
-}
+# NOTE: Owner role on MI SP not needed — MI has Contributor on RG via Entra RBAC.
+# azuread_service_principal_role_assignment causes plan failures.
 
 # Create storage account for PV (Azure Files) — name from TF var (clwcodecodev)
 resource "azurerm_storage_account" "pv" {
@@ -108,13 +103,10 @@ resource "azurerm_storage_account" "pv" {
 resource "azurerm_storage_share" "openclaw" {
   name = "openclaw"
   storage_account_id = azurerm_storage_account.pv.id
-  quota_mb           = 51200  # 50GB
+  quota               = 51200  # 50GB
 }
 
-# Generate storage account key (used by K8s PV secret)
-resource "azurerm_storage_account_primary_access_key" "pv" {
-  storage_account_id = azurerm_storage_account.pv.id
-}
+# NOTE: storage account key obtained via azurerm_storage_account resource.
 
 # Create the AKS cluster
 resource "azurerm_kubernetes_cluster" "aks" {
@@ -132,7 +124,6 @@ resource "azurerm_kubernetes_cluster" "aks" {
     os_disk_size_gb    = 30
     os_disk_type       = "Managed"
     type               = "VirtualMachineScaleSets"
-    availability_zones = ["1", "2", "3"]
   }
 
   identity {
@@ -149,9 +140,6 @@ resource "azurerm_kubernetes_cluster" "aks" {
     secret_rotation_enabled = false
   }
 
-  oms_agent {
-    log_analytics_workspace_id = azurerm_log_analytics_workspace.aks.id
-  }
 
   network_profile {
     network_plugin    = "azure"
@@ -395,7 +383,7 @@ output "storage_account_name" {
 
 output "storage_account_key" {
   description = "PV storage account primary access key"
-  value       = azurerm_storage_account_primary_access_key.pv.primary_key
+  value       = azurerm_storage_account.pv.primary_access_key
   sensitive   = true
 }
 
