@@ -29,13 +29,24 @@ variable "node_count" {
 }
 
 variable "storage_account_name" {
-  description = "Storage account name for Terraform state and PV"
-  default     = "clwcodestate"  # must be globally unique, ~24 chars max
+  description = "Storage account name for Azure Files PV (must be globally unique, ~24 chars max, e.g. clwcodecodev)"
+  default     = "clwcodecodev"
   type        = string
 }
 
 variable "namespace" {
   description = "Kubernetes namespace for openclaw"
   default     = "openclaw"
+  type        = string
+}
+
+variable "entra_client_secret" {
+  description = "Entra app client secret for ArgoCD OIDC authentication"
+  type        = string
+  sensitive   = true
+}
+
+variable "entra_tenant_id" {
+  description = "Entra tenant ID for ArgoCD OIDC"
   type        = string
 }
