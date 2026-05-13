@@ -38,7 +38,7 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: python, javascript, typescript, terraform
+          languages: python, javascript, typescript
           queries: security-extended
 
       - name: Autobuild
@@ -48,4 +48,4 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
-          category: "/language:python,javascript,typescript,terraform"
+          category: "/language:python,javascript,typescript"
