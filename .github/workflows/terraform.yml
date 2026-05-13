@@ -1,0 +1,125 @@
+name: Terraform Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+      - '**.yaml'
+      - '!.github/workflows/**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+      - '**.yaml'
+      - '!.github/workflows/**'
+
+# Ensure only one run per PR/branch at a time
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TERRAFORM_VERSION: "1.13.0"
+  TFWorkingDir: "."
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+jobs:
+  terraform:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: true
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set Terraform environment variables
+        run: |
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_FEDERATED_TOKEN_FILE=${{ runner.temp }}/azure_federated_token" >> $GITHUB_ENV
+          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+          echo "TF_VAR_env=dev" >> $GITHUB_ENV
+
+      - name: Terraform Init
+        id: init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=terraform" \
+            -backend-config="storage_account_name=mytofustates" \
+            -backend-config="container_name=claw-code" \
+            -backend-config="key=dev.tfstate"
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -out=tfplan
+          echo "plan_exit_code=$?" >> $GITHUB_ENV
+
+      - name: Upload Terraform Plan artifact
+        uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: terraform-plan
+          path: tfplan
+          retention-days: 7
+
+      - name: Show Plan (for PR reviews)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "## Terraform Plan Summary" >> $GITHUB_STEP_SUMMARY
+          terraform show --json tfplan 2>/dev/null | \
+            jq -r '[
+              (.resources | length) as $total |
+              "### Resources: \($total)",
+              "",
+              (.resource_changes | group_by(.type) | map("\(.[0].type): \(length)") | join("\n"))
+            ] | join("\n")' >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Terraform Apply (on merge to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "Applying Terraform changes..."
+          terraform apply -auto-approve tfplan
+
+      - name: Upload Terraform Output artifact (on apply success)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          terraform output -json > terraform_output.json
+          echo "Output saved to terraform_output.json"
+
+      - name: Upload Terraform Output artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-output
+          path: terraform_output.json
+          retention-days: 30
+
+      - name: Upload kubeconfig for downstream jobs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ env.TF_VAR_cluster_name }}"  # just a marker
+        # Note: in a real setup you would store the kubeconfig as an artifact
+        # for K8s deployment jobs. For now we rely on ArgoCD GitOps pattern.
