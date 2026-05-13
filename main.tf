@@ -60,7 +60,7 @@ locals {
   location            = var.location
   storage_account_name = var.storage_account_name
   namespace           = var.namespace
-  aks_version         = "1.31"
+  aks_version         = "1.35.3"
   # Entra tenant ID for ArgoCD OIDC — replace with your actual tenant ID
   # or pass via TF_VAR_entra_tenant_id in the workflow.
   entra_tenant_id     = "1e1e851f-618f-40d4-9c2d-45355ad039a9"
@@ -142,7 +142,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
   azure_active_directory_role_based_access_control {
     managed               = true
     azure_rbac_enabled     = true
-    admin_group_object_ids = []  # Add your Entra group's Object ID here for cluster admin access
+    admin_group_object_ids = ["11755bb8-1adf-4c08-9424-0aecf3b6952e"]  # claw-code-aks-admin Entra group
   }
 
   key_vault_secrets_provider {
