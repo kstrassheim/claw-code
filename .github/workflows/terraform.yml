@@ -30,7 +30,7 @@ env:
 
 jobs:
   terraform:
-    name: Terraform Apply
+    name: Terraform Plan
     runs-on: ubuntu-latest
     environment: dev
 
@@ -100,7 +100,7 @@ jobs:
               (.resource_changes | group_by(.type) | map("\(.[0].type): \(length)") | join("\n"))
             ] | join("\n")' >> $GITHUB_STEP_SUMMARY || true
 
-      - name: Terraform Apply (on merge to main)
+      - name: Terraform Plan (on merge to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           echo "Applying Terraform changes..."
