@@ -39,7 +39,7 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: python, javascript, typescript
-          queries: security-extended
+          queries: security-only
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
