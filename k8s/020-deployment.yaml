@@ -63,7 +63,38 @@ spec:
         checksum/tools-md: "sha256:use-real-hash-after-first-sync"
     spec:
       serviceAccountName: openclaw
+      # PVC mounts default to root:root. The openclaw container runs as
+      # uid 1000 (node user) and writes config + identity + tasks into
+      # /home/node/.openclaw — so the mounted volume must be group-writable
+      # by gid 1000.
+      # - fsGroup chgrp's the mount root to gid 1000.
+      # - fsGroupChangePolicy=Always makes that recursive on every mount,
+      #   so existing subdirs (e.g. `workspace/` from earlier deploys with
+      #   the wrong mountPath) don't stay stuck at root:root.
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: Always
       initContainers:
+        # Belt-and-suspenders on top of fsGroupChangePolicy: explicitly
+        # chmod the existing files so group=node has rw on dirs and rw
+        # on files. fsGroup only manages group ownership; if a file was
+        # created without g+w from the previous (root-owned) mount,
+        # node still can't write to it after the regroup. Runs as root
+        # in a busybox-style shell from the openclaw image; idempotent.
+        - name: fix-perms
+          image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              chown -R 1000:1000 /home/node/.openclaw
+              chmod -R u+rwX,g+rwX /home/node/.openclaw
+          volumeMounts:
+            - name: workspace
+              mountPath: /home/node/.openclaw
         # Reads the canonical template from /template, decides whether
         # MiniMax is reachable based on $MINIMAX_API_KEY, strips it with
         # jq if not, and writes the rendered result back into the live
@@ -92,6 +123,11 @@ spec:
               mountPath: /template
             - name: render-scripts
               mountPath: /scripts
+            # Needed so render-config.sh can write the merged config into
+            # /home/node/.openclaw/openclaw.json. fix-perms init runs first
+            # and ensures the dir is writable by gid 1000.
+            - name: workspace
+              mountPath: /home/node/.openclaw
           resources:
             requests:
               cpu: 100m
@@ -116,8 +152,15 @@ spec:
             - secretRef:
                 name: openclaw-secrets
           volumeMounts:
+            # Mount the PVC at the WHOLE openclaw state directory, not just
+            # the `workspace/` subdir. Previously openclaw.json, identity/,
+            # tasks/, plugin-skills/, logs/ all lived on the container's
+            # ephemeral filesystem and were wiped on every pod restart —
+            # which made Telegram re-pair on every restart because the
+            # commands.ownerAllowFrom config (and the auth token under
+            # identity/) didn't persist.
             - name: workspace
-              mountPath: /home/node/.openclaw/workspace
+              mountPath: /home/node/.openclaw
             - name: tools-md
               mountPath: /home/node/.openclaw/workspace/TOOLS.md
               subPath: TOOLS.md
@@ -129,9 +172,17 @@ spec:
             # Chromium tabs, parallel agents). Limits stay just under
             # node-allocatable so sealed-secrets and AKS DaemonSets
             # still have breathing room.
+            # AKS system DaemonSets (Azure CNI/CNS, CSI drivers, kube-proxy,
+            # coredns, konnectivity-agents, metrics-server, sealed-secrets,
+            # ...) reserve ~900m CPU on a D2s_v3 node. With ~1850m
+            # allocatable that leaves ~950m for openclaw. Requests must
+            # stay safely below that; limits can still burst higher
+            # because Kubernetes only enforces limits when the resource
+            # is actually scarce. If openclaw consistently saturates the
+            # limit, bump the node to D4s_v3 instead of raising requests.
             requests:
-              cpu: 1300m
-              memory: 4632Mi
+              cpu: 600m
+              memory: 1500Mi
             limits:
               cpu: 1700m
               memory: 5632Mi

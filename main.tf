@@ -136,11 +136,22 @@ resource "azurerm_container_registry" "acr" {
   }
 }
 
-# Grant deploy identity AcrPull on the registry so AKS can pull images
+# Grant the deploy identity AcrPull (used by GitHub Actions for `az acr login`
+# and by `az acr import` when mirroring the upstream openclaw-base).
 resource "azurerm_role_assignment" "acr_pull" {
   scope                = azurerm_container_registry.acr.id
   role_definition_name = "AcrPull"
   principal_id         = data.azurerm_user_assigned_identity.deploy_identity.principal_id
+}
+
+# Grant the AKS *kubelet* identity AcrPull. AKS uses a separate auto-created
+# kubelet managed identity (NOT the cluster's SystemAssigned identity, NOT
+# the deploy identity above) to pull images for pods. Without this role the
+# kubelet hits "401 Unauthorized" when trying to pull from our ACR.
+resource "azurerm_role_assignment" "acr_pull_aks_kubelet" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
 }
 
 output "container_registry_login_server" {
@@ -166,6 +177,12 @@ resource "azurerm_kubernetes_cluster" "aks" {
     os_disk_size_gb   = 30
     os_disk_type      = "Managed"
     type              = "VirtualMachineScaleSets"
+    # Required by the azurerm provider when changing vm_size (or any
+    # other field that forces a pool rotation): AKS creates a temp pool
+    # under this name, migrates workloads, deletes the old pool, then
+    # renames the temp pool back to "default". Pure machinery — never
+    # appears as the running pool name.
+    temporary_name_for_rotation = "tmpdefault"
   }
 
   identity {

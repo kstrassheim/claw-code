@@ -17,8 +17,8 @@ variable "location" {
 }
 
 variable "node_size" {
-  description = "VM size for AKS node pool"
-  default     = "Standard_D2s_v3"
+  description = "VM size for AKS node pool. Default is arm64 (Standard_D2pds_v5, 2 vCPU / 8 GiB) — matches the openclaw image build target (linux/arm64) and is ~$20/mo cheaper than the x86 D2s_v3 equivalent."
+  default     = "Standard_D2pds_v5"
   type        = string
 }
 

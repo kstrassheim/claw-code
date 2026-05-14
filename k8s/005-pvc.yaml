@@ -1,0 +1,22 @@
+---
+# Persistent workspace for the openclaw container.
+# Backed by an Azure Managed Disk via the default AKS CSI driver
+# (disk.csi.azure.com). Disk is RWO — fine for replicas=1 with the
+# Deployment's Recreate strategy. The mount lives at
+# /home/node/.openclaw/workspace inside the container.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-workspace
+  namespace: openclaw
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: default
+  resources:
+    requests:
+      # 10Gi was tight for a coding workspace (git clones, npm/pip caches,
+      # Chromium state, podman storage, openclaw conversation state). 50Gi
+      # is roomy without being wasteful — ~$3.75/month on default
+      # Standard SSD storage class.
+      storage: 50Gi

@@ -31,7 +31,7 @@ ARG GH_CLI_VERSION
 ARG GITHUB_MCP_SERVER_VERSION
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
+ && apt-get install -y --no-install-recommends curl ca-certificates jq \
  && curl -fsSL -o /tmp/gh.tar.gz \
       "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_arm64.tar.gz" \
  && tar -xzf /tmp/gh.tar.gz -C /tmp \

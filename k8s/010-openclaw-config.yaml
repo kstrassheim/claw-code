@@ -31,51 +31,32 @@ data:
           "blockStreamingDefault": "on",
           "bootstrapMaxChars": 30000,
           "bootstrapTotalMaxChars": 120000
-        },
-        "models": {
-          "mistral/mistral-large-latest": {},
-          "mistral/mistral-small-latest": {},
-          "mistral/magistral-medium-latest": {},
-          "mistral/codestral-latest": {},
-          "mistral/ministral-8b-latest": {},
-          "mistral/mistral-large-3-25-12": {},
-          "mistral/mistral-medium-3-5-26-04": {},
-          "minimax/MiniMax-M2.7": {},
-          "minimax/MiniMax-M2.7-highspeed": {}
         }
       },
       "models": {
-        "mistral": {
-          "baseUrl": "https://api.mistral.ai/v1",
-          "apiKey": "${MISTRAL_API_KEY}",
-          "api": "anthropic-messages",
-          "models": [
-            {"id": "mistral-large-latest", "name": "Mistral Large", "maxTokens": 131072},
-            {"id": "mistral-small-latest", "name": "Mistral Small", "maxTokens": 131072},
-            {"id": "magistral-medium-latest", "name": "Magistral Medium", "maxTokens": 131072},
-            {"id": "codestral-latest", "name": "Codestral", "maxTokens": 81920},
-            {"id": "mistral-large-3-25-12", "name": "Mistral Large 3 (Vision)", "maxTokens": 131072},
-            {"id": "mistral-medium-3-5-26-04", "name": "Mistral Medium 3.5 (Vision)", "maxTokens": 131072}
-          ]
-        },
-        "minimax": {
-          "baseUrl": "https://api.minimax.io/anthropic",
-          "apiKey": "${MINIMAX_API_KEY}",
-          "api": "anthropic-messages",
-          "models": [
-            {"id": "MiniMax-M2.7", "name": "MiniMax M2.7", "maxTokens": 16384, "params": {"num_ctx": 65536}},
-            {"id": "MiniMax-M2.7-highspeed", "name": "MiniMax M2.7 HighSpeed", "maxTokens": 16384, "params": {"num_ctx": 65536}}
-          ]
-        }
-      },
-      "plugins": {
-        "enabled": true,
-        "config": {
-          "openclaw": {"enabled": true},
-          "github-copilot": {"enabled": true},
-          "mistral": {"enabled": true},
-          "minimax": {"enabled": true},
-          "clawhub": {"enabled": false}
+        "providers": {
+          "mistral": {
+            "baseUrl": "https://api.mistral.ai/v1",
+            "apiKey": "${MISTRAL_API_KEY}",
+            "api": "openai-completions",
+            "models": [
+              {"id": "mistral-large-latest", "name": "Mistral Large", "contextWindow": 131072},
+              {"id": "mistral-small-latest", "name": "Mistral Small", "contextWindow": 131072},
+              {"id": "magistral-medium-latest", "name": "Magistral Medium", "contextWindow": 131072},
+              {"id": "codestral-latest", "name": "Codestral", "contextWindow": 81920},
+              {"id": "mistral-large-3-25-12", "name": "Mistral Large 3 (Vision)", "contextWindow": 131072},
+              {"id": "mistral-medium-3-5-26-04", "name": "Mistral Medium 3.5 (Vision)", "contextWindow": 131072}
+            ]
+          },
+          "minimax": {
+            "baseUrl": "https://api.minimax.io/anthropic",
+            "apiKey": "${MINIMAX_API_KEY}",
+            "api": "anthropic-messages",
+            "models": [
+              {"id": "MiniMax-M2.7", "name": "MiniMax M2.7", "contextWindow": 16384, "params": {"num_ctx": 65536}},
+              {"id": "MiniMax-M2.7-highspeed", "name": "MiniMax M2.7 HighSpeed", "contextWindow": 16384, "params": {"num_ctx": 65536}}
+            ]
+          }
         }
       },
       "commands": {
@@ -134,44 +115,105 @@ data:
       exit 1
     fi
 
-    # Start from the template (Mistral + MiniMax, MiniMax priority).
-    cp /template/openclaw.json /tmp/openclaw.json
+    # Strip providers whose API key env var is missing/empty. Use node
+    # instead of jq — the openclaw base image doesn't ship jq yet, but
+    # node is always there. (jq is being added to builder/Dockerfile for
+    # future builds; once that ships we can fold the merge step below
+    # back to jq for brevity.)
+    MISTRAL_OK="${MISTRAL_OK:-}" MINIMAX_OK="${MINIMAX_OK:-}" node -e '
+      const fs = require("fs");
+      const c = JSON.parse(fs.readFileSync("/template/openclaw.json", "utf8"));
+      if (!process.env.MISTRAL_OK) {
+        console.log("MISTRAL_API_KEY not set — stripping Mistral and imageModel");
+        delete c.models?.providers?.mistral;
+        if (c.agents?.defaults?.model) c.agents.defaults.model.fallbacks = [];
+        if (c.agents?.defaults) delete c.agents.defaults.imageModel;
+      }
+      if (!process.env.MINIMAX_OK) {
+        console.log("MINIMAX_API_KEY not set — stripping MiniMax, switching primary to Mistral");
+        delete c.models?.providers?.minimax;
+        if (c.agents?.defaults?.model) {
+          c.agents.defaults.model.primary = "mistral/mistral-large-latest";
+          c.agents.defaults.model.fallbacks = [];
+        }
+        if (c.agents?.defaults?.imageModel) {
+          c.agents.defaults.imageModel.primary = "mistral/mistral-large-3-25-12";
+          c.agents.defaults.imageModel.fallbacks = ["mistral/mistral-medium-3-5-26-04"];
+        }
+      }
+      fs.writeFileSync("/tmp/openclaw.json", JSON.stringify(c, null, 2));
+    '
 
-    # If Mistral is missing, strip Mistral provider + registry entries.
-    # MiniMax currently has NO image-understanding model in its public
-    # lineup (M2.x is text/reasoning, Speech is TTS, Hailuo is video
-    # *generation*, Music is audio). Without Mistral there is no
-    # vision-capable model in the cluster — so we strip imageModel
-    # entirely. openclaw will surface a clear "no image model" error
-    # if a user actually tries vision; text-only chats keep working.
-    if [ -z "$MISTRAL_OK" ]; then
-      echo "MISTRAL_API_KEY not set — stripping Mistral and the imageModel route. Vision will not work; set MISTRAL_API_KEY to enable it."
-      jq '
-        del(.models.mistral)
-        | del(.plugins.config.mistral)
-        | .agents.models = (.agents.models | with_entries(select(.key | startswith("mistral/") | not)))
-        | .agents.defaults.model.fallbacks = []
-        | del(.agents.defaults.imageModel)
-      ' /tmp/openclaw.json > /tmp/r.json && mv /tmp/r.json /tmp/openclaw.json
+    # Write the rendered config to the openclaw home dir on the PVC,
+    # merged with the runtime state openclaw itself writes there
+    # (gateway auth token, commands.ownerAllowFrom, channels, meta, ...).
+    # jq's `*` is a deep merge: our injected config provides agents/
+    # models/plugins; persisted runtime fields overlay on top.
+    #
+    # Why direct file write instead of the openclaw-config ConfigMap +
+    # envFrom in the main container: envFrom skips ConfigMap keys that
+    # aren't valid env var names, and `openclaw.json` (with the dot) is
+    # not valid. The main container never picked up the ConfigMap, so
+    # openclaw defaulted to openai/gpt-5.5 and failed with a missing
+    # OPENAI_API_KEY. Writing the merged result to /home/node/.openclaw/
+    # openclaw.json (which openclaw reads on startup) fixes that.
+    PERSISTENT_DIR=/home/node/.openclaw
+    PERSISTENT_FILE=$PERSISTENT_DIR/openclaw.json
+    mkdir -p "$PERSISTENT_DIR"
+
+    # Deep-merge with persistent runtime state if jq is available AND
+    # a persistent file exists. jq isn't in the openclaw base image yet
+    # (TODO: add to builder/Dockerfile). Without it we fall back to
+    # using node for the merge so the script doesn't crash.
+    # Carry forward ONLY the runtime-state subset from any existing
+    # persistent file. Everything else (providers, agents, models —
+    # what we're declarative about) comes from the rendered template.
+    # Without this allowlist, a previous broken boot could persist a
+    # bad config (e.g. with a now-stripped provider) and crash all
+    # future pods via the merge.
+    #
+    # Runtime-state keys we want to keep on restart:
+    #   gateway.auth          — auto-generated bearer token
+    #   commands.ownerAllowFrom  — Telegram pairing approvals
+    #   channels              — per-channel enable + state
+    #   meta                  — openclaw bookkeeping (lastTouchedAt, etc.)
+    if [ -f "$PERSISTENT_FILE" ] && command -v node >/dev/null 2>&1; then
+      echo "Carrying forward runtime state from $PERSISTENT_FILE"
+      node -e '
+        const fs = require("fs");
+        const inj = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        let pst = {};
+        try { pst = JSON.parse(fs.readFileSync(process.argv[2], "utf8")); } catch {}
+        for (const k of ["meta", "channels", "commands", "gateway"]) {
+          if (pst[k] == null) continue;
+          if (k === "commands") {
+            inj.commands = {...(inj.commands || {})};
+            if (pst.commands.ownerAllowFrom != null) inj.commands.ownerAllowFrom = pst.commands.ownerAllowFrom;
+            continue;
+          }
+          if (k === "gateway") {
+            inj.gateway = {...(inj.gateway || {})};
+            if (pst.gateway.auth != null) inj.gateway.auth = pst.gateway.auth;
+            continue;
+          }
+          inj[k] = pst[k];
+        }
+        fs.writeFileSync(process.argv[3], JSON.stringify(inj, null, 2));
+      ' /tmp/openclaw.json "$PERSISTENT_FILE" /tmp/merged.json
+      mv /tmp/merged.json /tmp/openclaw.json
+    elif [ -f "$PERSISTENT_FILE" ]; then
+      echo "WARN: node unavailable for runtime-state carry-over — pairings will reset"
+    else
+      echo "No existing openclaw.json on the PVC — writing rendered config as-is"
     fi
 
-    # If MiniMax is missing, strip MiniMax provider + registry entries
-    # and swap chat/image primaries back to Mistral with its own fallback.
-    if [ -z "$MINIMAX_OK" ]; then
-      echo "MINIMAX_API_KEY not set — stripping MiniMax from config"
-      jq '
-        del(.models.minimax)
-        | del(.plugins.config.minimax)
-        | .agents.models = (.agents.models | with_entries(select(.key | startswith("minimax/") | not)))
-        | .agents.defaults.model.primary = "mistral/mistral-large-latest"
-        | .agents.defaults.model.fallbacks = []
-        | .agents.defaults.imageModel.primary = "mistral/mistral-large-3-25-12"
-        | .agents.defaults.imageModel.fallbacks = ["mistral/mistral-medium-3-5-26-04"]
-      ' /tmp/openclaw.json > /tmp/r.json && mv /tmp/r.json /tmp/openclaw.json
-    fi
+    cp /tmp/openclaw.json "$PERSISTENT_FILE"
+    chmod 0600 "$PERSISTENT_FILE"
+    echo "Wrote $PERSISTENT_FILE ($(wc -c < "$PERSISTENT_FILE") bytes)"
 
-    # Patch the live openclaw-config so envFrom in the main container
-    # picks up the rendered value when it starts.
+    # Also keep the openclaw-config ConfigMap up to date — not consumed
+    # by the main container today, but useful for debugging (`kubectl
+    # get cm openclaw-config -o yaml`) and harmless.
     kubectl create configmap openclaw-config \
       -n openclaw \
       --from-file=openclaw.json=/tmp/openclaw.json \
