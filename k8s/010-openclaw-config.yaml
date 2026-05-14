@@ -1,8 +1,16 @@
 ---
+# Single source of truth for the openclaw runtime config.
+# Two providers are declared (mistral + minimax). The minimax block is
+# stripped at pod startup by the `render-config` init container in
+# 020-deployment.yaml when MINIMAX_API_KEY is empty/unset.
+#
+# imageModel routing: vision content goes to MiniMax M2.7 first; on
+# failure (auth error if key missing, or model-doesn't-support-vision)
+# openclaw fails over to Mistral Large 3, then Medium 3.5.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: openclaw-config
+  name: openclaw-config-template
   namespace: openclaw
 data:
   openclaw.json: |
@@ -10,7 +18,12 @@ data:
       "agents": {
         "defaults": {
           "model": {
-            "primary": "mistral/mistral-large-latest"
+            "primary": "minimax/MiniMax-M2.7",
+            "fallbacks": ["mistral/mistral-large-latest"]
+          },
+          "imageModel": {
+            "primary": "mistral/mistral-large-3-25-12",
+            "fallbacks": ["mistral/mistral-medium-3-5-26-04"]
           },
           "compaction": {
             "mode": "safeguard"
@@ -24,7 +37,11 @@ data:
           "mistral/mistral-small-latest": {},
           "mistral/magistral-medium-latest": {},
           "mistral/codestral-latest": {},
-          "mistral/ministral-8b-latest": {}
+          "mistral/ministral-8b-latest": {},
+          "mistral/mistral-large-3-25-12": {},
+          "mistral/mistral-medium-3-5-26-04": {},
+          "minimax/MiniMax-M2.7": {},
+          "minimax/MiniMax-M2.7-highspeed": {}
         }
       },
       "models": {
@@ -36,7 +53,18 @@ data:
             {"id": "mistral-large-latest", "name": "Mistral Large", "maxTokens": 131072},
             {"id": "mistral-small-latest", "name": "Mistral Small", "maxTokens": 131072},
             {"id": "magistral-medium-latest", "name": "Magistral Medium", "maxTokens": 131072},
-            {"id": "codestral-latest", "name": "Codestral", "maxTokens": 81920}
+            {"id": "codestral-latest", "name": "Codestral", "maxTokens": 81920},
+            {"id": "mistral-large-3-25-12", "name": "Mistral Large 3 (Vision)", "maxTokens": 131072},
+            {"id": "mistral-medium-3-5-26-04", "name": "Mistral Medium 3.5 (Vision)", "maxTokens": 131072}
+          ]
+        },
+        "minimax": {
+          "baseUrl": "https://api.minimax.io/anthropic",
+          "apiKey": "${MINIMAX_API_KEY}",
+          "api": "anthropic-messages",
+          "models": [
+            {"id": "MiniMax-M2.7", "name": "MiniMax M2.7", "maxTokens": 16384, "params": {"num_ctx": 65536}},
+            {"id": "MiniMax-M2.7-highspeed", "name": "MiniMax M2.7 HighSpeed", "maxTokens": 16384, "params": {"num_ctx": 65536}}
           ]
         }
       },
@@ -46,7 +74,8 @@ data:
           "openclaw": {"enabled": true},
           "github-copilot": {"enabled": true},
           "mistral": {"enabled": true},
-          "clawhub": {"enabled": true, "config": {"discovery": {"enabled": true}}}
+          "minimax": {"enabled": true},
+          "clawhub": {"enabled": false}
         }
       },
       "commands": {
@@ -66,3 +95,85 @@ data:
         "controlUi": {"allowedOrigins": ["*"]}
       }
     }
+---
+# Placeholder — populated at pod start by the render-config init container.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-config
+  namespace: openclaw
+data:
+  openclaw.json: "{}"
+---
+# Script the init container runs. Lives in its own ConfigMap so changes
+# don't force the openclaw-config ConfigMap to be recreated.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-render-scripts
+  namespace: openclaw
+data:
+  render-config.sh: |
+    #!/bin/sh
+    set -eu
+
+    # Treat the placeholder strings (from sealed-secret stubs) the same
+    # as "unset" so we don't silently activate a provider with garbage.
+    is_set() {
+      v="${1:-}"
+      [ -n "$v" ] && [ "$v" != "REPLACE_WITH_MISTRAL_KEY" ] && [ "$v" != "REPLACE_WITH_MINIMAX_KEY" ] && [ "$v" != "null" ]
+    }
+
+    MISTRAL_OK=
+    MINIMAX_OK=
+    is_set "${MISTRAL_API_KEY:-}" && MISTRAL_OK=1 || true
+    is_set "${MINIMAX_API_KEY:-}" && MINIMAX_OK=1 || true
+
+    if [ -z "$MISTRAL_OK" ] && [ -z "$MINIMAX_OK" ]; then
+      echo "ERROR: neither MISTRAL_API_KEY nor MINIMAX_API_KEY is set. At least one must be present."
+      exit 1
+    fi
+
+    # Start from the template (Mistral + MiniMax, MiniMax priority).
+    cp /template/openclaw.json /tmp/openclaw.json
+
+    # If Mistral is missing, strip Mistral provider + registry entries.
+    # MiniMax currently has NO image-understanding model in its public
+    # lineup (M2.x is text/reasoning, Speech is TTS, Hailuo is video
+    # *generation*, Music is audio). Without Mistral there is no
+    # vision-capable model in the cluster — so we strip imageModel
+    # entirely. openclaw will surface a clear "no image model" error
+    # if a user actually tries vision; text-only chats keep working.
+    if [ -z "$MISTRAL_OK" ]; then
+      echo "MISTRAL_API_KEY not set — stripping Mistral and the imageModel route. Vision will not work; set MISTRAL_API_KEY to enable it."
+      jq '
+        del(.models.mistral)
+        | del(.plugins.config.mistral)
+        | .agents.models = (.agents.models | with_entries(select(.key | startswith("mistral/") | not)))
+        | .agents.defaults.model.fallbacks = []
+        | del(.agents.defaults.imageModel)
+      ' /tmp/openclaw.json > /tmp/r.json && mv /tmp/r.json /tmp/openclaw.json
+    fi
+
+    # If MiniMax is missing, strip MiniMax provider + registry entries
+    # and swap chat/image primaries back to Mistral with its own fallback.
+    if [ -z "$MINIMAX_OK" ]; then
+      echo "MINIMAX_API_KEY not set — stripping MiniMax from config"
+      jq '
+        del(.models.minimax)
+        | del(.plugins.config.minimax)
+        | .agents.models = (.agents.models | with_entries(select(.key | startswith("minimax/") | not)))
+        | .agents.defaults.model.primary = "mistral/mistral-large-latest"
+        | .agents.defaults.model.fallbacks = []
+        | .agents.defaults.imageModel.primary = "mistral/mistral-large-3-25-12"
+        | .agents.defaults.imageModel.fallbacks = ["mistral/mistral-medium-3-5-26-04"]
+      ' /tmp/openclaw.json > /tmp/r.json && mv /tmp/r.json /tmp/openclaw.json
+    fi
+
+    # Patch the live openclaw-config so envFrom in the main container
+    # picks up the rendered value when it starts.
+    kubectl create configmap openclaw-config \
+      -n openclaw \
+      --from-file=openclaw.json=/tmp/openclaw.json \
+      --dry-run=client -o yaml \
+    | kubectl apply -f -

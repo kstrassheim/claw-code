@@ -11,3 +11,4 @@ node_size            = "Standard_D2s_v3"
 node_count           = 1
 storage_account_name = "clwcodecodev"  # PV storage (Azure Files), globally unique, NOT mytofustates
 namespace            = "openclaw"
+aks_admin_group_name = "claw-code-aks-admin"  # Entra security group with AKS cluster-admin RBAC

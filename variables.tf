@@ -40,6 +40,12 @@ variable "namespace" {
   type        = string
 }
 
+variable "aks_admin_group_name" {
+  description = "Display name of the Entra ID security group granted AKS cluster-admin RBAC. The group must already exist; Terraform only references it by name."
+  type        = string
+  default     = "claw-code-aks-admin"
+}
+
 variable "unique_suffix" {
   description = "Unique suffix appended to globally-unique resource names (max 4 chars, e.g. 'dev1'). Used to make storage account and ACR names unique across deployments."
   type        = string

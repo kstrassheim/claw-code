@@ -1,9 +1,10 @@
 name: Deploy (Push to main)
 
-# Runs on every merge to main. Three sequential jobs:
-#   1. terraform-apply        — provision/update Azure infra (AKS, ACR, etc.)
-#   2. build-and-push-image   — build the openclaw image, push :latest+:sha to ACR
-#   3. deploy-to-aks          — kubectl apply -f k8s/, then rollout restart
+# Runs on every merge to main. Four sequential jobs:
+#   1. check-llm-secrets      — fail-fast if neither LLM API key is set
+#   2. terraform-apply        — provision/update Azure infra (AKS, ACR, etc.)
+#   3. build-and-push-image   — build the openclaw image, push :latest+:sha to ACR
+#   4. deploy-to-aks          — kubectl apply -f k8s/, then rollout restart
 #
 # Each job depends on the previous one succeeding (`needs:`), so a broken
 # step short-circuits the rest before it can do damage.
@@ -29,8 +30,29 @@ permissions:
   contents: read
 
 jobs:
+  check-llm-secrets:
+    # Same fail-fast as in validate.yml — refuse to deploy if neither
+    # LLM API key is configured. The pod's render-config init container
+    # would also reject this case, but failing here saves a full
+    # terraform-apply + image-push + rollout cycle.
+    name: At least one LLM API key configured
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Check MISTRAL_API_KEY or MINIMAX_API_KEY
+        env:
+          MISTRAL: ${{ secrets.MISTRAL_API_KEY }}
+          MINIMAX: ${{ secrets.MINIMAX_API_KEY }}
+        run: |
+          if [ -z "$MISTRAL" ] && [ -z "$MINIMAX" ]; then
+            echo "::error::Neither MISTRAL_API_KEY nor MINIMAX_API_KEY is set in the 'dev' environment. openclaw needs at least one."
+            exit 1
+          fi
+          echo "OK — at least one LLM API key is configured."
+
   terraform-apply:
     name: Terraform Apply
+    needs: check-llm-secrets
     runs-on: ubuntu-latest
     environment: dev
 

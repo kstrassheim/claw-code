@@ -1,9 +1,10 @@
 name: Validate (Pull Request)
 
-# Runs on every PR to main. Two independent validation jobs in parallel:
-#   - terraform-plan  : init, validate, plan against current main state
-#   - docker-build    : build the image locally without pushing to ACR
-# Neither job changes anything in Azure or the cluster.
+# Runs on every PR to main. Three independent validation jobs in parallel:
+#   - check-llm-secrets : fail the PR if neither LLM API key secret is set
+#   - terraform-plan    : init, validate, plan against current main state
+#   - docker-build      : build the image locally without pushing to ACR
+# None of these jobs change anything in Azure or the cluster.
 
 on:
   pull_request:
@@ -26,6 +27,25 @@ permissions:
   contents: read
 
 jobs:
+  check-llm-secrets:
+    # openclaw needs at least one LLM API key to render a usable config.
+    # The pod's render-config init container fails-fast in this case too,
+    # but catching it at PR time avoids merging a broken cluster state.
+    name: At least one LLM API key configured
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Check MISTRAL_API_KEY or MINIMAX_API_KEY
+        env:
+          MISTRAL: ${{ secrets.MISTRAL_API_KEY }}
+          MINIMAX: ${{ secrets.MINIMAX_API_KEY }}
+        run: |
+          if [ -z "$MISTRAL" ] && [ -z "$MINIMAX" ]; then
+            echo "::error::Neither MISTRAL_API_KEY nor MINIMAX_API_KEY is set in the 'dev' environment. openclaw needs at least one."
+            exit 1
+          fi
+          echo "OK — at least one LLM API key is configured."
+
   terraform-plan:
     name: Terraform Plan
     runs-on: ubuntu-latest

@@ -75,17 +75,59 @@ claw-code/
 
 ### GitHub Secrets
 
-Set in `Settings → Secrets and variables → Actions`:
+Set under `Settings → Environments → dev → Environment secrets` (the
+deploy/validate workflows scope to `environment: dev`, so repo-level
+secrets won't resolve).
 
 | Secret | Required | Description |
 |--------|----------|-------------|
 | `AZURE_CLIENT_ID` | Yes | Client ID of the deploy-managed identity |
 | `AZURE_TENANT_ID` | Yes | Entra tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | Yes | Subscription ID |
-| `MISTRAL_API_KEY` | Yes | Mistral Large API key |
-| `GITHUB_TOKEN` | Yes | Bot account PAT (with repo access) |
-| `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token for bot communication |
-| `MINIMAX_API_KEY` | No | Optional — if present, MiniMax appears in model list |
+| `MISTRAL_API_KEY` | One of these two | Mistral API key — see below |
+| `MINIMAX_API_KEY` | One of these two | MiniMax API key — see below |
+| `BOT_GITHUB_TOKEN` | Yes | Bot account PAT for autonomous git/github work |
+| `TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token if the channel is enabled |
+
+> Note on `BOT_GITHUB_TOKEN`: GitHub Actions reserves `secrets.GITHUB_TOKEN`
+> for the auto-generated per-workflow token. We use `BOT_GITHUB_TOKEN`
+> for the long-lived bot PAT and seal it into the cluster under the
+> `GITHUB_TOKEN` k8s secret key that openclaw expects.
+
+**At least one of `MISTRAL_API_KEY` / `MINIMAX_API_KEY` is required.**
+Both the `validate` and `deploy` workflows have a `check-llm-secrets`
+job that fails when neither is set — PR won't merge, deploy won't run.
+
+### Getting the LLM API keys
+
+#### Mistral (Experimental tier)
+
+1. Go to [console.mistral.ai](https://console.mistral.ai/) and sign up
+   (email or Google/GitHub OAuth).
+2. The free **Experimental** plan is selected by default — it includes
+   access to all production models (Mistral Large, Medium 3.5, Pixtral,
+   Codestral) at experimental rate limits. No credit card needed for the
+   tier; you can upgrade to a paid plan later if you hit the limits.
+3. Navigate to `Workspace → API Keys` (or
+   [console.mistral.ai/api-keys](https://console.mistral.ai/api-keys/)).
+4. Click `Create new key`, give it a name (e.g. `claw-code`), and copy
+   the token — it's only shown once.
+5. Paste into `MISTRAL_API_KEY` under the `dev` GitHub environment.
+
+#### MiniMax (Starter tier)
+
+1. Go to [platform.minimax.io](https://platform.minimax.io/) and sign up
+   (email or Google).
+2. The **Starter** plan is the default free tier — gives you access to
+   `MiniMax-M2.7` (the reasoning/coding model claw-code uses) with a
+   monthly token quota. No credit card required.
+3. Navigate to `Account → API Keys` and click `Create API Key`.
+4. Copy the token (only shown once) and paste it into
+   `MINIMAX_API_KEY` under the `dev` GitHub environment.
+
+Whichever one(s) you set will be reflected in the openclaw config at the
+next pod restart — see the **LLMs** section below for the routing
+matrix.
 
 ---
 
@@ -165,12 +207,43 @@ Commit and push to main — the `deploy-k8s` workflow applies the change to the 
 
 ## LLMs
 
-- **Default**: Mistral Large (`mistral-large-latest`)
-- **Optional**: MiniMax (`MiniMax/MiniMax-Text-01`) — activated only when `MINIMAX_API_KEY` is present in `k8s/010-secrets.yaml`. When absent, MiniMax does not appear in the model list.
+The canonical config lives in [k8s/010-openclaw-config.yaml](k8s/010-openclaw-config.yaml)
+as a single template (`openclaw-config-template` ConfigMap). At pod start an
+init container `render-config` decides which providers stay in based on which
+API keys are present in `openclaw-secrets`. **Both keys are optional, but at
+least one must be set** — if neither is, the init container fails and the pod
+won't start (loud-fail beats a silent misconfig).
 
-To activate MiniMax:
-1. Add `MINIMAX_API_KEY: "<your-key>"` in `k8s/010-secrets.yaml`
-2. Commit and push to main — `deploy-k8s` applies the change, pod restarts, MiniMax appears.
+Resulting routing based on which keys are set:
+
+| `MISTRAL_API_KEY` | `MINIMAX_API_KEY` | Primary chat | Image model | Notes |
+|---|---|---|---|---|
+| ✓ | ✓ | MiniMax M2.7 (Mistral Large as fallback) | Mistral Large 3 (Medium 3.5 fallback) | MiniMax wins chat priority; vision goes to Mistral because M2.7 is text/reasoning-only |
+| ✓ | ✗ | Mistral Large | Mistral Large 3 (Medium 3.5 fallback) | MiniMax block + registry entries stripped |
+| ✗ | ✓ | MiniMax M2.7 | MiniMax M2.7 (best-effort, may fail) | Mistral stripped. M2.7 likely doesn't accept image content — vision-using chats will probably error. Add `MISTRAL_API_KEY` to fix. |
+| ✗ | ✗ | — | — | `check-llm-secrets` job fails the PR / deploy; init container would also fail-fast |
+
+> Why is the image model on Mistral when both are set? MiniMax M2.7's
+> public product positioning is "Self-Improvement / Reasoning" — text
+> only. We could not find authoritative docs confirming vision support
+> on the `api.minimax.io/anthropic` endpoint. Mistral Large 3 is
+> explicitly multimodal, so it carries vision unless it's not configured.
+
+How the render works:
+
+- Init container `render-config` reads the template via a file mount, uses
+  `jq` to optionally remove Mistral/MiniMax sections, and writes the rendered
+  result back to the live `openclaw-config` ConfigMap.
+- The main container's `envFrom` then picks up the rendered `openclaw.json`
+  when it starts (`envFrom` resolves after all initContainers complete).
+- RBAC is the tightly-scoped `openclaw-config-writer` Role on the `openclaw`
+  ServiceAccount — get/patch/update/create on only the `openclaw-config`
+  ConfigMap, nothing else.
+
+To toggle a provider on or off: add or remove the matching
+`MISTRAL_API_KEY` / `MINIMAX_API_KEY` GitHub Actions
+secret. The `seal-secrets` workflow seals it into `openclaw-secrets`, the
+next pod restart re-runs the render, and the config tracks the new state.
 
 ---
 

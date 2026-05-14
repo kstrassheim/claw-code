@@ -17,6 +17,14 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# Strip openclaw skills that expand the agent's capabilities at runtime:
+#   - mcporter      — dynamic MCP-server gateway (loads tools over HTTP/stdio,
+#                     bypasses our static MCP allowlist)
+#   - skill-creator — guides the agent to write new skill files
+# Skills live at /app/skills/ in the upstream openclaw image.
+USER root
+RUN rm -rf /app/skills/mcporter /app/skills/skill-creator
+
 # gh CLI + GitHub MCP server, installed for autonomous git/github work.
 # Image is arm64-only (AKS uses ARM); upstream release archives use `arm64`.
 ARG GH_CLI_VERSION

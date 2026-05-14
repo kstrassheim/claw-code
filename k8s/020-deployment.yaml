@@ -1,20 +1,37 @@
 ---
+# ServiceAccount + Role + RoleBinding so the render-config init container
+# can patch the openclaw-config ConfigMap at pod start. Scoped tightly:
+# only the openclaw-config ConfigMap in this namespace, get/patch/update.
 apiVersion: v1
-kind: ConfigMap
+kind: ServiceAccount
 metadata:
-  name: openclaw-sync-scripts
+  name: openclaw
   namespace: openclaw
-data:
-  sync-minimax.sh: |
-    #!/bin/sh
-    set -e
-    KEY=$(kubectl get secret openclaw-secrets -n openclaw -o jsonpath='{.data.MINIMAX_API_KEY}' 2>/dev/null | base64 -d || echo "")
-    if [ -n "$KEY" ] && [ "$KEY" != "REPLACE_WITH_MINIMAX_KEY" ] && [ "$KEY" != "null" ]; then
-      echo "MINIMAX_API_KEY detected — patching openclaw-config to enable MiniMax"
-      kubectl patch configmap openclaw-config -n openclaw --type merge -p '{"data":{"openclaw.json":"{\"agents\":{\"defaults\":{\"model\":{\"primary\":\"mistral/mistral-large-latest\"},\"compaction\":{\"mode\":\"safeguard\"},\"blockStreamingDefault\":\"on\",\"bootstrapMaxChars\":30000,\"bootstrapTotalMaxChars\":120000,\"models\":{\"mistral/mistral-large-latest\":{},\"mistral/mistral-small-latest\":{},\"mistral/magistral-medium-latest\":{},\"mistral/codestral-latest\":{},\"mistral/ministral-8b-latest\":{},\"minimax/MiniMax-M2.7\":{},\"minimax/MiniMax-M2.7-highspeed\":{}}},\"models\":{\"mistral\":{\"baseUrl\":\"https://api.mistral.ai/v1\",\"apiKey\":\"'${MISTRAL_API_KEY}'\",\"api\":\"anthropic-messages\",\"models\":[{\"id\":\"mistral-large-latest\",\"name\":\"Mistral Large\",\"maxTokens\":131072},{\"id\":\"mistral-small-latest\",\"name\":\"Mistral Small\",\"maxTokens\":131072},{\"id\":\"magistral-medium-latest\",\"name\":\"Magistral Medium\",\"maxTokens\":131072},{\"id\":\"codestral-latest\",\"name\":\"Codestral\",\"maxTokens\":81920}]},\"minimax\":{\"baseUrl\":\"https://api.minimax.io/anthropic\",\"apiKey\":\"'${MINIMAX_API_KEY}'\",\"api\":\"anthropic-messages\",\"models\":[{\"id\":\"MiniMax-M2.7\",\"name\":\"MiniMax M2.7\",\"maxTokens\":16384,\"params\":{\"num_ctx\":65536}},{\"id\":\"MiniMax-M2.7-highspeed\",\"name\":\"MiniMax M2.7 HighSpeed\",\"maxTokens\":16384,\"params\":{\"num_ctx\":65536}}]}},\"plugins\":{\"enabled\":true,\"config\":{\"openclaw\":{\"enabled\":true},\"github-copilot\":{\"enabled\":true},\"mistral\":{\"enabled\":true},\"minimax\":{\"enabled\":true},\"clawhub\":{\"enabled\":true,\"config\":{\"discovery\":{\"enabled\":true}}}}},\"commands\":{\"native\":\"auto\",\"nativeSkills\":\"auto\",\"restart\":true,\"ownerDisplay\":\"raw\"},\"channels\":{\"telegram\":{\"enabled\":false}},\"gateway\":{\"port\":18789,\"mode\":\"local\",\"bind\":\"lan\",\"trustedProxies\":[\"10.0.0.0/8\"],\"controlUi\":{\"allowedOrigins\":[\"*\"]}}}}"}}}'
-    else
-      echo "MINIMAX_API_KEY not set or placeholder — MiniMax stays disabled"
-    fi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openclaw-config-writer
+  namespace: openclaw
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["openclaw-config"]
+    verbs: ["get", "patch", "update", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openclaw-config-writer
+  namespace: openclaw
+subjects:
+  - kind: ServiceAccount
+    name: openclaw
+    namespace: openclaw
+roleRef:
+  kind: Role
+  name: openclaw-config-writer
+  apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -45,19 +62,25 @@ spec:
       annotations:
         checksum/tools-md: "sha256:use-real-hash-after-first-sync"
     spec:
+      serviceAccountName: openclaw
       initContainers:
-        - name: sync-control-ui
+        # Reads the canonical template from /template, decides whether
+        # MiniMax is reachable based on $MINIMAX_API_KEY, strips it with
+        # jq if not, and writes the rendered result back into the live
+        # openclaw-config ConfigMap. The main container's envFrom picks
+        # up the rendered value when it starts (envFrom resolves after
+        # initContainers complete).
+        - name: render-config
           image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
           imagePullPolicy: Always
-          command:
-            - /bin/sh
-            - /scripts/sync-minimax.sh
+          command: ["/bin/sh", "/scripts/render-config.sh"]
           env:
             - name: MISTRAL_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: openclaw-secrets
                   key: MISTRAL_API_KEY
+                  optional: true
             - name: MINIMAX_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -65,12 +88,14 @@ spec:
                   key: MINIMAX_API_KEY
                   optional: true
           volumeMounts:
-            - name: sync-scripts
+            - name: config-template
+              mountPath: /template
+            - name: render-scripts
               mountPath: /scripts
           resources:
             requests:
               cpu: 100m
-              memory: 32Mi
+              memory: 64Mi
             limits:
               cpu: 500m
               memory: 256Mi
@@ -97,16 +122,19 @@ spec:
               mountPath: /home/node/.openclaw/workspace/TOOLS.md
               subPath: TOOLS.md
           resources:
-            # Node is Standard_D2s_v3 (2 vCPU, 8 Gi). AKS kubelet/system
-            # reservations leave ~1.85 vCPU and ~6 Gi allocatable to user
-            # pods. Limits sit just under that so the pod can burst close
-            # to the node max without OOMing the kubelet.
+            # Node is Standard_D2s_v3 (2 vCPU, 8 Gi). AKS reservations
+            # leave ~1.85 vCPU and ~6 Gi allocatable to user pods.
+            # Pod is `Burstable` QoS: requests guarantee a baseline,
+            # limits give burst headroom for spikes (build steps,
+            # Chromium tabs, parallel agents). Limits stay just under
+            # node-allocatable so sealed-secrets and AKS DaemonSets
+            # still have breathing room.
             requests:
-              cpu: 500m
-              memory: 1Gi
+              cpu: 1300m
+              memory: 4632Mi
             limits:
-              cpu: 1500m
-              memory: 5Gi
+              cpu: 1700m
+              memory: 5632Mi
           lifecycle:
             preStop:
               exec:
@@ -118,6 +146,10 @@ spec:
         - name: tools-md
           configMap:
             name: openclaw-tools-md
-        - name: sync-scripts
+        - name: config-template
           configMap:
-            name: openclaw-sync-scripts
+            name: openclaw-config-template
+        - name: render-scripts
+          configMap:
+            name: openclaw-render-scripts
+            defaultMode: 0755

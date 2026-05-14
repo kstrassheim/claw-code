@@ -14,6 +14,10 @@ terraform {
       source  = "hashicorp/helm"
       version = "~> 3.0"
     }
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = "~> 3.0"
+    }
   }
 
   backend "azurerm" {
@@ -28,6 +32,8 @@ terraform {
 provider "azurerm" {
   features {}
 }
+
+provider "azuread" {}
 
 provider "kubernetes" {
   # For CI: set env vars ARM_USE_OIDC=true, ARM_USE_AZUREAD_AUTH=true, then run
@@ -50,7 +56,13 @@ locals {
   storage_account_name   = var.storage_account_name
   namespace              = var.namespace
   aks_version            = "1.35.3"
-  admin_group_object_ids = ["11755bb8-1adf-4c08-9424-0aecf3b6952e"]
+}
+
+# Lookup the AKS admin group by display name. The object ID changes per
+# tenant, but the group name is stable — easier to keep this in tfvars.
+data "azuread_group" "aks_admin" {
+  display_name     = var.aks_admin_group_name
+  security_enabled = true
 }
 
 # Get existing resource group
@@ -162,7 +174,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
 
   azure_active_directory_role_based_access_control {
     azure_rbac_enabled     = true
-    admin_group_object_ids = local.admin_group_object_ids
+    admin_group_object_ids = [data.azuread_group.aks_admin.object_id]
   }
 
   key_vault_secrets_provider {
@@ -187,7 +199,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
 resource "azurerm_role_assignment" "aks_admin" {
   scope                = azurerm_kubernetes_cluster.aks.id
   role_definition_name = "Azure Kubernetes Service RBAC Cluster Admin"
-  principal_id         = local.admin_group_object_ids[0]  # "11755bb8-1adf-4c08-9424-0aecf3b6952e"
+  principal_id         = data.azuread_group.aks_admin.object_id
 }
 
 # NOTE: Role assignments for the deploy identity (Storage Blob Data Contributor on
@@ -196,23 +208,15 @@ resource "azurerm_role_assignment" "aks_admin" {
 # Skipped here — requires Owner-level permissions.
 
 # =============================================================================
-# Kyverno Installation via Helm with default-deny-all policy
-# =============================================================================
-# NOTE: Kyverno is running in AUDIT mode (backgroundScanning.enforcement: Audit).
-# It will NOT block pods — only report violations. To enforce policies,
-# change backgroundScanning.enforcement to "Enforce" and add
-# PolicyExceptions for allowed workloads.
-
-# =============================================================================
 # Sealed Secrets Controller — installed via Helm so the kubeseal CLI
 # (used by the CI sealing job) can fetch the certificate from the cluster.
 # =============================================================================
 resource "helm_release" "sealed_secrets" {
-  name       = "sealed-secrets"
-  repository = "https://bitnami-labs.github.io/sealed-secrets"
-  chart      = "sealed-secrets"
-  version    = "2.16.2"
-  namespace  = "kube-system"
+  name             = "sealed-secrets"
+  repository       = "https://bitnami-labs.github.io/sealed-secrets"
+  chart            = "sealed-secrets"
+  version          = "2.16.2"
+  namespace        = "kube-system"
   create_namespace = false
 
   set = [
@@ -221,27 +225,6 @@ resource "helm_release" "sealed_secrets" {
       value = ""
     }
   ]
-}
-resource "helm_release" "kyverno" {
-  name       = "kyverno"
-  repository = "https://kyverno.github.io/kyverno/"
-  chart      = "kyverno"
-  version    = "3.3.2"
-  namespace  = "kyverno"
-  create_namespace = true
-
-  values = [<<EOF
-installCRDs: true
-replicaCount: 1
-backgroundScanning:
-  enabled: true
-  enforcement: "Audit"
-policy:
-  asBackend: false
-EOF
-  ]
-
-  depends_on = [azurerm_kubernetes_cluster.aks]
 }
 
 # =============================================================================
