@@ -60,7 +60,6 @@ jobs:
           echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
           echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
           echo "TF_VAR_env=dev" >> $GITHUB_ENV
-          echo "TF_VAR_entra_tenant_id=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
 
       - name: Terraform Init
         id: init

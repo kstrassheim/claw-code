@@ -6,7 +6,7 @@ Autonomous coding agent powered by OpenClaw, deployed on AKS.
 
 ```
 claw-code/
-├── main.tf                  # Terraform: AKS cluster, PV storage, ArgoCD, Kyverno
+├── main.tf                  # Terraform: AKS cluster, PV storage, Kyverno, Sealed Secrets
 ├── variables.tf             # Terraform variables
 ├── terraform.tfvars          # Dev environment values
 ├── builder/
@@ -27,11 +27,12 @@ claw-code/
 │   ├── 020-deployment.yaml  # Deployment
 │   ├── 030-service.yaml     # ClusterIP service
 │   ├── 040-ingress.yaml     # Ingress
-│   ├── 050-networkpolicy.yaml  # default-deny + allow-dns
-│   └── 060-argocd-app.yaml  # ArgoCD Application manifest
+│   └── 050-networkpolicy.yaml  # default-deny + allow-dns
 └── .github/workflows/
     ├── terraform.yml         # PR check + merge-to-main apply pipeline
-    └── build-image.yml       # Build and push custom openclaw image
+    ├── build-image.yml       # Build and push custom openclaw image
+    ├── deploy-k8s.yml        # kubectl apply -f k8s/ on push to main
+    └── seal-secrets.yml      # Seal GH secrets → kubectl apply SealedSecret
 ```
 
 ---
@@ -87,7 +88,6 @@ Set in `Settings → Secrets and variables → Actions`:
 | `GITHUB_TOKEN` | Yes | Bot account PAT (with repo access) |
 | `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token for bot communication |
 | `MINIMAX_API_KEY` | No | Optional — if present, MiniMax appears in model list |
-| `TF_VAR_entra_tenant_id` | Yes | Entra tenant ID (must match `AZURE_TENANT_ID`) |
 
 ---
 
@@ -100,8 +100,8 @@ Set in `Settings → Secrets and variables → Actions`:
 | AKS cluster (1x Standard_D2s_v3, 8GB RAM, 2vCPU) | K8s cluster |
 | Azure Storage Account | PV (Azure Files) for openclaw workspace |
 | Azure File Share (`openclaw`, 50GB) | K8s PersistentVolume |
-| ArgoCD (v7.7.7) | GitOps CD, Entra-only auth |
 | Kyverno (v3.3.2) | Policy engine, default-deny-all |
+| Sealed Secrets (v2.16.2) | kubeseal-compatible controller in kube-system |
 | Log Analytics Workspace | AKS monitoring |
 
 ### Terraform workflow
@@ -150,8 +150,8 @@ podman build -t mainpi.local:30500/openclaw/claw-code:<tag> \
   --build-arg BASE_IMAGE=mainpi.local:30500/openclaw/openclaw:local .
 podman push mainpi.local:30500/openclaw/claw-code:<tag>
 
-# Then update k8s/020-deployment.yaml image tag, commit, and push
-# ArgoCD will auto-sync the change.
+# Then update k8s/020-deployment.yaml image tag, commit, and push to main.
+# The deploy-k8s workflow applies the manifest to the cluster.
 ```
 
 Or trigger the `build-image.yml` workflow via GitHub Actions (workflow_dispatch).
@@ -162,7 +162,7 @@ After building a new image, update the `image:` section in `k8s/020-deployment.y
 ```yaml
 image: mainpi.local:30500/openclaw/claw-code:<NEW_TAG>
 ```
-Commit and push — ArgoCD detects the change and syncs automatically.
+Commit and push to main — the `deploy-k8s` workflow applies the change to the cluster.
 
 ---
 
@@ -173,7 +173,7 @@ Commit and push — ArgoCD detects the change and syncs automatically.
 
 To activate MiniMax:
 1. Add `MINIMAX_API_KEY: "<your-key>"` in `k8s/010-secrets.yaml`
-2. Commit and push — ArgoCD syncs, pod restarts, MiniMax appears.
+2. Commit and push to main — `deploy-k8s` applies the change, pod restarts, MiniMax appears.
 
 ---
 
@@ -188,13 +188,11 @@ Add allow-rules as needed for your workloads.
 
 ---
 
-## ArgoCD Access
+## Deployment
 
-After `terraform apply`, ArgoCD is available at `https://argocd.claw-code.internal`.
+K8s manifests in `k8s/` are applied to the cluster by the `deploy-k8s.yml` workflow on every push to `main` (path-filtered to `k8s/**.yaml`). The workflow logs into Azure via OIDC, fetches admin kubeconfig with `az aks get-credentials`, and runs `kubectl apply -f k8s/`. No in-cluster GitOps controller — the GitHub Actions runner is the deploy actor.
 
-1. **OIDC login**: Click "Login with Entra ID" (or "Sign in with Microsoft" depending on ArgoCD version). The App Registration and client secret are created automatically by Terraform — no manual setup required.
-2. **First login**: After the OIDC flow completes, add yourself as an admin by visiting `https://argocd.claw-code.internal/settings/users` and creating a user with `role:admin` and `email: your@email.com` matching your Entra identity.
-3. The `claw-code-openclaw` Application is pre-configured in `k8s/060-argocd-app.yaml` and syncs the `k8s/` directory to the cluster on every push to `main`.
+Secrets are handled separately by the `seal-secrets.yml` workflow: it reads GitHub Actions secrets, pipes them through `kubeseal` against the in-cluster Sealed Secrets controller, and `kubectl apply`s the resulting SealedSecret directly. Nothing sealed is written back to git.
 
 ---
 
@@ -202,9 +200,9 @@ After `terraform apply`, ArgoCD is available at `https://argocd.claw-code.intern
 
 - [x] Issue created and assigned to bot
 - [x] VERSIONS.md file (mirrors k8s-openclaw pattern)
-- [x] Stage 1: Terraform for AKS, PV, ArgoCD, Kyverno, GitHub Actions (`feature/aks-terraform` branch)
-- [x] Stage 2: Custom Docker image — all MCP servers present (k8s, azure, argocd, aws, gcp, alicloud, debug)
-- [x] Stage 2: K8s manifests (namespace, PVC, secrets placeholder, openclaw configmap, deployment, service, ingress, network policies, ArgoCD app)
+- [x] Stage 1: Terraform for AKS, PV, Kyverno, Sealed Secrets, GitHub Actions
+- [x] Stage 2: Custom Docker image — MCP servers (k8s, azure, aws, gcp, alicloud, debug)
+- [x] Stage 2: K8s manifests (namespace, openclaw configmap, deployment, service, ingress, network policies)
 - [x] Build image workflow reads from VERSIONS.md (no hardcoded versions)
 - [x] TELEGRAM_BOT_TOKEN added to secrets + configmap
 - [x] README restored and updated
