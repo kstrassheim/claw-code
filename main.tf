@@ -221,6 +221,15 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 }
 
+# Grant claw-code-aks-admin group Azure Kubernetes Service RBAC Cluster Admin on the cluster scope.
+# This allows Entra-authenticated users (via kubelogin) to access the cluster.
+# Note: azure_rbac_enabled = true is set on the AKS cluster, so Azure RBAC governs access.
+resource "azurerm_role_assignment" "aks_admin" {
+  scope                = azurerm_kubernetes_cluster.aks.id
+  role_definition_name = "Azure Kubernetes Service RBAC Cluster Admin"
+  principal_id         = local.admin_group_object_ids[0]  # "11755bb8-1adf-4c08-9424-0aecf3b6952e"
+}
+
 # NOTE: Role assignments for the deploy identity (Storage Blob Data Contributor on
 # mytofustates and Storage Account Contributor on the PV storage account) must be
 # granted manually by an Owner, or via a separate privileged identity.
