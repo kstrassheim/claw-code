@@ -1,0 +1,17 @@
+# claw-code version pins — single source of truth.
+# Read by .github/workflows/validate.yml and .github/workflows/deploy.yml.
+# Bump a value here and a PR / merge will rebuild the image with it.
+
+# Upstream openclaw base image (FROM in builder/Dockerfile).
+# Tag matches https://github.com/openclaw/openclaw releases.
+OPENCLAW_UPSTREAM=v2026.5.7
+
+# Tools baked into the openclaw image.
+GH_CLI_VERSION=2.92.0
+GITHUB_MCP_SERVER_VERSION=1.0.3
+AWS_CLI_VERSION=2.34.45
+GCLOUD_VERSION=567.0.0
+ALIYUN_CLI_VERSION=3.3.14
+TERRAFORM_VERSION=1.13.0
+TERRAFORM_MCP_VERSION=0.5.2
+CODE_SERVER_VERSION=4.118.0

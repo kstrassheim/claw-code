@@ -27,6 +27,14 @@ metadata:
     project: claw-code
 spec:
   replicas: 1
+  # `Recreate` (not the default RollingUpdate): terminate the old pod first,
+  # then start the new one. With replicas=1 and a RWO openclaw-workspace
+  # PVC, RollingUpdate deadlocks — the new pod can't mount the volume
+  # while the old pod still holds it, and maxUnavailable=0 keeps the old
+  # one alive until the new one is Ready. Brief downtime on each deploy
+  # in exchange for a deploy that actually finishes.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: openclaw
@@ -89,12 +97,16 @@ spec:
               mountPath: /home/node/.openclaw/workspace/TOOLS.md
               subPath: TOOLS.md
           resources:
+            # Node is Standard_D2s_v3 (2 vCPU, 8 Gi). AKS kubelet/system
+            # reservations leave ~1.85 vCPU and ~6 Gi allocatable to user
+            # pods. Limits sit just under that so the pod can burst close
+            # to the node max without OOMing the kubelet.
             requests:
-              cpu: 1000m
-              memory: 2Gi
+              cpu: 500m
+              memory: 1Gi
             limits:
-              cpu: 4000m
-              memory: 8Gi
+              cpu: 1500m
+              memory: 5Gi
           lifecycle:
             preStop:
               exec:

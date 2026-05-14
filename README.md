@@ -13,7 +13,6 @@ claw-code/
 │   ├── Dockerfile            # Custom openclaw image (all coding features, no astrology)
 │   ├── k8s-mcp/             # kubectl MCP
 │   ├── azure-mcp/           # az CLI MCP
-│   ├── argocd-mcp/          # argocd CLI MCP
 │   ├── aws-mcp/             # AWS CLI MCP
 │   ├── gcp-mcp/             # gcloud MCP
 │   ├── alicloud-mcp/        # aliyun CLI MCP
@@ -23,11 +22,10 @@ claw-code/
 │   ├── 000-namespace-and-config.yaml  # Namespace, ConfigMap (openclaw tools-md)
 │   ├── 005-pvc.yaml          # PVC for openclaw workspace
 │   ├── 010-secrets.yaml     # Secrets (placeholder values; seal for production)
-│   ├── 015-openclaw-config.yaml  # ConfigMap: openclaw.json with Mistral Large + optional MiniMax
+│   ├── 010-openclaw-config.yaml  # ConfigMap: openclaw.json with Mistral Large + optional MiniMax
 │   ├── 020-deployment.yaml  # Deployment
 │   ├── 030-service.yaml     # ClusterIP service
-│   ├── 040-ingress.yaml     # Ingress
-│   └── 050-networkpolicy.yaml  # default-deny + allow-dns
+│   └── 040-networkpolicy.yaml  # default-deny + allow-dns
 └── .github/workflows/
     ├── terraform.yml         # PR check + merge-to-main apply pipeline
     ├── build-image.yml       # Build and push custom openclaw image
@@ -133,7 +131,6 @@ Set in `Settings → Secrets and variables → Actions`:
 ✅ Google Cloud CLI + gcp-mcp
 ✅ Alibaba Cloud CLI + alicloud-mcp
 ✅ kubectl + k8s-mcp
-✅ ArgoCD CLI + argocd-mcp
 ✅ Terraform CLI + terraform-mcp-server
 ✅ GitHub CLI + github-mcp-server
 ✅ Chromium (browser automation for Entra login)
@@ -179,7 +176,7 @@ To activate MiniMax:
 
 ## Network Policies
 
-Kyverno is installed with an **audit-only** default-deny enforcement (does not block, only reports). Two pre-configured NetworkPolicies in `k8s/050-networkpolicy.yaml`:
+Kyverno is installed with an **audit-only** default-deny enforcement (does not block, only reports). Two pre-configured NetworkPolicies in `k8s/040-networkpolicy.yaml`:
 
 - `default-deny-all`: blocks all ingress/egress unless explicitly allowed
 - `allow-dns`: allows egress to kube-system DNS (UDP/TCP port 53)
@@ -199,11 +196,11 @@ Secrets are handled separately by the `seal-secrets.yml` workflow: it reads GitH
 ## Current Status
 
 - [x] Issue created and assigned to bot
-- [x] VERSIONS.md file (mirrors k8s-openclaw pattern)
+- [x] /VERSIONS file — single source of truth for openclaw upstream + tool pins
 - [x] Stage 1: Terraform for AKS, PV, Kyverno, Sealed Secrets, GitHub Actions
 - [x] Stage 2: Custom Docker image — MCP servers (k8s, azure, aws, gcp, alicloud, debug)
 - [x] Stage 2: K8s manifests (namespace, openclaw configmap, deployment, service, ingress, network policies)
-- [x] Build image workflow reads from VERSIONS.md (no hardcoded versions)
+- [x] Build/deploy workflows read from /VERSIONS (no hardcoded versions)
 - [x] TELEGRAM_BOT_TOKEN added to secrets + configmap
 - [x] README restored and updated
 - [ ] **Terraform apply**: waiting for kstrassheim to merge PR #5

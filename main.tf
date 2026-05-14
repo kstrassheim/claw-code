@@ -12,7 +12,7 @@ terraform {
     }
     helm = {
       source  = "hashicorp/helm"
-      version = "~> 2.15"
+      version = "~> 3.0"
     }
   }
 
@@ -38,7 +38,7 @@ provider "kubernetes" {
 }
 
 provider "helm" {
-  kubernetes {
+  kubernetes = {
     config_path = "/tmp/kubeconfig_clawcode"
   }
 }
@@ -215,10 +215,12 @@ resource "helm_release" "sealed_secrets" {
   namespace  = "kube-system"
   create_namespace = false
 
-  set {
-    name  = "secret-name"
-    value = ""
-  }
+  set = [
+    {
+      name  = "secret-name"
+      value = ""
+    }
+  ]
 }
 resource "helm_release" "kyverno" {
   name       = "kyverno"

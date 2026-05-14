@@ -12,7 +12,7 @@ on:
     paths:
       - 'builder/**'
       - 'k8s/**'
-      - 'VERSIONS.md'
+      - 'VERSIONS'
       - '**.tf'
       - '**.tfvars'
       - '.github/workflows/validate.yml'
@@ -20,7 +20,6 @@ on:
 env:
   REGISTRY: clwcodecodevdev1.azurecr.io
   IMAGE_NAME: openclaw/claw-code
-  TERRAFORM_VERSION: "1.13.0"
 
 permissions:
   id-token: write
@@ -36,10 +35,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Read TERRAFORM_VERSION from /VERSIONS
+        id: tfver
+        run: |
+          echo "version=$(grep '^TERRAFORM_VERSION=' VERSIONS | cut -d= -f2)" >> $GITHUB_OUTPUT
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_version: ${{ steps.tfver.outputs.version }}
           terraform_wrapper: true
 
       - name: Azure login (OIDC)
@@ -81,7 +85,7 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Upload Terraform Plan artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: terraform-plan
           path: tfplan
@@ -131,7 +135,7 @@ jobs:
         # there before any build (PR or main) can resolve it.
         run: |
           set -euo pipefail
-          OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS.md | cut -d= -f2)
+          OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS | cut -d= -f2)
           SRC_TAG="${OPENCLAW_UPSTREAM#v}"
           if az acr repository show \
                --name clwcodecodevdev1 \
@@ -144,31 +148,15 @@ jobs:
               --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}"
           fi
 
-      - name: Read version pins from VERSIONS.md
+      - name: Read version pins from /VERSIONS
         id: version
         run: |
-          GH_CLI_VERSION=$(grep '^GH_CLI_VERSION=' VERSIONS.md | cut -d= -f2)
-          GITHUB_MCP_SERVER_VERSION=$(grep '^GITHUB_MCP_SERVER_VERSION=' VERSIONS.md | cut -d= -f2)
-          TERRAFORM_VERSION=$(grep '^TERRAFORM_VERSION=' VERSIONS.md | cut -d= -f2)
-          TERRAFORM_MCP_VERSION=$(grep '^TERRAFORM_MCP_VERSION=' VERSIONS.md | cut -d= -f2)
-          CODE_SERVER_VERSION=$(grep '^CODE_SERVER_VERSION=' VERSIONS.md | cut -d= -f2)
-          AWS_CLI_VERSION=$(grep '^AWS_CLI_VERSION=' VERSIONS.md | cut -d= -f2)
-          GCLOUD_VERSION=$(grep '^GCLOUD_VERSION=' VERSIONS.md | cut -d= -f2)
-          ALIYUN_CLI_VERSION=$(grep '^ALIYUN_CLI_VERSION=' VERSIONS.md | cut -d= -f2)
-          OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS.md | cut -d= -f2)
-          OPENCLAW_VERSION=$(grep '^OPENCLAW_VERSION=' VERSIONS.md | cut -d= -f2)
-          {
-            echo "GH_CLI_VERSION=$GH_CLI_VERSION"
-            echo "GITHUB_MCP_SERVER_VERSION=$GITHUB_MCP_SERVER_VERSION"
-            echo "TERRAFORM_VERSION=$TERRAFORM_VERSION"
-            echo "TERRAFORM_MCP_VERSION=$TERRAFORM_MCP_VERSION"
-            echo "CODE_SERVER_VERSION=$CODE_SERVER_VERSION"
-            echo "AWS_CLI_VERSION=$AWS_CLI_VERSION"
-            echo "GCLOUD_VERSION=$GCLOUD_VERSION"
-            echo "ALIYUN_CLI_VERSION=$ALIYUN_CLI_VERSION"
-            echo "OPENCLAW_UPSTREAM=$OPENCLAW_UPSTREAM"
-            echo "OPENCLAW_VERSION=$OPENCLAW_VERSION"
-          } >> $GITHUB_OUTPUT
+          set -euo pipefail
+          for key in OPENCLAW_UPSTREAM GH_CLI_VERSION GITHUB_MCP_SERVER_VERSION \
+                     TERRAFORM_VERSION TERRAFORM_MCP_VERSION CODE_SERVER_VERSION \
+                     AWS_CLI_VERSION GCLOUD_VERSION ALIYUN_CLI_VERSION; do
+            echo "${key}=$(grep "^${key}=" VERSIONS | cut -d= -f2)" >> $GITHUB_OUTPUT
+          done
 
       - name: Build Docker image (no push)
         uses: docker/build-push-action@v6
@@ -179,8 +167,6 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/openclaw/openclaw-base:${{ steps.version.outputs.OPENCLAW_UPSTREAM }}
-            OPENCLAW_UPSTREAM=${{ steps.version.outputs.OPENCLAW_UPSTREAM }}
-            OPENCLAW_VERSION=${{ steps.version.outputs.OPENCLAW_VERSION }}
             GH_CLI_VERSION=${{ steps.version.outputs.GH_CLI_VERSION }}
             GITHUB_MCP_SERVER_VERSION=${{ steps.version.outputs.GITHUB_MCP_SERVER_VERSION }}
             TERRAFORM_VERSION=${{ steps.version.outputs.TERRAFORM_VERSION }}

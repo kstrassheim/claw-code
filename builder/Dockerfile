@@ -63,19 +63,15 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && /usr/bin/az --version | head -3
 
-# k8s-mcp + azure-mcp + argocd-mcp
+# k8s-mcp + azure-mcp
 COPY --chown=1000:1000 k8s-mcp /opt/k8s-mcp
 COPY --chown=1000:1000 azure-mcp /opt/azure-mcp
-COPY --chown=1000:1000 argocd-mcp /opt/argocd-mcp
 RUN cd /opt/k8s-mcp \
  && npm install --omit=dev --no-audit --no-fund --loglevel=error \
  && chmod +x k8s-mcp.mjs \
  && cd /opt/azure-mcp \
  && npm install --omit=dev --no-audit --no-fund --loglevel=error \
- && chmod +x azure-mcp.mjs \
- && cd /opt/argocd-mcp \
- && npm install --omit=dev --no-audit --no-fund --loglevel=error \
- && chmod +x argocd-mcp.mjs
+ && chmod +x azure-mcp.mjs
 
 # AWS CLI v2 + gcloud + aliyun
 ARG AWS_CLI_VERSION
@@ -156,7 +152,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && chromium --version
 
-# kubectl + argocd CLI + podman
+# kubectl + podman
 USER root
 RUN ARCH=$(dpkg --print-architecture) \
  && KUBECTL_VERSION="$(curl -sL https://dl.k8s.io/release/stable.txt)" \
@@ -164,10 +160,6 @@ RUN ARCH=$(dpkg --print-architecture) \
       "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" \
  && chmod 0755 /usr/local/bin/kubectl \
  && /usr/local/bin/kubectl version --client=true --output=yaml | head -3 \
- && curl -fsSL -o /usr/local/bin/argocd \
-      "https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-${ARCH}" \
- && chmod 0755 /usr/local/bin/argocd \
- && /usr/local/bin/argocd version --client | head -3 \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       podman buildah fuse-overlayfs uidmap slirp4netns \
