@@ -89,9 +89,6 @@ Set in `Settings → Secrets and variables → Actions`:
 | `MINIMAX_API_KEY` | No | Optional — if present, MiniMax appears in model list |
 | `TF_VAR_entra_tenant_id` | Yes | Entra tenant ID (must match `AZURE_TENANT_ID`) |
 
-> **Note on `openclaw-secrets`**: For production use, seal secrets with Sealed Secrets.
-> The `k8s/010-secrets.yaml` contains placeholder values — replace before production.
-
 ---
 
 ## Stage 1: Terraform (Infrastructure)
@@ -143,15 +140,6 @@ Set in `Settings → Secrets and variables → Actions`:
 ✅ podman (rootless, vfs storage)
 ✅ code-server (full VSCode-in-the-browser)
 ✅ debug-mcp (Node CDP debugger)
-
-❌ JHora / PyJHora — NO astrology
-❌ Gmail MCP
-❌ Google Drive
-❌ Knowledge corpus
-❌ Ollama (no local LLM inference)
-❌ Whisper STT
-❌ Kokoro TTS
-❌ Second instance (olga)
 
 ### Building the image
 
@@ -222,8 +210,7 @@ After `terraform apply`, ArgoCD is available at `https://argocd.claw-code.intern
 - [x] README restored and updated
 - [ ] **Terraform apply**: waiting for kstrassheim to merge PR #5
 - [ ] **Build and push custom image**: requires mainpi.local registry credentials + docker build
-- [ ] **Replace placeholder secrets**: `k8s/010-secrets.yaml` needs real values before production use
-- [ ] **Sealed Secrets**: implement kubeseal workflow as per kstrassheim's comment
+- [x] **Sealed Secrets**: implemented via kubeseal CI workflow
 
 ---
 
