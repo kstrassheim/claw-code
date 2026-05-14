@@ -3,18 +3,20 @@ name: Build Custom OpenClaw Image
 on:
   push:
     branches:
-      - feature/openclaw-image
-      - feature/add-azure-container-reg
+      - feature/issue-*
     paths:
       - 'builder/**'
       - '.github/workflows/build-image.yml'
       - 'k8s/values.yaml'
-  workflow_dispatch:
-    inputs:
-      git_ref:
-        description: 'Git ref to build (e.g. v2026.5.7 or feature/openclaw-image)'
-        required: false
-        default: ''
+      - '**.tf'
+      - '**.tfvars'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'builder/**'
+      - '.github/workflows/build-image.yml'
+      - 'k8s/values.yaml'
 
 env:
   REGISTRY: clwcodecodevdev1.azurecr.io
@@ -25,16 +27,15 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build Docker Image
+  # ─── Step 1: Terraform Apply (infrastructure = ACR) ───────────────────────
+  terraform:
+    name: Terraform Apply (ACR)
     runs-on: ubuntu-latest
     environment: dev
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.git_ref || github.ref }}
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -43,7 +44,15 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Set environment variables for Terraform (Entra auth)
+      - name: Get AKS credentials for k8s/helm providers
+        run: |
+          az aks get-credentials \
+            --resource-group claw-code \
+            --name claw-code-aks \
+            --file /tmp/kubeconfig_clawcode \
+            --admin
+
+      - name: Set Terraform environment variables
         run: |
           echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
           echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
@@ -51,6 +60,7 @@ jobs:
           echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
           echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
           echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+          echo "TF_VAR_env=dev" >> $GITHUB_ENV
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
@@ -58,24 +68,54 @@ jobs:
       - name: Terraform Init
         run: terraform init -backend-config="key=dev.tfstate"
 
-      - name: Terraform Apply (create ACR + supporting infra)
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply (create/update ACR)
+        if: github.event_name == 'push'
         run: |
-          # Target only the ACR resources to avoid k8s/helm provider auth issues
-          terraform apply -auto-approve -var="env=dev" -var="unique_suffix=dev1" \
+          # Target ONLY the ACR resources — avoid k8s/helm provider auth issues
+          # (kubelogin not available in the Actions runner; AKS credentials not fetched)
+          terraform apply -auto-approve \
             -target=azurerm_container_registry.acr \
             -target=azurerm_role_assignment.acr_pull
 
+      - name: Upload Terraform Plan artifact
+        uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: terraform-plan
+          path: tfplan
+          retention-days: 7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+  # ─── Step 2: Image Build (always runs after Terraform) ────────────────────
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    environment: dev
+    needs: terraform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Login to ACR (Entra)
         run: az acr login --name clwcodecodevdev1
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Extract version
         id: version
         run: |
-          # Read VERSIONS.md for pinned versions
           GH_CLI_VERSION=$(grep '^GH_CLI_VERSION=' VERSIONS.md | cut -d= -f2)
           GITHUB_MCP_SERVER_VERSION=$(grep '^GITHUB_MCP_SERVER_VERSION=' VERSIONS.md | cut -d= -f2)
           TERRAFORM_VERSION=$(grep '^TERRAFORM_VERSION=' VERSIONS.md | cut -d= -f2)
@@ -107,7 +147,7 @@ jobs:
         with:
           context: ./builder
           dockerfile: ./builder/Dockerfile
-          push: true
+          push: ${{ github.event_name == 'push' }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
@@ -128,18 +168,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Update image tag for ArgoCD
-        run: |
-          echo "OPENCLAW_IMAGE_TAG=${{ steps.version.outputs.tag }}" >> $GITHUB_ENV
-          echo "OPENCLAW_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}" >> $GITHUB_ENV
-
       - name: Logout from Azure
         if: always()
         run: |
           az logout
           rm -rf ~/.azure 2>/dev/null || true
-
-      - name: Terraform Destroy (cleanup)
-        if: always()
-        run: terraform apply -destroy -auto-approve -var="env=dev" -var="unique_suffix=dev1"
-        continue-on-error: true
