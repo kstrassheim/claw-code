@@ -14,6 +14,10 @@ terraform {
       source  = "hashicorp/helm"
       version = "~> 2.15"
     }
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = "~> 3.0"
+    }
   }
 
   backend "azurerm" {
@@ -28,6 +32,8 @@ terraform {
 provider "azurerm" {
   features {}
 }
+
+provider "azuread" {}
 
 provider "kubernetes" {
   # For CI: set env vars ARM_USE_OIDC=true, ARM_USE_AZUREAD_AUTH=true, then run
@@ -138,6 +144,39 @@ output "container_registry_login_server" {
 }
 
 # =============================================================================
+# Entra App Registration for ArgoCD OIDC
+# Created automatically by Terraform — no manual registration needed.
+# The client secret is stored in the azuread_application_password resource
+# and passed to ArgoCD via the argocd Helm values.
+# =============================================================================
+resource "azuread_application" "argocd" {
+  display_name     = "claw-code-argocd"
+  sign_in_audience  = "AzureADMyOrg"
+
+  owners = [data.azurerm_user_assigned_identity.deploy_identity.principal_id]
+
+  api {
+    mapped_claims_enabled          = true
+    requested_access_token_version = 2
+
+    oauth2_permission_scope {
+      admin_consent_description  = "ArgoCD server access"
+      admin_consent_display_name = "ArgoCD Access"
+      enabled                    = true
+      id                         = "4f152ac3-0d01-4f1d-9e9b-c4b8a5d6f0a8"
+      type                       = "User"
+      value                      = "access"
+    }
+  }
+}
+
+# Generate a client secret for the ArgoCD App Registration
+resource "azuread_application_password" "argocd" {
+  application_id = azuread_application.argocd.id
+  display_name   = "ArgoCD OIDC Client Secret"
+}
+
+# =============================================================================
 # AKS Cluster
 # =============================================================================
 resource "azurerm_kubernetes_cluster" "aks" {
@@ -190,12 +229,9 @@ resource "azurerm_kubernetes_cluster" "aks" {
 # =============================================================================
 # ArgoCD Installation via Helm — Entra/OIDC-only auth (no local passwords)
 # =============================================================================
-# Prerequisites for Entra/OIDC login:
-# 1. Register an Entra application at portal.azure.com → App registrations.
-#    Set the redirect URI to: https://argocd.claw-code.internal/auth/callback
-# 2. Add the "ArgoCD" API scope under Expose an API (or use any valid scope).
-# 3. Create a client secret; add TF_VAR_entra_client_secret to GitHub Actions secrets.
-# 4. The client secret is passed via var.entra_client_secret (TF_VAR_entra_client_secret in CI).
+# The ArgoCD App Registration (client ID + secret) is created automatically by Terraform.
+# No manual registration needed. The secret is generated via azuread_application_password
+# and passed directly into the ArgoCD Helm values.
 resource "helm_release" "argocd" {
   name       = "argocd"
   repository = "https://argoproj.github.io/argo-helm/"
@@ -241,16 +277,16 @@ server:
     "oidc.config": |
       name: Entra ID
       issuer: https://login.microsoftonline.com/${local.entra_tenant_id}/oauth2/v2.0
-      clientID: ${data.azurerm_user_assigned_identity.deploy_identity.client_id}
-      clientSecret: ${var.entra_client_secret}
+      clientID: ${azuread_application.argocd.client_id}
+      clientSecret: ${azuread_application_password.argocd.value}
       requestedScopes:
         - openid
         - profile
         - email
         - offline_access
-        - api://${data.azurerm_user_assigned_identity.deploy_identity.client_id}/ArgoCD
+        - api://${azuread_application.argocd.client_id}/access
       requestedAudiences:
-        - api://${data.azurerm_user_assigned_identity.deploy_identity.client_id}/ArgoCD
+        - api://${azuread_application.argocd.client_id}/access
 
 url: https://argocd.claw-code.internal
 controller:

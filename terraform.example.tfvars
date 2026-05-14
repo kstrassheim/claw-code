@@ -12,8 +12,6 @@ node_count           = 1
 storage_account_name = "clwcodecodev"  # PV storage (Azure Files), globally unique, NOT mytofustates
 namespace            = "openclaw"
 
-# ArgoCD OIDC — register an Entra app first (see README.md Prerequisites step 2)
-# Pass real values via GitHub Actions secrets as TF_VAR_entra_client_secret / TF_VAR_entra_tenant_id
-# TF_VAR_entra_tenant_id is already set in the workflow from AZURE_TENANT_ID secret
-entra_client_secret   = ""  # Set via TF_VAR_entra_client_secret in GitHub Actions secrets
+# ArgoCD OIDC — the App Registration is created automatically by Terraform.
+# Only TF_VAR_entra_tenant_id is needed (already set from AZURE_TENANT_ID in the workflow).
 entra_tenant_id       = ""  # Set via TF_VAR_entra_tenant_id in GitHub Actions secrets

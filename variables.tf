@@ -40,13 +40,6 @@ variable "namespace" {
   type        = string
 }
 
-variable "entra_client_secret" {
-  description = "Entra app client secret for ArgoCD OIDC authentication"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
 variable "entra_tenant_id" {
   description = "Entra tenant ID for ArgoCD OIDC"
   type        = string

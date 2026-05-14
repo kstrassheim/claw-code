@@ -87,6 +87,7 @@ Set in `Settings → Secrets and variables → Actions`:
 | `GITHUB_TOKEN` | Yes | Bot account PAT (with repo access) |
 | `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token for bot communication |
 | `MINIMAX_API_KEY` | No | Optional — if present, MiniMax appears in model list |
+| `TF_VAR_entra_tenant_id` | Yes | Entra tenant ID (must match `AZURE_TENANT_ID`) |
 
 > **Note on `openclaw-secrets`**: For production use, seal secrets with Sealed Secrets.
 > The `k8s/010-secrets.yaml` contains placeholder values — replace before production.
@@ -203,8 +204,8 @@ Add allow-rules as needed for your workloads.
 
 After `terraform apply`, ArgoCD is available at `https://argocd.claw-code.internal`.
 
-1. **Initial login**: Username `admin`, password `admin` (change it immediately).
-2. **Add your GitHub account** as an OIDC user in Entra ID (enterprise application).
+1. **OIDC login**: Click "Login with Entra ID" (or "Sign in with Microsoft" depending on ArgoCD version). The App Registration and client secret are created automatically by Terraform — no manual setup required.
+2. **First login**: After the OIDC flow completes, add yourself as an admin by visiting `https://argocd.claw-code.internal/settings/users` and creating a user with `role:admin` and `email: your@email.com` matching your Entra identity.
 3. The `claw-code-openclaw` Application is pre-configured in `k8s/060-argocd-app.yaml` and syncs the `k8s/` directory to the cluster on every push to `main`.
 
 ---
