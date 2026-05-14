@@ -1,4 +1,18 @@
 ---
+# Namespace only. The `openclaw-tools-md` ConfigMap that mounts at
+# ~/.openclaw/workspace/TOOLS.md is **not** declared here — it's
+# generated at deploy time by the "Build and apply openclaw-tools-md
+# ConfigMap from k8s/tools/" step in .github/workflows/deploy.yml,
+# which concatenates the per-tool TOOLS-*.md files under k8s/tools/
+# into a single TOOLS.md key via `kubectl create configmap
+# --from-file ... --dry-run=client -o yaml | kubectl apply -f -`.
+#
+# Why generate it instead of inlining: the assembled TOOLS.md is
+# ~2k lines of markdown describing every capability wired into the
+# bot. Pasting it into a YAML literal would make this manifest
+# unreadable and any per-section edit would scroll through the whole
+# blob. Splitting into k8s/tools/ keeps each capability description
+# in its own file (mirroring the upstream openclaw chart's layout).
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -6,30 +20,3 @@ metadata:
   labels:
     environment: dev
     project: claw-code
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: openclaw-tools-md
-  namespace: openclaw
-data:
-  TOOLS-md: |
-    # OpenClaw Tools — claw-code coding agent
-
-    ## AWS — aws CLI v2 + mcp.servers.aws
-
-    State: credentials NOT wired in this revision.
-    When AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY land in openclaw-secrets,
-    the chart will mount them and `aws ...` will work.
-
-    ## GCP — gcloud CLI + mcp.servers.gcp
-
-    State: credentials NOT wired in this revision.
-    When GOOGLE_APPLICATION_CREDENTIALS or a gcloud token cache is sealed,
-    `gcloud ...` will work.
-
-    ## Alibaba Cloud — aliyun CLI + mcp.servers.alicloud
-
-    State: credentials NOT wired in this revision.
-    When ALIBABA_CLOUD_ACCESS_KEY_ID / ALIBABA_CLOUD_ACCESS_KEY_SECRET land
-    in openclaw-secrets, `aliyun ...` will work.

@@ -19,7 +19,8 @@ claw-code/
 │   ├── debug-mcp/           # Node CDP debugger MCP
 │   └── entra-totp/          # TOTP generator for Entra MFA
 ├── k8s/
-│   ├── 000-namespace-and-config.yaml  # Namespace, ConfigMap (openclaw tools-md)
+│   ├── 000-namespace-and-config.yaml  # Namespace
+│   ├── tools/                          # Per-tool TOOLS-*.md (assembled into openclaw-tools-md ConfigMap by deploy.yml)
 │   ├── 005-pvc.yaml          # PVC for openclaw workspace
 │   ├── 010-secrets.yaml     # Secrets (placeholder values; seal for production)
 │   ├── 010-openclaw-config.yaml  # ConfigMap: openclaw.json with Mistral Large + optional MiniMax

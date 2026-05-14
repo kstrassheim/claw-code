@@ -59,8 +59,13 @@ spec:
     metadata:
       labels:
         app: openclaw
-      annotations:
-        checksum/tools-md: "sha256:use-real-hash-after-first-sync"
+      # No `checksum/tools-md` annotation: the deploy workflow does an
+      # unconditional `kubectl rollout restart deployment/openclaw` after
+      # rebuilding the openclaw-tools-md ConfigMap from k8s/tools/, so the
+      # new TOOLS.md content is always picked up on the next deploy. If you
+      # apply these manifests manually (outside the workflow) and want the
+      # pod to re-roll on a ConfigMap change, run the same `rollout restart`
+      # yourself.
     spec:
       serviceAccountName: openclaw
       # PVC mounts default to root:root. The openclaw container runs as

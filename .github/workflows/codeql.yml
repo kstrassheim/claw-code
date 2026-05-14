@@ -8,17 +8,12 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - '**.js'
-      - '**.ts'
-      - '**.py'
-      - '**.go'
-      - '**.java'
-      - '**.cs'
-      - '**.rb'
-      - '**.php'
-      - '**.tf'
-      - '.github/workflows/codeql.yml'
+    # No `paths:` filter — CodeQL is a required status check on `main`,
+    # so the workflow must produce a check-run for every PR, even ones
+    # that only touch docs / YAML / non-code files. Without this, the
+    # path-filtered workflow simply doesn't run and the required check
+    # sits in "waiting for results" forever, blocking the merge. The
+    # extra ~1 min of CI per PR is the cost of using a required check.
   schedule:
     - cron: "0 6 * * 1"  # Every Monday at 06:00 UTC
 

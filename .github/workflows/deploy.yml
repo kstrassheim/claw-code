@@ -242,7 +242,46 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Apply k8s/ manifests
+        # `-f k8s/` is non-recursive: the per-tool markdown files under
+        # k8s/tools/ are skipped here (they're not YAML manifests). The
+        # next step assembles them into a ConfigMap via `kubectl create
+        # --from-file`, which is the right tool for binary-ish multi-file
+        # payloads we don't want to hand-inline into YAML.
         run: kubectl apply -f k8s/
+
+      - name: Build and apply openclaw-tools-md ConfigMap from k8s/tools/
+        # The per-tool TOOLS-*.md files are the bot's self-description;
+        # they're concatenated into a single TOOLS.md key on the
+        # openclaw-tools-md ConfigMap, mounted read-only at
+        # ~/.openclaw/workspace/TOOLS.md by the openclaw container
+        # (subPath file mount in 020-deployment.yaml).
+        #
+        # Order matters: TOOLS.md is the index/header, then gitflow first
+        # (foundational rules), then host-specific docs, then capability
+        # docs. Keep this list in sync with k8s/tools/.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tools-md
+          cat \
+            k8s/tools/TOOLS.md \
+            k8s/tools/TOOLS-gitflow.md \
+            k8s/tools/TOOLS-github.md \
+            k8s/tools/TOOLS-gitlab.md \
+            k8s/tools/TOOLS-entra.md \
+            k8s/tools/TOOLS-aws.md \
+            k8s/tools/TOOLS-gcp.md \
+            k8s/tools/TOOLS-alicloud.md \
+            k8s/tools/TOOLS-k8s.md \
+            k8s/tools/TOOLS-terraform.md \
+            k8s/tools/TOOLS-vscode.md \
+            k8s/tools/TOOLS-debug.md \
+            > /tmp/tools-md/TOOLS.md
+          echo "Assembled TOOLS.md is $(wc -c < /tmp/tools-md/TOOLS.md) bytes ($(wc -l < /tmp/tools-md/TOOLS.md) lines)."
+          kubectl create configmap openclaw-tools-md \
+            --namespace openclaw \
+            --from-file=TOOLS.md=/tmp/tools-md/TOOLS.md \
+            --dry-run=client -o yaml \
+          | kubectl apply -f -
 
       - name: Roll out openclaw deployment to pick up new :latest image
         run: |
