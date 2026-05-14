@@ -80,14 +80,11 @@ Set in `Settings → Secrets and variables → Actions`:
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `AZURE_CLIENT_ID` | Yes | Client ID of `github-claw-code` managed identity |
+| `AZURE_CLIENT_ID` | Yes | Client ID of the deploy-managed identity |
 | `AZURE_TENANT_ID` | Yes | Entra tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | Yes | Subscription ID |
 | `MISTRAL_API_KEY` | Yes | Mistral Large API key |
 | `GITHUB_TOKEN` | Yes | Bot account PAT (with repo access) |
-| `OPENCLAW_GATEWAY_TOKEN` | Yes | Generate with: `python3 -c "import secrets; print(secrets.token_hex(32))"` |
-| `REGISTRY_USERNAME` | Yes | mainpi.local registry username |
-| `REGISTRY_PASSWORD` | Yes | mainpi.local registry password |
 | `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token for bot communication |
 | `MINIMAX_API_KEY` | No | Optional — if present, MiniMax appears in model list |
 
