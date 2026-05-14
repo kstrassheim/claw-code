@@ -6,7 +6,7 @@ Autonomous coding agent powered by OpenClaw, deployed on AKS.
 
 ```
 claw-code/
-├── main.tf                  # Terraform: AKS cluster, PV storage, Kyverno, Sealed Secrets
+├── main.tf                  # Terraform: AKS cluster, ACR, PV storage, Sealed Secrets, NetworkPolicies
 ├── variables.tf             # Terraform variables
 ├── terraform.tfvars          # Dev environment values
 ├── builder/
@@ -20,19 +20,22 @@ claw-code/
 │   └── entra-totp/          # TOTP generator for Entra MFA
 ├── k8s/
 │   ├── 000-namespace-and-config.yaml  # Namespace
-│   ├── tools/                          # Per-tool TOOLS-*.md (assembled into openclaw-tools-md ConfigMap by deploy.yml)
-│   ├── 005-pvc.yaml          # PVC for openclaw workspace
-│   ├── 010-secrets.yaml     # Secrets (placeholder values; seal for production)
-│   ├── 010-openclaw-config.yaml  # ConfigMap: openclaw.json with Mistral Large + optional MiniMax
-│   ├── 020-deployment.yaml  # Deployment
-│   ├── 030-service.yaml     # ClusterIP service
-│   └── 040-networkpolicy.yaml  # default-deny + allow-dns
+│   ├── 005-pvc.yaml                   # PVC for openclaw workspace
+│   ├── 010-openclaw-config.yaml       # Config template + render-config script + RBAC
+│   ├── 020-deployment.yaml            # Deployment + ServiceAccount + Role/Binding
+│   ├── 030-service.yaml               # ClusterIP service
+│   ├── 040-networkpolicy.yaml         # default-deny + allow-dns
+│   └── tools/                         # Per-tool TOOLS-*.md (assembled into openclaw-tools-md ConfigMap by deploy.yml)
 └── .github/workflows/
-    ├── terraform.yml         # PR check + merge-to-main apply pipeline
-    ├── build-image.yml       # Build and push custom openclaw image
-    ├── deploy-k8s.yml        # kubectl apply -f k8s/ on push to main
-    └── seal-secrets.yml      # Seal GH secrets → kubectl apply SealedSecret
+    ├── validate.yml      # On PR to main: check secrets, terraform plan, docker build (no push)
+    ├── deploy.yml        # On push to main: terraform apply, build+push image, kubectl apply, rollout
+    ├── seal-secrets.yml  # Read GH secrets, kubeseal, kubectl apply the SealedSecret
+    └── codeql.yml        # JS security scan
 ```
+
+Secrets are not stored in the repo — they come from the `seal-secrets`
+workflow which reads GitHub Actions secrets (per the `dev` environment)
+and applies a SealedSecret straight to the cluster.
 
 ---
 
@@ -138,17 +141,17 @@ matrix.
 
 | Resource | Purpose |
 |---|---|
-| AKS cluster (1x Standard_D2s_v3, 8GB RAM, 2vCPU) | K8s cluster |
-| Azure Storage Account | PV (Azure Files) for openclaw workspace |
-| Azure File Share (`openclaw`, 50GB) | K8s PersistentVolume |
-| Kyverno (v3.3.2) | Policy engine, default-deny-all |
+| AKS cluster (1× Standard_D2pds_v5, arm64, 2 vCPU / 8 GiB) | K8s cluster |
+| Azure Container Registry (`clwcodecodevdev1`, Basic SKU) | Hosts the custom openclaw image |
+| Azure Storage Account (`clwcodecodev`) | Backs the openclaw workspace PVC |
 | Sealed Secrets (v2.16.2) | kubeseal-compatible controller in kube-system |
-| Log Analytics Workspace | AKS monitoring |
+| Default-deny NetworkPolicies + DNS/HTTPS allow rules | Pure `kubernetes_network_policy_v1`, no controller required |
+| Role assignments: AcrPull on the deploy MI + AKS kubelet identity | Required so both CI and the cluster can read the registry |
 
 ### Terraform workflow
 
-- **PR to `main`**: Runs `terraform plan` — posts a summary comment to the PR.
-- **Merge to `main`**: Runs `terraform apply` automatically.
+- **PR to `main`**: `validate.yml` runs `terraform init/validate/plan` and posts a summary; nothing is applied.
+- **Merge to `main`**: `deploy.yml` runs `terraform apply -auto-approve` as its first job, then builds + pushes the image, then `kubectl apply -f k8s/`, then rolls the openclaw deployment.
 
 ### Terraform variables
 
@@ -157,10 +160,12 @@ matrix.
 | `env` | `dev` | Environment name |
 | `cluster_name` | `claw-code-aks` | AKS cluster name |
 | `location` | `westeurope` | Azure region |
-| `node_size` | `Standard_D2s_v3` | VM size (2 vCPU, 8GB RAM) |
+| `node_size` | `Standard_D2pds_v5` | arm64 VM (2 vCPU, 8 GiB) — matches the `linux/arm64` image build target |
 | `node_count` | `1` | Number of nodes |
 | `storage_account_name` | `clwcodecodev` | Globally unique storage account name |
 | `namespace` | `openclaw` | K8s namespace |
+| `aks_admin_group_name` | `claw-code-aks-admin` | Display name of the Entra group granted `Azure Kubernetes Service RBAC Cluster Admin` on the cluster scope |
+| `unique_suffix` | `dev1` | Appended to globally-unique resource names (ACR, storage account) |
 
 ---
 
@@ -183,26 +188,31 @@ matrix.
 
 ### Building the image
 
+The normal path is **CI-driven** — `deploy.yml`'s `build-and-push-image`
+job builds and pushes on every merge to `main`:
+
+1. Mirror `ghcr.io/openclaw/openclaw:<VERSIONS/OPENCLAW_UPSTREAM>` into
+   our ACR as `openclaw/openclaw-base:<tag>` (idempotent via
+   `az acr import`).
+2. `docker buildx build --platform linux/arm64` against `builder/`.
+3. Push `:latest` and `:<short_sha>` to
+   `clwcodecodevdev1.azurecr.io/openclaw/claw-code`.
+
+The Deployment references `:latest` with `imagePullPolicy: Always`, so
+the post-push `kubectl rollout restart` step is what actually picks up
+new code.
+
+To build locally for testing (arm64 host or buildx multi-platform):
+
 ```bash
-# Build locally (on a Linux arm64 machine with podman)
 cd builder/
-podman build -t mainpi.local:30500/openclaw/claw-code:<tag> \
-  --build-arg BASE_IMAGE=mainpi.local:30500/openclaw/openclaw:local .
-podman push mainpi.local:30500/openclaw/claw-code:<tag>
-
-# Then update k8s/020-deployment.yaml image tag, commit, and push to main.
-# The deploy-k8s workflow applies the manifest to the cluster.
+docker buildx build --platform linux/arm64 \
+  --build-arg BASE_IMAGE=clwcodecodevdev1.azurecr.io/openclaw/openclaw-base:$(grep '^OPENCLAW_UPSTREAM=' ../VERSIONS | cut -d= -f2) \
+  -t clwcodecodevdev1.azurecr.io/openclaw/claw-code:dev .
 ```
 
-Or trigger the `build-image.yml` workflow via GitHub Actions (workflow_dispatch).
-
-### Updating the image tag
-
-After building a new image, update the `image:` section in `k8s/020-deployment.yaml`:
-```yaml
-image: mainpi.local:30500/openclaw/claw-code:<NEW_TAG>
-```
-Commit and push to main — the `deploy-k8s` workflow applies the change to the cluster.
+`az acr login --name clwcodecodevdev1` first if you want to push to ACR
+from your workstation.
 
 ---
 
@@ -230,27 +240,37 @@ Resulting routing based on which keys are set:
 > on the `api.minimax.io/anthropic` endpoint. Mistral Large 3 is
 > explicitly multimodal, so it carries vision unless it's not configured.
 
-How the render works:
+How the render works (see `010-openclaw-config.yaml` and the
+`render-config` init container in `020-deployment.yaml`):
 
-- Init container `render-config` reads the template via a file mount, uses
-  `jq` to optionally remove Mistral/MiniMax sections, and writes the rendered
-  result back to the live `openclaw-config` ConfigMap.
-- The main container's `envFrom` then picks up the rendered `openclaw.json`
-  when it starts (`envFrom` resolves after all initContainers complete).
-- RBAC is the tightly-scoped `openclaw-config-writer` Role on the `openclaw`
-  ServiceAccount — get/patch/update/create on only the `openclaw-config`
-  ConfigMap, nothing else.
+1. **`fix-perms`** init container runs as root, `chown`s and `chmod`s
+   the openclaw PVC so the unprivileged `node` user (uid 1000) can
+   write to it.
+2. **`render-config`** init container reads the template from the
+   `openclaw-config-template` ConfigMap, then uses `node` (jq isn't in
+   the base image yet) to strip provider blocks whose API key env var
+   is empty/unset. The rendered config is **merged with the runtime
+   state** that openclaw itself persists (gateway auth token, paired
+   command owners, channel state) and written to
+   `/home/node/.openclaw/openclaw.json` on the PVC.
+3. Main container starts and reads its config from that file. We do
+   **not** rely on `envFrom` of the rendered ConfigMap — `envFrom` skips
+   keys with dots (`openclaw.json`), so that path silently no-op'd.
+4. RBAC is the tightly-scoped `openclaw-config-writer` Role on the
+   `openclaw` ServiceAccount — get/patch/update/create on only the
+   `openclaw-config` ConfigMap. The ConfigMap is still updated by the
+   init script for debuggability (`kubectl get cm openclaw-config -o yaml`).
 
 To toggle a provider on or off: add or remove the matching
-`MISTRAL_API_KEY` / `MINIMAX_API_KEY` GitHub Actions
-secret. The `seal-secrets` workflow seals it into `openclaw-secrets`, the
-next pod restart re-runs the render, and the config tracks the new state.
+`MISTRAL_API_KEY` / `MINIMAX_API_KEY` GitHub Actions secret. The
+`seal-secrets` workflow seals it into `openclaw-secrets`, the next pod
+restart re-runs the render, and the config tracks the new state.
 
 ---
 
 ## Network Policies
 
-Kyverno is installed with an **audit-only** default-deny enforcement (does not block, only reports). Two pre-configured NetworkPolicies in `k8s/040-networkpolicy.yaml`:
+Two pre-configured NetworkPolicies in `k8s/040-networkpolicy.yaml`:
 
 - `default-deny-all`: blocks all ingress/egress unless explicitly allowed
 - `allow-dns`: allows egress to kube-system DNS (UDP/TCP port 53)
@@ -261,25 +281,25 @@ Add allow-rules as needed for your workloads.
 
 ## Deployment
 
-K8s manifests in `k8s/` are applied to the cluster by the `deploy-k8s.yml` workflow on every push to `main` (path-filtered to `k8s/**.yaml`). The workflow logs into Azure via OIDC, fetches admin kubeconfig with `az aks get-credentials`, and runs `kubectl apply -f k8s/`. No in-cluster GitOps controller — the GitHub Actions runner is the deploy actor.
+K8s manifests in `k8s/` are applied to the cluster by `deploy.yml`'s
+`deploy-to-aks` job on every push to `main`. The workflow:
 
-Secrets are handled separately by the `seal-secrets.yml` workflow: it reads GitHub Actions secrets, pipes them through `kubeseal` against the in-cluster Sealed Secrets controller, and `kubectl apply`s the resulting SealedSecret directly. Nothing sealed is written back to git.
+1. Logs into Azure via OIDC.
+2. Assembles the per-tool `k8s/tools/TOOLS-*.md` files into the
+   `openclaw-tools-md` ConfigMap.
+3. Fetches admin kubeconfig with `az aks get-credentials --admin`.
+4. Runs `kubectl apply -f k8s/`.
+5. `kubectl rollout restart deployment/openclaw -n openclaw` so the
+   pod picks up the freshly-pushed `:latest` image and any ConfigMap
+   changes.
 
----
+No in-cluster GitOps controller — the GitHub Actions runner is the
+deploy actor.
 
-## Current Status
-
-- [x] Issue created and assigned to bot
-- [x] /VERSIONS file — single source of truth for openclaw upstream + tool pins
-- [x] Stage 1: Terraform for AKS, PV, Kyverno, Sealed Secrets, GitHub Actions
-- [x] Stage 2: Custom Docker image — MCP servers (k8s, azure, aws, gcp, alicloud, debug)
-- [x] Stage 2: K8s manifests (namespace, openclaw configmap, deployment, service, ingress, network policies)
-- [x] Build/deploy workflows read from /VERSIONS (no hardcoded versions)
-- [x] TELEGRAM_BOT_TOKEN added to secrets + configmap
-- [x] README restored and updated
-- [ ] **Terraform apply**: waiting for kstrassheim to merge PR #5
-- [ ] **Build and push custom image**: requires mainpi.local registry credentials + docker build
-- [x] **Sealed Secrets**: implemented via kubeseal CI workflow
+Secrets are handled separately by `seal-secrets.yml`: it reads GitHub
+Actions secrets, pipes them through `kubeseal` against the in-cluster
+Sealed Secrets controller, and `kubectl apply`s the resulting
+SealedSecret directly. Nothing sealed is written back to git.
 
 ---
 

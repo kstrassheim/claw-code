@@ -10,13 +10,13 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - 'builder/**'
-      - 'k8s/**'
-      - 'VERSIONS'
-      - '**.tf'
-      - '**.tfvars'
-      - '.github/workflows/validate.yml'
+  # Intentionally NO `paths:` filter here. Both `Docker Build (no push)`
+  # and `Terraform Plan` are required status checks on the main ruleset.
+  # If a PR doesn't touch any path the workflow cares about (e.g. a
+  # README-only change), GitHub waits forever for those checks to
+  # report a status and the PR is stuck unmergeable. Always running
+  # the jobs and letting the build cache do its job is cheaper than
+  # explaining "why is my PR blocked" three times a week.
 
 env:
   REGISTRY: clwcodecodevdev1.azurecr.io
