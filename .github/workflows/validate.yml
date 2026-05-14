@@ -1,0 +1,200 @@
+name: Validate (Pull Request)
+
+# Runs on every PR to main. Two independent validation jobs in parallel:
+#   - terraform-plan  : init, validate, plan against current main state
+#   - docker-build    : build the image locally without pushing to ACR
+# Neither job changes anything in Azure or the cluster.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'builder/**'
+      - 'k8s/**'
+      - 'VERSIONS.md'
+      - '**.tf'
+      - '**.tfvars'
+      - '.github/workflows/validate.yml'
+
+env:
+  REGISTRY: clwcodecodevdev1.azurecr.io
+  IMAGE_NAME: openclaw/claw-code
+  TERRAFORM_VERSION: "1.13.0"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: true
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials for kubernetes/helm providers
+        run: |
+          az aks get-credentials \
+            --resource-group claw-code \
+            --name claw-code-aks \
+            --file /tmp/kubeconfig_clawcode \
+            --admin
+
+      - name: Set Terraform environment variables
+        run: |
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+          echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
+          echo "TF_VAR_env=dev" >> $GITHUB_ENV
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=terraform" \
+            -backend-config="storage_account_name=mytofustates" \
+            -backend-config="container_name=claw-code" \
+            -backend-config="key=dev.tfstate" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Upload Terraform Plan artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: terraform-plan
+          path: tfplan
+          retention-days: 7
+
+      - name: Plan Summary
+        run: |
+          echo "## Terraform Plan Summary" >> $GITHUB_STEP_SUMMARY
+          terraform show --json tfplan 2>/dev/null | \
+            jq -r '[
+              (.resources | length) as $total |
+              "### Resources: \($total)",
+              "",
+              (.resource_changes | group_by(.type) | map("\(.[0].type): \(length)") | join("\n"))
+            ] | join("\n")' >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Azure logout
+        if: always()
+        run: |
+          az logout
+          rm -rf ~/.azure 2>/dev/null || true
+
+  docker-build:
+    name: Docker Build (no push)
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR (needed to pull the openclaw-base image)
+        run: az acr login --name clwcodecodevdev1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Ensure openclaw-base is mirrored from GHCR into ACR
+        # The Dockerfile's FROM points at our ACR, so the base must exist
+        # there before any build (PR or main) can resolve it.
+        run: |
+          set -euo pipefail
+          OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS.md | cut -d= -f2)
+          SRC_TAG="${OPENCLAW_UPSTREAM#v}"
+          if az acr repository show \
+               --name clwcodecodevdev1 \
+               --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}" >/dev/null 2>&1; then
+            echo "openclaw/openclaw-base:${OPENCLAW_UPSTREAM} already present in ACR — skipping import"
+          else
+            az acr import \
+              --name clwcodecodevdev1 \
+              --source "ghcr.io/openclaw/openclaw:${SRC_TAG}" \
+              --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}"
+          fi
+
+      - name: Read version pins from VERSIONS.md
+        id: version
+        run: |
+          GH_CLI_VERSION=$(grep '^GH_CLI_VERSION=' VERSIONS.md | cut -d= -f2)
+          GITHUB_MCP_SERVER_VERSION=$(grep '^GITHUB_MCP_SERVER_VERSION=' VERSIONS.md | cut -d= -f2)
+          TERRAFORM_VERSION=$(grep '^TERRAFORM_VERSION=' VERSIONS.md | cut -d= -f2)
+          TERRAFORM_MCP_VERSION=$(grep '^TERRAFORM_MCP_VERSION=' VERSIONS.md | cut -d= -f2)
+          CODE_SERVER_VERSION=$(grep '^CODE_SERVER_VERSION=' VERSIONS.md | cut -d= -f2)
+          AWS_CLI_VERSION=$(grep '^AWS_CLI_VERSION=' VERSIONS.md | cut -d= -f2)
+          GCLOUD_VERSION=$(grep '^GCLOUD_VERSION=' VERSIONS.md | cut -d= -f2)
+          ALIYUN_CLI_VERSION=$(grep '^ALIYUN_CLI_VERSION=' VERSIONS.md | cut -d= -f2)
+          OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS.md | cut -d= -f2)
+          OPENCLAW_VERSION=$(grep '^OPENCLAW_VERSION=' VERSIONS.md | cut -d= -f2)
+          {
+            echo "GH_CLI_VERSION=$GH_CLI_VERSION"
+            echo "GITHUB_MCP_SERVER_VERSION=$GITHUB_MCP_SERVER_VERSION"
+            echo "TERRAFORM_VERSION=$TERRAFORM_VERSION"
+            echo "TERRAFORM_MCP_VERSION=$TERRAFORM_MCP_VERSION"
+            echo "CODE_SERVER_VERSION=$CODE_SERVER_VERSION"
+            echo "AWS_CLI_VERSION=$AWS_CLI_VERSION"
+            echo "GCLOUD_VERSION=$GCLOUD_VERSION"
+            echo "ALIYUN_CLI_VERSION=$ALIYUN_CLI_VERSION"
+            echo "OPENCLAW_UPSTREAM=$OPENCLAW_UPSTREAM"
+            echo "OPENCLAW_VERSION=$OPENCLAW_VERSION"
+          } >> $GITHUB_OUTPUT
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./builder
+          push: false
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/openclaw/openclaw-base:${{ steps.version.outputs.OPENCLAW_UPSTREAM }}
+            OPENCLAW_UPSTREAM=${{ steps.version.outputs.OPENCLAW_UPSTREAM }}
+            OPENCLAW_VERSION=${{ steps.version.outputs.OPENCLAW_VERSION }}
+            GH_CLI_VERSION=${{ steps.version.outputs.GH_CLI_VERSION }}
+            GITHUB_MCP_SERVER_VERSION=${{ steps.version.outputs.GITHUB_MCP_SERVER_VERSION }}
+            TERRAFORM_VERSION=${{ steps.version.outputs.TERRAFORM_VERSION }}
+            TERRAFORM_MCP_VERSION=${{ steps.version.outputs.TERRAFORM_MCP_VERSION }}
+            CODE_SERVER_VERSION=${{ steps.version.outputs.CODE_SERVER_VERSION }}
+            AWS_CLI_VERSION=${{ steps.version.outputs.AWS_CLI_VERSION }}
+            GCLOUD_VERSION=${{ steps.version.outputs.GCLOUD_VERSION }}
+            ALIYUN_CLI_VERSION=${{ steps.version.outputs.ALIYUN_CLI_VERSION }}
+          platforms: linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure logout
+        if: always()
+        run: |
+          az logout
+          rm -rf ~/.azure 2>/dev/null || true

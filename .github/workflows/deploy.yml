@@ -1,41 +1,49 @@
-name: Build Custom OpenClaw Image
+name: Deploy (Push to main)
+
+# Runs on every merge to main. Three sequential jobs:
+#   1. terraform-apply        — provision/update Azure infra (AKS, ACR, etc.)
+#   2. build-and-push-image   — build the openclaw image, push :latest+:sha to ACR
+#   3. deploy-to-aks          — kubectl apply -f k8s/, then rollout restart
+#
+# Each job depends on the previous one succeeding (`needs:`), so a broken
+# step short-circuits the rest before it can do damage.
 
 on:
   push:
     branches:
-      - feature/issue-*
-    paths:
-      - 'builder/**'
-      - '.github/workflows/build-image.yml'
-      - 'k8s/values.yaml'
-      - '**.tf'
-      - '**.tfvars'
-  pull_request:
-    branches:
       - main
     paths:
       - 'builder/**'
-      - '.github/workflows/build-image.yml'
-      - 'k8s/values.yaml'
+      - 'k8s/**'
+      - 'VERSIONS.md'
+      - '**.tf'
+      - '**.tfvars'
+      - '.github/workflows/deploy.yml'
 
 env:
   REGISTRY: clwcodecodevdev1.azurecr.io
   IMAGE_NAME: openclaw/claw-code
+  TERRAFORM_VERSION: "1.13.0"
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  # ─── Step 1: Terraform Apply (infrastructure = ACR) ───────────────────────
-  terraform:
-    name: Terraform Apply (ACR)
+  terraform-apply:
+    name: Terraform Apply
     runs-on: ubuntu-latest
     environment: dev
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: true
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
@@ -44,7 +52,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Get AKS credentials for k8s/helm providers
+      - name: Get AKS credentials for kubernetes/helm providers
         run: |
           az aks get-credentials \
             --resource-group claw-code \
@@ -54,47 +62,48 @@ jobs:
 
       - name: Set Terraform environment variables
         run: |
-          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
-          echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
-          echo "ARM_FEDERATED_TOKEN_FILE=${{ runner.temp }}/azure_federated_token" >> $GITHUB_ENV
           echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
           echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
           echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+          echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
           echo "TF_VAR_env=dev" >> $GITHUB_ENV
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v4
-
       - name: Terraform Init
-        run: terraform init -backend-config="key=dev.tfstate"
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=terraform" \
+            -backend-config="storage_account_name=mytofustates" \
+            -backend-config="container_name=claw-code" \
+            -backend-config="key=dev.tfstate" \
+            -backend-config="use_azuread_auth=true"
 
       - name: Terraform Plan
-        id: plan
         run: terraform plan -out=tfplan
 
-      - name: Terraform Apply (create/update ACR)
-        if: github.event_name == 'push'
-        run: |
-          # Target ONLY the ACR resources — avoid k8s/helm provider auth issues
-          # (kubelogin not available in the Actions runner; AKS credentials not fetched)
-          terraform apply -auto-approve \
-            -target=azurerm_container_registry.acr \
-            -target=azurerm_role_assignment.acr_pull
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
 
-      - name: Upload Terraform Plan artifact
+      - name: Upload Terraform Output
+        run: terraform output -json > terraform_output.json
+
+      - name: Upload Terraform Output artifact
         uses: actions/upload-artifact@v5
-        if: github.event_name == 'pull_request'
         with:
-          name: terraform-plan
-          path: tfplan
-          retention-days: 7
+          name: terraform-output
+          path: terraform_output.json
+          retention-days: 30
 
-  # ─── Step 2: Image Build (always runs after Terraform) ────────────────────
-  build:
-    name: Build Docker Image
+      - name: Azure logout
+        if: always()
+        run: |
+          az logout
+          rm -rf ~/.azure 2>/dev/null || true
+
+  build-and-push-image:
+    name: Build and Push Docker image to ACR
+    needs: terraform-apply
     runs-on: ubuntu-latest
     environment: dev
-    needs: terraform
 
     steps:
       - name: Checkout
@@ -107,16 +116,13 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Login to ACR (Entra)
+      - name: Login to ACR
         run: az acr login --name clwcodecodevdev1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Import openclaw upstream base image into ACR (if missing)
-        # Upstream publishes multi-arch images to ghcr.io/openclaw/openclaw.
-        # GHCR image tag drops the leading "v" from the git tag (e.g. v2026.5.7 -> 2026.5.7).
-        # Skip if the version-pinned tag is already present in the ACR.
+      - name: Ensure openclaw-base is mirrored from GHCR into ACR
         run: |
           set -euo pipefail
           OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS.md | cut -d= -f2)
@@ -132,7 +138,7 @@ jobs:
               --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}"
           fi
 
-      - name: Extract version
+      - name: Read version pins from VERSIONS.md
         id: version
         run: |
           GH_CLI_VERSION=$(grep '^GH_CLI_VERSION=' VERSIONS.md | cut -d= -f2)
@@ -145,29 +151,27 @@ jobs:
           ALIYUN_CLI_VERSION=$(grep '^ALIYUN_CLI_VERSION=' VERSIONS.md | cut -d= -f2)
           OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS.md | cut -d= -f2)
           OPENCLAW_VERSION=$(grep '^OPENCLAW_VERSION=' VERSIONS.md | cut -d= -f2)
-
-          GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev-${{ github.sha }}" | cut -c1-20)
-          echo "tag=$GIT_TAG" >> $GITHUB_OUTPUT
           SHORT_SHA="${{ github.sha }}"
-          echo "short_sha=${SHORT_SHA:0:8}" >> $GITHUB_OUTPUT
-          echo "GH_CLI_VERSION=$GH_CLI_VERSION" >> $GITHUB_OUTPUT
-          echo "GITHUB_MCP_SERVER_VERSION=$GITHUB_MCP_SERVER_VERSION" >> $GITHUB_OUTPUT
-          echo "TERRAFORM_VERSION=$TERRAFORM_VERSION" >> $GITHUB_OUTPUT
-          echo "TERRAFORM_MCP_VERSION=$TERRAFORM_MCP_VERSION" >> $GITHUB_OUTPUT
-          echo "CODE_SERVER_VERSION=$CODE_SERVER_VERSION" >> $GITHUB_OUTPUT
-          echo "AWS_CLI_VERSION=$AWS_CLI_VERSION" >> $GITHUB_OUTPUT
-          echo "GCLOUD_VERSION=$GCLOUD_VERSION" >> $GITHUB_OUTPUT
-          echo "ALIYUN_CLI_VERSION=$ALIYUN_CLI_VERSION" >> $GITHUB_OUTPUT
-          echo "OPENCLAW_UPSTREAM=$OPENCLAW_UPSTREAM" >> $GITHUB_OUTPUT
-          echo "OPENCLAW_VERSION=$OPENCLAW_VERSION" >> $GITHUB_OUTPUT
+          {
+            echo "short_sha=${SHORT_SHA:0:8}"
+            echo "GH_CLI_VERSION=$GH_CLI_VERSION"
+            echo "GITHUB_MCP_SERVER_VERSION=$GITHUB_MCP_SERVER_VERSION"
+            echo "TERRAFORM_VERSION=$TERRAFORM_VERSION"
+            echo "TERRAFORM_MCP_VERSION=$TERRAFORM_MCP_VERSION"
+            echo "CODE_SERVER_VERSION=$CODE_SERVER_VERSION"
+            echo "AWS_CLI_VERSION=$AWS_CLI_VERSION"
+            echo "GCLOUD_VERSION=$GCLOUD_VERSION"
+            echo "ALIYUN_CLI_VERSION=$ALIYUN_CLI_VERSION"
+            echo "OPENCLAW_UPSTREAM=$OPENCLAW_UPSTREAM"
+            echo "OPENCLAW_VERSION=$OPENCLAW_VERSION"
+          } >> $GITHUB_OUTPUT
 
-      - name: Build image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: ./builder
-          push: ${{ github.event_name == 'push' }}
+          push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.short_sha }}
           build-args: |
@@ -186,7 +190,58 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Logout from Azure
+      - name: Azure logout
+        if: always()
+        run: |
+          az logout
+          rm -rf ~/.azure 2>/dev/null || true
+
+  deploy-to-aks:
+    name: Deploy to AKS (apply manifests + rollout)
+    needs: build-and-push-image
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      KUBECONFIG: /tmp/kubeconfig
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group claw-code \
+            --name claw-code-aks \
+            --file /tmp/kubeconfig \
+            --admin
+
+      - name: Install kubectl
+        run: |
+          ARCH=$(dpkg --print-architecture)
+          mkdir -p "$HOME/.local/bin"
+          KUBECTL_VERSION="$(curl -sL https://dl.k8s.io/release/stable.txt)"
+          curl -sLo "$HOME/.local/bin/kubectl" \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl"
+          chmod +x "$HOME/.local/bin/kubectl"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Apply k8s/ manifests
+        run: kubectl apply -f k8s/
+
+      - name: Roll out openclaw deployment to pick up new :latest image
+        run: |
+          kubectl rollout restart deployment/openclaw -n openclaw
+          kubectl rollout status   deployment/openclaw -n openclaw --timeout=5m
+
+      - name: Azure logout
         if: always()
         run: |
           az logout
