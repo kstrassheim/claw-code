@@ -58,8 +58,7 @@ RUN apt-get update \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ $AZ_REPO main" \
       > /etc/apt/sources.list.d/azure-cli.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends azure-cli \
- && pip3 install --no-cache-dir --break-system-packages pyotp \
+ && apt-get install -y --no-install-recommends azure-cli python3-pyotp \
  && apt-get purge -y --auto-remove apt-transport-https lsb-release gnupg \
  && rm -rf /var/lib/apt/lists/* \
  && /usr/bin/az --version | head -3

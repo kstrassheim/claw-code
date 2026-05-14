@@ -315,6 +315,24 @@ EOF
 # It will NOT block pods — only report violations. To enforce policies,
 # change backgroundScanning.enforcement to "Enforce" and add
 # PolicyExceptions for allowed workloads.
+
+# =============================================================================
+# Sealed Secrets Controller — installed via Helm so the kubeseal CLI
+# (used by the CI sealing job) can fetch the certificate from the cluster.
+# =============================================================================
+resource "helm_release" "sealed_secrets" {
+  name       = "sealed-secrets"
+  repository = "https://bitnami-labs.github.io/sealed-secrets"
+  chart      = "sealed-secrets"
+  version    = "2.16.2"
+  namespace  = "kube-system"
+  create_namespace = false
+
+  set {
+    name  = "secret-name"
+    value = ""
+  }
+}
 resource "helm_release" "kyverno" {
   name       = "kyverno"
   repository = "https://kyverno.github.io/kyverno/"

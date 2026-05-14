@@ -35,10 +35,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -63,7 +63,7 @@ jobs:
           echo "TF_VAR_env=dev" >> $GITHUB_ENV
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
 
       - name: Terraform Init
         run: terraform init -backend-config="key=dev.tfstate"
@@ -82,7 +82,7 @@ jobs:
             -target=azurerm_role_assignment.acr_pull
 
       - name: Upload Terraform Plan artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: github.event_name == 'pull_request'
         with:
           name: terraform-plan
@@ -98,10 +98,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -112,6 +112,25 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Import openclaw upstream base image into ACR (if missing)
+        # Upstream publishes multi-arch images to ghcr.io/openclaw/openclaw.
+        # GHCR image tag drops the leading "v" from the git tag (e.g. v2026.5.7 -> 2026.5.7).
+        # Skip if the version-pinned tag is already present in the ACR.
+        run: |
+          set -euo pipefail
+          OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS.md | cut -d= -f2)
+          SRC_TAG="${OPENCLAW_UPSTREAM#v}"
+          if az acr repository show \
+               --name clwcodecodevdev1 \
+               --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}" >/dev/null 2>&1; then
+            echo "openclaw/openclaw-base:${OPENCLAW_UPSTREAM} already present in ACR — skipping import"
+          else
+            az acr import \
+              --name clwcodecodevdev1 \
+              --source "ghcr.io/openclaw/openclaw:${SRC_TAG}" \
+              --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}"
+          fi
 
       - name: Extract version
         id: version
@@ -146,7 +165,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./builder
-          dockerfile: ./builder/Dockerfile
           push: ${{ github.event_name == 'push' }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
