@@ -1,0 +1,68 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-config
+  namespace: openclaw
+data:
+  openclaw.json: |
+    {
+      "agents": {
+        "defaults": {
+          "model": {
+            "primary": "mistral/mistral-large-latest"
+          },
+          "compaction": {
+            "mode": "safeguard"
+          },
+          "blockStreamingDefault": "on",
+          "bootstrapMaxChars": 30000,
+          "bootstrapTotalMaxChars": 120000
+        },
+        "models": {
+          "mistral/mistral-large-latest": {},
+          "mistral/mistral-small-latest": {},
+          "mistral/magistral-medium-latest": {},
+          "mistral/codestral-latest": {},
+          "mistral/ministral-8b-latest": {}
+        }
+      },
+      "models": {
+        "mistral": {
+          "baseUrl": "https://api.mistral.ai/v1",
+          "apiKey": "${MISTRAL_API_KEY}",
+          "api": "anthropic-messages",
+          "models": [
+            {"id": "mistral-large-latest", "name": "Mistral Large", "maxTokens": 131072},
+            {"id": "mistral-small-latest", "name": "Mistral Small", "maxTokens": 131072},
+            {"id": "magistral-medium-latest", "name": "Magistral Medium", "maxTokens": 131072},
+            {"id": "codestral-latest", "name": "Codestral", "maxTokens": 81920}
+          ]
+        }
+      },
+      "plugins": {
+        "enabled": true,
+        "config": {
+          "openclaw": {"enabled": true},
+          "github-copilot": {"enabled": true},
+          "mistral": {"enabled": true},
+          "clawhub": {"enabled": true, "config": {"discovery": {"enabled": true}}}
+        }
+      },
+      "commands": {
+        "native": "auto",
+        "nativeSkills": "auto",
+        "restart": true,
+        "ownerDisplay": "raw"
+      },
+      "channels": {
+        "telegram": {"enabled": true}
+      },
+      "gateway": {
+        "port": 18789,
+        "mode": "local",
+        "bind": "lan",
+        "trustedProxies": ["10.0.0.0/8"],
+        "controlUi": {"allowedOrigins": ["*"]}
+      }
+    }

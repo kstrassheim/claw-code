@@ -1,0 +1,13 @@
+{
+  "name": "@openclaw/debug-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OpenClaw debug MCP server (Node CDP debugger)",
+  "main": "debug-mcp.mjs",
+  "scripts": {
+    "start": "node debug-mcp.mjs"
+  },
+  "dependencies": {
+    "chrome-remote-interface": "^0.33.2"
+  }
+}

@@ -1,0 +1,35 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openclaw
+  labels:
+    environment: dev
+    project: claw-code
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-tools-md
+  namespace: openclaw
+data:
+  TOOLS-md: |
+    # OpenClaw Tools — claw-code coding agent
+
+    ## AWS — aws CLI v2 + mcp.servers.aws
+
+    State: credentials NOT wired in this revision.
+    When AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY land in openclaw-secrets,
+    the chart will mount them and `aws ...` will work.
+
+    ## GCP — gcloud CLI + mcp.servers.gcp
+
+    State: credentials NOT wired in this revision.
+    When GOOGLE_APPLICATION_CREDENTIALS or a gcloud token cache is sealed,
+    `gcloud ...` will work.
+
+    ## Alibaba Cloud — aliyun CLI + mcp.servers.alicloud
+
+    State: credentials NOT wired in this revision.
+    When ALIBABA_CLOUD_ACCESS_KEY_ID / ALIBABA_CLOUD_ACCESS_KEY_SECRET land
+    in openclaw-secrets, `aliyun ...` will work.

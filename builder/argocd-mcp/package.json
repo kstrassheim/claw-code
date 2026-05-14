@@ -1,0 +1,13 @@
+{
+  "name": "@openclaw/argocd-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OpenClaw ArgoCD MCP server (argocd CLI wrapper)",
+  "main": "argocd-mcp.mjs",
+  "scripts": {
+    "start": "node argocd-mcp.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1"
+  }
+}

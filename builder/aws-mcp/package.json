@@ -1,0 +1,13 @@
+{
+  "name": "@openclaw/aws-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OpenClaw AWS MCP server (aws CLI wrapper)",
+  "main": "aws-mcp.mjs",
+  "scripts": {
+    "start": "node aws-mcp.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1"
+  }
+}

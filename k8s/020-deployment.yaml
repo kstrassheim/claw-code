@@ -39,7 +39,7 @@ spec:
     spec:
       initContainers:
         - name: sync-control-ui
-          image: mainpi.local:30500/openclaw/claw-code:latest
+          image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
           imagePullPolicy: Always
           command:
             - /bin/sh
@@ -68,7 +68,7 @@ spec:
               memory: 256Mi
       containers:
         - name: openclaw
-          image: mainpi.local:30500/openclaw/claw-code:latest
+          image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 18789

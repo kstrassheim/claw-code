@@ -1,0 +1,13 @@
+{
+  "name": "@openclaw/azure-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OpenClaw Azure MCP server (az CLI wrapper)",
+  "main": "azure-mcp.mjs",
+  "scripts": {
+    "start": "node azure-mcp.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1"
+  }
+}

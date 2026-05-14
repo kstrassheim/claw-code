@@ -52,3 +52,9 @@ variable "entra_tenant_id" {
   type        = string
   default     = ""
 }
+
+variable "unique_suffix" {
+  description = "Unique suffix appended to globally-unique resource names (max 4 chars, e.g. 'dev1'). Used to make storage account and ACR names unique across deployments."
+  type        = string
+  default     = "dev1"
+}

@@ -1,0 +1,7 @@
+#!/bin/bash
+# entra-totp: generates a TOTP code from the ENTRA_TOTP_SEED env var.
+# Used by the az login browser automation to satisfy MS MFA prompts.
+set -euo pipefail
+
+SEED="${ENTRA_TOTP_SEED:?ENTRA_TOTP_SEED not set}"
+python3 -c "import pyotp; print(pyotp.TOTP('$SEED').now())"

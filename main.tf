@@ -93,7 +93,6 @@ resource "azurerm_storage_account" "pv" {
   account_replication_type                         = "LRS"
   min_tls_version                                  = "TLS1_2"
   https_traffic_only_enabled = true
-  allow_shared_key_access    = false  # Entra-only auth — no access keys
 
   tags = {
     environment = var.env
@@ -106,6 +105,36 @@ resource "azurerm_storage_share" "openclaw" {
   name             = "openclaw"
   storage_account_id = azurerm_storage_account.pv.id
   quota             = 50  # 50 GiB
+}
+
+# =============================================================================
+# Azure Container Registry — for the custom openclaw image
+# =============================================================================
+resource "azurerm_container_registry" "acr" {
+  name                   = "clwcodecodev${var.unique_suffix}"  # clwcodecodev + suffix, max 50 chars
+  resource_group_name    = data.azurerm_resource_group.rg.name
+  location               = data.azurerm_resource_group.rg.location
+  sku                    = "Basic"
+  admin_enabled          = false  # Entra-only auth, no admin user
+
+  public_network_access_enabled = true  # AKS must be able to pull; restrict via NSG rules if needed
+
+  tags = {
+    environment = var.env
+    project     = "claw-code"
+  }
+}
+
+# Grant deploy identity AcrPull on the registry so AKS can pull images
+resource "azurerm_role_assignment" "acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = data.azurerm_user_assigned_identity.deploy_identity.principal_id
+}
+
+output "container_registry_login_server" {
+  description = "ACR login server for docker push/pull"
+  value       = azurerm_container_registry.acr.login_server
 }
 
 # =============================================================================

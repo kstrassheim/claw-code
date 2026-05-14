@@ -1,0 +1,13 @@
+{
+  "name": "@openclaw/k8s-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OpenClaw k8s MCP server (kubectl wrapper)",
+  "main": "k8s-mcp.mjs",
+  "scripts": {
+    "start": "node k8s-mcp.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1"
+  }
+}

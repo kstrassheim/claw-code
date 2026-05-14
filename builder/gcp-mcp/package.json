@@ -1,0 +1,13 @@
+{
+  "name": "@openclaw/gcp-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OpenClaw GCP MCP server (gcloud CLI wrapper)",
+  "main": "gcp-mcp.mjs",
+  "scripts": {
+    "start": "node gcp-mcp.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1"
+  }
+}
