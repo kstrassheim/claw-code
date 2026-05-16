@@ -35,8 +35,8 @@ variable "storage_account_name" {
 }
 
 variable "namespace" {
-  description = "Kubernetes namespace for openclaw"
-  default     = "openclaw"
+  description = "Kubernetes namespace for claw-code"
+  default     = "claw-code"
   type        = string
 }
 

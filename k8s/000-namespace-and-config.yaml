@@ -1,7 +1,7 @@
 ---
-# Namespace only. The `openclaw-tools-md` ConfigMap that mounts at
+# Namespace only. The `claw-code-tools-md` ConfigMap that mounts at
 # ~/.openclaw/workspace/TOOLS.md is **not** declared here — it's
-# generated at deploy time by the "Build and apply openclaw-tools-md
+# generated at deploy time by the "Build and apply claw-code-tools-md
 # ConfigMap from k8s/tools/" step in .github/workflows/deploy.yml,
 # which concatenates the per-tool TOOLS-*.md files under k8s/tools/
 # into a single TOOLS.md key via `kubectl create configmap
@@ -12,11 +12,11 @@
 # bot. Pasting it into a YAML literal would make this manifest
 # unreadable and any per-section edit would scroll through the whole
 # blob. Splitting into k8s/tools/ keeps each capability description
-# in its own file (mirroring the upstream openclaw chart's layout).
+# in its own file (mirroring the upstream claw-code chart's layout).
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: openclaw
+  name: claw-code
   labels:
     environment: dev
     project: claw-code

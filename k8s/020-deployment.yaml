@@ -1,51 +1,51 @@
 ---
 # ServiceAccount + Role + RoleBinding so the render-config init container
-# can patch the openclaw-config ConfigMap at pod start. Scoped tightly:
-# only the openclaw-config ConfigMap in this namespace, get/patch/update.
+# can patch the claw-code-config ConfigMap at pod start. Scoped tightly:
+# only the claw-code-config ConfigMap in this namespace, get/patch/update.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: openclaw
-  namespace: openclaw
+  name: claw-code
+  namespace: claw-code
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: openclaw-config-writer
-  namespace: openclaw
+  name: claw-code-config-writer
+  namespace: claw-code
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]
-    resourceNames: ["openclaw-config"]
+    resourceNames: ["claw-code-config"]
     verbs: ["get", "patch", "update", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: openclaw-config-writer
-  namespace: openclaw
+  name: claw-code-config-writer
+  namespace: claw-code
 subjects:
   - kind: ServiceAccount
-    name: openclaw
-    namespace: openclaw
+    name: claw-code
+    namespace: claw-code
 roleRef:
   kind: Role
-  name: openclaw-config-writer
+  name: claw-code-config-writer
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: openclaw
-  namespace: openclaw
+  name: claw-code
+  namespace: claw-code
   labels:
-    app: openclaw
+    app: claw-code
     environment: dev
     project: claw-code
 spec:
   replicas: 1
   # `Recreate` (not the default RollingUpdate): terminate the old pod first,
-  # then start the new one. With replicas=1 and a RWO openclaw-workspace
+  # then start the new one. With replicas=1 and a RWO claw-code-workspace
   # PVC, RollingUpdate deadlocks — the new pod can't mount the volume
   # while the old pod still holds it, and maxUnavailable=0 keeps the old
   # one alive until the new one is Ready. Brief downtime on each deploy
@@ -54,14 +54,14 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app: openclaw
+      app: claw-code
   template:
     metadata:
       labels:
-        app: openclaw
+        app: claw-code
       # No `checksum/tools-md` annotation: the deploy workflow does an
       # unconditional `kubectl rollout restart deployment/openclaw` after
-      # rebuilding the openclaw-tools-md ConfigMap from k8s/tools/, so the
+      # rebuilding the claw-code-tools-md ConfigMap from k8s/tools/, so the
       # new TOOLS.md content is always picked up on the next deploy. If you
       # apply these manifests manually (outside the workflow) and want the
       # pod to re-roll on a ConfigMap change, run the same `rollout restart`
@@ -87,7 +87,7 @@ spec:
         # node still can't write to it after the regroup. Runs as root
         # in a busybox-style shell from the openclaw image; idempotent.
         - name: fix-perms
-          image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
+          image: clwcodecodevdev1.azurecr.io/claw-code/claw-code:latest
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 0
@@ -103,24 +103,24 @@ spec:
         # Reads the canonical template from /template, decides whether
         # MiniMax is reachable based on $MINIMAX_API_KEY, strips it with
         # jq if not, and writes the rendered result back into the live
-        # openclaw-config ConfigMap. The main container's envFrom picks
+        # claw-code-config ConfigMap. The main container's envFrom picks
         # up the rendered value when it starts (envFrom resolves after
         # initContainers complete).
         - name: render-config
-          image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
+          image: clwcodecodevdev1.azurecr.io/claw-code/claw-code:latest
           imagePullPolicy: Always
           command: ["/bin/sh", "/scripts/render-config.sh"]
           env:
             - name: MISTRAL_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: openclaw-secrets
+                  name: claw-code-secrets
                   key: MISTRAL_API_KEY
                   optional: true
             - name: MINIMAX_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: openclaw-secrets
+                  name: claw-code-secrets
                   key: MINIMAX_API_KEY
                   optional: true
           volumeMounts:
@@ -141,8 +141,8 @@ spec:
               cpu: 500m
               memory: 256Mi
       containers:
-        - name: openclaw
-          image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
+        - name: claw-code
+          image: clwcodecodevdev1.azurecr.io/claw-code/claw-code:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 18789
@@ -151,11 +151,11 @@ spec:
               name: bridge
           envFrom:
             - configMapRef:
-                name: openclaw-tools-md
+                name: claw-code-tools-md
             - configMapRef:
-                name: openclaw-config
+                name: claw-code-config
             - secretRef:
-                name: openclaw-secrets
+                name: claw-code-secrets
           volumeMounts:
             # Mount the PVC at the WHOLE openclaw state directory, not just
             # the `workspace/` subdir. Previously openclaw.json, identity/,
@@ -198,14 +198,14 @@ spec:
       volumes:
         - name: workspace
           persistentVolumeClaim:
-            claimName: openclaw-workspace
+            claimName: claw-code-workspace
         - name: tools-md
           configMap:
-            name: openclaw-tools-md
+            name: claw-code-tools-md
         - name: config-template
           configMap:
-            name: openclaw-config-template
+            name: claw-code-config-template
         - name: render-scripts
           configMap:
-            name: openclaw-render-scripts
+            name: claw-code-render-scripts
             defaultMode: 0755

@@ -10,8 +10,8 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: openclaw-config-template
-  namespace: openclaw
+  name: claw-code-config-template
+  namespace: claw-code
 data:
   openclaw.json: |
     {
@@ -82,7 +82,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: openclaw-config
-  namespace: openclaw
+  namespace: claw-code
 data:
   openclaw.json: "{}"
 ---
@@ -92,7 +92,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: openclaw-render-scripts
-  namespace: openclaw
+  namespace: claw-code
 data:
   render-config.sh: |
     #!/bin/sh

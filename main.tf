@@ -70,10 +70,10 @@ data "azurerm_resource_group" "rg" {
   name = local.resource_group_name
 }
 
-# Create the openclaw namespace (needed for NetworkPolicies and later K8s resources)
-resource "kubernetes_namespace" "openclaw" {
+# Create the claw-code namespace (needed for NetworkPolicies and later K8s resources)
+resource "kubernetes_namespace" "claw-code" {
   metadata {
-    name = local.namespace
+    name = var.namespace
     labels = {
       "environment" = var.env
       "project"     = "claw-code"
@@ -112,14 +112,14 @@ resource "azurerm_storage_account" "pv" {
 }
 
 # Create a file share in the storage account (for K8s PV)
-resource "azurerm_storage_share" "openclaw" {
-  name             = "openclaw"
+resource "azurerm_storage_share" "claw_code" {
+  name             = "claw-code"
   storage_account_id = azurerm_storage_account.pv.id
   quota             = 50  # 50 GiB
 }
 
 # =============================================================================
-# Azure Container Registry — for the custom openclaw image
+# Azure Container Registry — for the custom claw-code image
 # =============================================================================
 resource "azurerm_container_registry" "acr" {
   name                   = "clwcodecodev${var.unique_suffix}"  # clwcodecodev + suffix, max 50 chars
@@ -137,7 +137,7 @@ resource "azurerm_container_registry" "acr" {
 }
 
 # Grant the deploy identity AcrPull (used by GitHub Actions for `az acr login`
-# and by `az acr import` when mirroring the upstream openclaw-base).
+# and by `az acr import` when mirroring the upstream claw-code-base).
 resource "azurerm_role_assignment" "acr_pull" {
   scope                = azurerm_container_registry.acr.id
   role_definition_name = "AcrPull"
@@ -326,7 +326,7 @@ output "storage_account_name" {
 
 output "storage_share_name" {
   description = "PV storage share name"
-  value       = azurerm_storage_share.openclaw.name
+  value       = azurerm_storage_share.claw_code.name
 }
 
 output "kubeconfig" {

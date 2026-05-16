@@ -278,15 +278,15 @@ jobs:
             > /tmp/tools-md/TOOLS.md
           echo "Assembled TOOLS.md is $(wc -c < /tmp/tools-md/TOOLS.md) bytes ($(wc -l < /tmp/tools-md/TOOLS.md) lines)."
           kubectl create configmap openclaw-tools-md \
-            --namespace openclaw \
+            --namespace claw-code \
             --from-file=TOOLS.md=/tmp/tools-md/TOOLS.md \
             --dry-run=client -o yaml \
           | kubectl apply -f -
 
       - name: Roll out openclaw deployment to pick up new :latest image
         run: |
-          kubectl rollout restart deployment/openclaw -n openclaw
-          kubectl rollout status   deployment/openclaw -n openclaw --timeout=15m
+          kubectl rollout restart deployment/openclaw -n claw-code
+          kubectl rollout status   deployment/openclaw -n claw-code --timeout=15m
 
       - name: Azure logout
         if: always()
