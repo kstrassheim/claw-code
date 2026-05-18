@@ -169,6 +169,14 @@ spec:
             - name: tools-md
               mountPath: /home/node/.openclaw/workspace/TOOLS.md
               subPath: TOOLS.md
+            # issue-watcher chat skill — drives the kubectl toggle
+            # commands. ConfigMap source is in 050-issue-watcher.yaml.
+            # Mount path is workspace/skills/ (NOT plugin-skills/) —
+            # openclaw's loadWorkspaceSkillEntries scans <workspaceDir>/
+            # skills/. Pod restart required to pick up subPath updates.
+            - name: skill-issue-watcher
+              mountPath: /home/node/.openclaw/workspace/skills/issue-watcher/SKILL.md
+              subPath: SKILL.md
           resources:
             # Node is Standard_D2s_v3 (2 vCPU, 8 Gi). AKS reservations
             # leave ~1.85 vCPU and ~6 Gi allocatable to user pods.
@@ -202,6 +210,9 @@ spec:
         - name: tools-md
           configMap:
             name: claw-code-tools-md
+        - name: skill-issue-watcher
+          configMap:
+            name: claw-code-skill-issue-watcher
         - name: config-template
           configMap:
             name: claw-code-config-template

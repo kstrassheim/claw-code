@@ -10,14 +10,16 @@ claw-code/
 ├── variables.tf             # Terraform variables
 ├── terraform.tfvars          # Dev environment values
 ├── builder/
-│   ├── Dockerfile            # Custom openclaw image (all coding features, no astrology)
-│   ├── k8s-mcp/             # kubectl MCP
-│   ├── azure-mcp/           # az CLI MCP
-│   ├── aws-mcp/             # AWS CLI MCP
-│   ├── gcp-mcp/             # gcloud MCP
-│   ├── alicloud-mcp/        # aliyun CLI MCP
-│   ├── debug-mcp/           # Node CDP debugger MCP
-│   └── entra-totp/          # TOTP generator for Entra MFA
+│   ├── Dockerfile                  # Custom openclaw image (all coding features, no astrology)
+│   ├── heartbeat-issue-tick.py     # Issue-watcher planner (see Autonomous issue watcher)
+│   ├── cron-issue-spawn.sh         # Issue-watcher Job-spawner (see Autonomous issue watcher)
+│   ├── k8s-mcp/                    # kubectl MCP
+│   ├── azure-mcp/                  # az CLI MCP
+│   ├── aws-mcp/                    # AWS CLI MCP
+│   ├── gcp-mcp/                    # gcloud MCP
+│   ├── alicloud-mcp/               # aliyun CLI MCP
+│   ├── debug-mcp/                  # Node CDP debugger MCP
+│   └── entra-totp/                 # TOTP generator for Entra MFA
 ├── k8s/
 │   ├── 000-namespace-and-config.yaml  # Namespace
 │   ├── 005-pvc.yaml                   # PVC for openclaw workspace
@@ -25,17 +27,19 @@ claw-code/
 │   ├── 020-deployment.yaml            # Deployment + ServiceAccount + Role/Binding
 │   ├── 030-service.yaml               # ClusterIP service
 │   ├── 040-networkpolicy.yaml         # default-deny + allow-dns
+│   ├── 050-issue-watcher.yaml         # Issue-watcher CronJob + RBAC + chat skill
 │   └── tools/                         # Per-tool TOOLS-*.md (assembled into openclaw-tools-md ConfigMap by deploy.yml)
 └── .github/workflows/
     ├── validate.yml      # On PR to main: check secrets, terraform plan, docker build (no push)
     ├── deploy.yml        # On push to main: terraform apply, build+push image, kubectl apply, rollout
-    ├── seal-secrets.yml  # Read GH secrets, kubeseal, kubectl apply the SealedSecret
+    ├── seal-secrets.yml  # Read GH secrets, kubectl apply the Secret directly to the cluster (filename is historical — no kubeseal involved any more)
     └── codeql.yml        # JS security scan
 ```
 
 Secrets are not stored in the repo — they come from the `seal-secrets`
 workflow which reads GitHub Actions secrets (per the `dev` environment)
-and applies a SealedSecret straight to the cluster.
+and applies a plain Kubernetes Secret straight to the cluster via
+`kubectl apply -f -` (the manifest never touches disk or git).
 
 ---
 
@@ -144,7 +148,6 @@ matrix.
 | AKS cluster (1× Standard_D2pds_v5, arm64, 2 vCPU / 8 GiB) | K8s cluster |
 | Azure Container Registry (`clwcodecodevdev1`, Basic SKU) | Hosts the custom openclaw image |
 | Azure Storage Account (`clwcodecodev`) | Backs the openclaw workspace PVC |
-| Sealed Secrets (v2.16.2) | kubeseal-compatible controller in kube-system |
 | Default-deny NetworkPolicies + DNS/HTTPS allow rules | Pure `kubernetes_network_policy_v1`, no controller required |
 | Role assignments: AcrPull on the deploy MI + AKS kubelet identity | Required so both CI and the cluster can read the registry |
 
@@ -268,6 +271,104 @@ restart re-runs the render, and the config tracks the new state.
 
 ---
 
+## Autonomous issue watcher
+
+The cluster runs a `*/5 * * * *` CronJob in `claw-code` that auto-fixes
+any GitHub issue assigned to the bot account — no LLM calls on idle
+ticks, no chat traffic. The architecture is split so concurrency lives
+in the K8s control plane, not the agent's prompt:
+
+```
+       CronJob issue-watcher
+       (every 5 min)
+              |
+       cron-issue-spawn (bash)
+              |
+       heartbeat-issue-tick (python)
+       |                       |
+GET /issues?filter=assigned    GET batch/v1/jobs?label=app=issue-fixer
+       \                       /
+        \                     /
+         decide toSpawn list  ←  cap at 2 active Jobs per repo
+                  |
+       for each toSpawn entry:
+       kubectl create job fix-<repo>-<#>-<ts>
+                  |
+       Job runs `openclaw agent --local --timeout 3600 ...`
+                  |
+       clone → branch → code → commit → push → open PR → exit
+```
+
+- **Concurrency ledger**: K8s Jobs themselves. Each fixer Job is
+  labeled `app=issue-fixer, issueRepo=<slug>, issueNumber=<n>`; the
+  planner counts active ones per repo and only spawns within the
+  per-repo cap (default 2). Jobs older than 1h with no completion
+  are treated as dead — slots free up automatically.
+- **TTL**: each spawned Job sets `activeDeadlineSeconds: 3700` (1h
+  agent budget + 100s grace) and `ttlSecondsAfterFinished: 600`, so
+  finished Jobs disappear ten minutes after they exit.
+- **Coding agent**: each fixer pod runs `openclaw agent --local`
+  with the same image and `envFrom: claw-code-secrets`. The agent
+  loads the same `openclaw.json` template (via the
+  `claw-code-config-template` ConfigMap copied in by a per-Job init
+  container), so it uses the same provider routing (MiniMax M2.7
+  primary, Mistral fallback) as the chat bot.
+- **Workspace isolation**: each fixer Pod gets a fresh `emptyDir`
+  for its `~/.openclaw` — no contention with the main bot's PVC and
+  no cross-pollution between concurrent fixers.
+
+The watcher is wired up in
+[`k8s/050-issue-watcher.yaml`](k8s/050-issue-watcher.yaml): the
+CronJob, its service account, a namespace-scoped Role granting
+`jobs/create,list` for spawning fixers, and a separate
+`issue-watcher-control` Role granting the main bot the
+`cronjobs/patch` + `jobs/delete` it needs for the chat skill below.
+
+### Controlling it from chat
+
+The same manifest ships an `issue-watcher` skill (mounted at
+`~/.openclaw/workspace/skills/issue-watcher/SKILL.md` via subPath
+ConfigMap). The bot picks the skill up at session start and
+recognises plain-text triggers:
+
+| You type | What runs |
+|---|---|
+| `watcher status` | `kubectl get cronjob issue-watcher -o jsonpath=…` |
+| `watcher start` | `kubectl patch cronjob issue-watcher … suspend:false` |
+| `watcher stop` | `kubectl patch … suspend:true` AND `kubectl delete jobs -l app=issue-fixer` |
+| `watcher list` | `kubectl get jobs -l app=issue-fixer` |
+| `watcher kill` | only deletes in-flight fixers; CronJob stays scheduled |
+
+`watcher stop` deliberately kills in-flight fixer pods too — partial
+work is discarded, because the user's intent on "stop" is "stop
+coding work right now", not "finish what's in progress".
+
+`spec.suspend` is *deliberately absent* from the CronJob manifest
+(K8s defaults it to `false`). The deploy workflow re-applies the
+manifest on every push to `main`, so if we set `suspend: false` in
+git, every deploy would override a chat-driven `watcher stop`. With
+the field unmanaged, runtime patches survive.
+
+### Disabling permanently
+
+Suspend the CronJob via `watcher stop` (or `kubectl patch ... suspend:true`)
+and don't unsuspend it. To drop it entirely, delete
+`050-issue-watcher.yaml` from `k8s/` and merge — the next deploy will
+`kubectl apply -f k8s/` without it, but the existing CronJob + RBAC
+resources will linger (no garbage collection without ArgoCD). Clean
+those up manually with `kubectl delete -f` against an old copy of the
+file or by resource name.
+
+### Editing the chat skill
+
+The skill body lives inline in `k8s/050-issue-watcher.yaml`'s ConfigMap.
+Edit, push, the next deploy re-applies the ConfigMap. Then
+`kubectl rollout restart deployment/claw-code -n claw-code` once so
+the subPath mount picks up the new content (subPath ConfigMap mounts
+don't reload live).
+
+---
+
 ## Network Policies
 
 Two pre-configured NetworkPolicies in `k8s/040-networkpolicy.yaml`:
@@ -297,9 +398,12 @@ No in-cluster GitOps controller — the GitHub Actions runner is the
 deploy actor.
 
 Secrets are handled separately by `seal-secrets.yml`: it reads GitHub
-Actions secrets, pipes them through `kubeseal` against the in-cluster
-Sealed Secrets controller, and `kubectl apply`s the resulting
-SealedSecret directly. Nothing sealed is written back to git.
+Actions secrets and `kubectl apply`s a plain Kubernetes Secret directly
+to the cluster. The manifest is piped from `kubectl create -o yaml`
+into `kubectl apply -f -` and never written to disk or committed — so
+there is no encryption round-trip and no Sealed Secrets controller in
+the cluster (unlike the claw-code-local sibling, which commits the
+sealed YAML to git and needs the controller to decrypt it).
 
 ---
 

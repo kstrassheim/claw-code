@@ -225,26 +225,6 @@ resource "azurerm_role_assignment" "aks_admin" {
 # Skipped here — requires Owner-level permissions.
 
 # =============================================================================
-# Sealed Secrets Controller — installed via Helm so the kubeseal CLI
-# (used by the CI sealing job) can fetch the certificate from the cluster.
-# =============================================================================
-resource "helm_release" "sealed_secrets" {
-  name             = "sealed-secrets"
-  repository       = "https://bitnami-labs.github.io/sealed-secrets"
-  chart            = "sealed-secrets"
-  version          = "2.16.2"
-  namespace        = "kube-system"
-  create_namespace = false
-
-  set = [
-    {
-      name  = "secret-name"
-      value = ""
-    }
-  ]
-}
-
-# =============================================================================
 # Default-deny-all NetworkPolicy — blocks ALL ingress/egress by default.
 # Add explicit allow policies for each required access pattern.
 # =============================================================================

@@ -209,4 +209,15 @@ RUN chown -R 1000:1000 /opt/debug-mcp \
  && su node -c "cd /opt/debug-mcp && npm install --omit=dev --no-audit --no-fund --loglevel=error" \
  && chmod +x /opt/debug-mcp/debug-mcp.mjs
 
+# Issue-watcher scripts invoked by the issue-watcher CronJob.
+#   heartbeat-issue-tick — read-only planner: emits JSON of repos +
+#                          assigned issues + active Jobs per repo.
+#   cron-issue-spawn     — runs the planner and `kubectl apply`s a
+#                          Job per toSpawn entry (one Job = one
+#                          `openclaw agent --local` invocation that
+#                          fixes the issue end-to-end).
+USER root
+COPY --chmod=0755 heartbeat-issue-tick.py /usr/local/bin/heartbeat-issue-tick
+COPY --chmod=0755 cron-issue-spawn.sh    /usr/local/bin/cron-issue-spawn
+
 USER node
