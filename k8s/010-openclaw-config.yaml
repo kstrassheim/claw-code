@@ -59,6 +59,17 @@ data:
           }
         }
       },
+      "mcp": {
+        "servers": {
+          "github": {
+            "command": "github-mcp-server",
+            "args": ["stdio"],
+            "env": {
+              "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+            }
+          }
+        }
+      },
       "commands": {
         "native": "auto",
         "nativeSkills": "auto",
