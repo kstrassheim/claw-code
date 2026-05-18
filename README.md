@@ -273,56 +273,60 @@ restart re-runs the render, and the config tracks the new state.
 
 ## Autonomous issue watcher
 
-The cluster runs a `*/5 * * * *` CronJob in `claw-code` that auto-fixes
-any GitHub issue assigned to the bot account — no LLM calls on idle
-ticks, no chat traffic. The architecture is split so concurrency lives
-in the K8s control plane, not the agent's prompt:
+The cluster runs a `*/5 * * * *` CronJob in `claw-code` that
+auto-fixes any GitHub issue assigned to the bot account. Each fixer
+is an `openclaw agent --local` Node.js **subprocess spawned inside
+the running claw-code pod**, not a separate Pod — so it inherits
+the main pod's network, secrets, MCP servers, plugin registry, and
+config by construction.
 
 ```
-       CronJob issue-watcher
-       (every 5 min)
+       CronJob issue-watcher           (own pod, every 5 min)
               |
        cron-issue-spawn (bash)
               |
        heartbeat-issue-tick (python)
-       |                       |
-GET /issues?filter=assigned    GET batch/v1/jobs?label=app=issue-fixer
+       |                       \
+GET /issues?filter=assigned     `kubectl exec claw-code-pod -- ls .fixer-locks/`
        \                       /
         \                     /
-         decide toSpawn list  ←  cap at 2 active Jobs per repo
+         decide toSpawn list  ←  cap at 1 active fixer per repo
                   |
-       for each toSpawn entry:
-       kubectl create job fix-<repo>-<#>-<ts>
-                  |
-       Job runs `openclaw agent --local --timeout 3600 ...`
-                  |
-       clone → branch → code → commit → push → open PR → exit
+        for each toSpawn entry:
+        kubectl exec claw-code-pod -- nohup fixer-runner repo n url title &
+                  |    (subprocess inside the claw-code container)
+                  v
+       fixer-runner:
+         mkdir lock at ~/.openclaw/.fixer-locks/<owner>__<name>/
+         clone-or-update ~/.openclaw/projects/<owner>/<name>/
+         git checkout -b issue-<n>-fix
+         openclaw agent --local --message "Fix issue …"
+            → commit → push → open PR
+         trap: rm -rf lock on exit
 ```
 
-- **Concurrency ledger**: K8s Jobs themselves. Each fixer Job is
-  labeled `app=issue-fixer, issueRepo=<slug>, issueNumber=<n>`; the
-  planner counts active ones per repo and only spawns within the
-  per-repo cap (default 2). Jobs older than 1h with no completion
-  are treated as dead — slots free up automatically.
-- **TTL**: each spawned Job sets `activeDeadlineSeconds: 3700` (1h
-  agent budget + 100s grace) and `ttlSecondsAfterFinished: 600`, so
-  finished Jobs disappear ten minutes after they exit.
-- **Coding agent**: each fixer pod runs `openclaw agent --local`
-  with the same image and `envFrom: claw-code-secrets`. The agent
-  loads the same `openclaw.json` template (via the
-  `claw-code-config-template` ConfigMap copied in by a per-Job init
-  container), so it uses the same provider routing (MiniMax M2.7
-  primary, Mistral fallback) as the chat bot.
-- **Workspace isolation**: each fixer Pod gets a fresh `emptyDir`
-  for its `~/.openclaw` — no contention with the main bot's PVC and
-  no cross-pollution between concurrent fixers.
+- **Concurrency ledger**: lock directories at
+  `~/.openclaw/.fixer-locks/<owner>__<name>/` inside the claw-code
+  pod. `mkdir` is atomic on local filesystems — the first runner
+  that asks wins, everyone else exits fast. **Max 1 fixer per
+  repo**, because the shared on-disk checkout can't be safely
+  raced. Issues queued for a busy repo wait for the next tick.
+- **Shared persistent checkout**: each repo has one working tree
+  under `~/.openclaw/projects/<owner>/<name>/` on the claw-code
+  PVC. Survives pod restarts, so the agent benefits from a warm
+  `.git`, cached `node_modules`, etc.
+- **TTL**: each fixer subprocess is bounded by the agent's
+  `--timeout 3500` flag (~58 min). Stale locks older than 1h
+  (planner-checked on every tick) are ignored, so a crashed fixer
+  doesn't permanently hold a repo.
+- **Coding agent**: same Node.js runtime as the chat bot, same
+  rendered `~/.openclaw/openclaw.json` (MiniMax M2.7 primary,
+  Mistral Large fallback), same MCP servers and skills.
 
-The watcher is wired up in
-[`k8s/050-issue-watcher.yaml`](k8s/050-issue-watcher.yaml): the
-CronJob, its service account, a namespace-scoped Role granting
-`jobs/create,list` for spawning fixers, and a separate
-`issue-watcher-control` Role granting the main bot the
-`cronjobs/patch` + `jobs/delete` it needs for the chat skill below.
+The watcher CronJob, its service account, RBAC (the cron pod needs
+`pods/exec` on the claw-code deployment's pods), and the chat-skill
+ConfigMap are all in
+[`k8s/050-issue-watcher.yaml`](k8s/050-issue-watcher.yaml).
 
 ### Controlling it from chat
 
@@ -335,13 +339,14 @@ recognises plain-text triggers:
 |---|---|
 | `watcher status` | `kubectl get cronjob issue-watcher -o jsonpath=…` |
 | `watcher start` | `kubectl patch cronjob issue-watcher … suspend:false` |
-| `watcher stop` | `kubectl patch … suspend:true` AND `kubectl delete jobs -l app=issue-fixer` |
-| `watcher list` | `kubectl get jobs -l app=issue-fixer` |
-| `watcher kill` | only deletes in-flight fixers; CronJob stays scheduled |
+| `watcher stop`  | `kubectl patch … suspend:true` AND `pkill -f 'openclaw agent --local'` AND `rm -rf $HOME/.openclaw/.fixer-locks/*` |
+| `watcher list`  | `ls $HOME/.openclaw/.fixer-locks/` (one line per active repo) |
+| `watcher logs <repo>#<n>` | `tail $HOME/.openclaw/fixer-logs/<owner>_<name>-<n>.log` |
+| `watcher kill`  | the second half of `stop` only — terminates in-flight fixers without suspending the CronJob |
 
-`watcher stop` deliberately kills in-flight fixer pods too — partial
-work is discarded, because the user's intent on "stop" is "stop
-coding work right now", not "finish what's in progress".
+`watcher stop` deliberately kills in-flight subprocesses too —
+partial work is discarded, because the user's intent on "stop" is
+"stop coding work right now", not "finish what's in progress".
 
 `spec.suspend` is *deliberately absent* from the CronJob manifest
 (K8s defaults it to `false`). The deploy workflow re-applies the
