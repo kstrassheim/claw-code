@@ -1,10 +1,9 @@
 ---
 # SKILL.md for the issue-watcher chat skill, mounted at
-# ~/.openclaw/workspace/skills/issue-watcher/SKILL.md via subPath in the
-# Deployment. Lets the user toggle / inspect the CronJob from chat
-# (e.g. "watcher stop") without an image rebuild — change the data
-# block here, push, deploy applies the new ConfigMap, kubectl rollout
-# restart picks it up (subPath mounts don't reload live).
+# ~/.openclaw/workspace/skills/issue-watcher/SKILL.md via subPath.
+# Lets the user toggle / inspect the watcher from chat without an
+# image rebuild — edit, push, redeploy applies the new ConfigMap,
+# then `kubectl rollout restart deployment/claw-code` picks it up.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,27 +13,32 @@ data:
   SKILL.md: |
     ---
     name: issue-watcher
-    description: Toggle and inspect the K8s CronJob that auto-spawns GitHub issue-fixer agents for issues assigned to the bot.
+    description: Toggle and inspect the autonomous issue-fixer that runs as a subprocess inside this pod.
     user-invocable: true
     ---
 
     # issue-watcher — control the autonomous issue fixer
 
-    The cluster runs a CronJob `issue-watcher` (namespace `claw-code`)
-    every 5 minutes. Each tick lists open GitHub issues assigned to
-    this bot account, then spawns a K8s Job per issue that runs
-    `openclaw agent --local` to clone, code, push, and open a PR. At
-    most 2 fixer Jobs run per repo at a time; each is bounded to 1
-    hour by `activeDeadlineSeconds`.
+    A CronJob `issue-watcher` (namespace `claw-code`) ticks every 5
+    minutes. On each tick it lists open GitHub issues assigned to
+    this bot account, then **spawns an `openclaw agent --local`
+    subprocess inside this very pod**, one per (repo, issue), against
+    a long-lived git checkout under `~/.openclaw/projects/<repo>/`.
+
+    **Concurrency is per repo, capped at 1.** The fixer holds a
+    `mkdir`-based lock at `~/.openclaw/.fixer-locks/<owner>__<name>/`;
+    queued issues for a busy repo wait for the next tick. Each fixer
+    is bounded to ~1 hour wall-clock by the agent's `--timeout`.
 
     Use this skill when the user says any of:
 
     | User says | Run |
     |---|---|
-    | `watcher status`, `is the watcher on?`, `what's the issue watcher doing?` | the status command below |
+    | `watcher status`, `is the watcher on?`, `what's the issue watcher doing?` | the status command |
     | `watcher start`, `enable the watcher`, `turn on the issue fixer` | the start command |
     | `watcher stop`, `pause the watcher`, `disable issue fixing` | the stop command |
-    | `watcher list`, `what issues are being fixed?`, `active fixer jobs` | the list command |
+    | `watcher list`, `what issues are being fixed?`, `active fixers` | the list command |
+    | `watcher logs <repo>#<issue>` | tail the fixer log for that pair |
 
     ## Commands (run via your `exec` tool — kubectl is in PATH)
 
@@ -46,7 +50,6 @@ data:
     ```
 
     Report `suspended=true` as **stopped**, `false` as **running**.
-    Include `lastSchedule` so the user sees when it last fired.
 
     ### start
 
@@ -59,77 +62,103 @@ data:
 
     ### stop
 
-    Two operations: suspend the CronJob AND delete every in-flight
-    fixer Job immediately (the user expects `stop` to actually stop
-    coding work, not just block new ticks).
+    Two operations: suspend the CronJob AND kill every in-flight
+    fixer subprocess inside this pod immediately.
 
     ```
     kubectl -n claw-code patch cronjob issue-watcher \
       -p '{"spec":{"suspend":true}}'
-    kubectl -n claw-code delete jobs -l app=issue-fixer
+    pkill -f 'openclaw agent --local' || true
+    rm -rf $HOME/.openclaw/.fixer-locks/* 2>/dev/null
     ```
 
-    Run both. Then run the status command. Report:
+    Then run the status command. Report:
       - the new suspended state, and
-      - how many fixer Jobs were terminated (the second command
-        prints one `job.batch "<name>" deleted` line per Job).
+      - how many fixer subprocesses were terminated (pkill returns
+        non-zero when nothing matched — that's fine).
 
-    Partial work in those Jobs is discarded — there is no clean
-    shutdown handshake. That is the user's stated intent.
+    Partial work in those subprocesses is discarded.
 
     ### list
 
     ```
-    kubectl -n claw-code get jobs -l app=issue-fixer \
-      -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[*].type,AGE:.metadata.creationTimestamp,ISSUE:.metadata.labels.issueNumber,REPO:.metadata.labels.issueRepo
+    ls -1 $HOME/.openclaw/.fixer-locks/ 2>/dev/null | sed 's|__|/|'
     ```
 
-    Each row is a fixer Job. The labels `issueRepo` (slug) and
-    `issueNumber` identify what it's working on. Empty result means
-    nothing is being fixed right now.
+    Each line is an `<owner>/<name>` repo with an in-flight fixer.
+    Empty output = nothing is being fixed right now.
+
+    For details, also run:
+
+    ```
+    pgrep -af 'openclaw agent --local'
+    ```
+
+    ### logs
+
+    For `watcher logs <repo>#<issue>` (e.g. `watcher logs kstrassheim/claw-code#55`):
+
+    ```
+    tail -n 80 $HOME/.openclaw/fixer-logs/<owner>_<name>-<n>.log
+    ```
+
+    (The slash in the repo name becomes an underscore in the log
+    filename. `<n>` is the issue number.)
 
     ### kill (alias for the second half of `stop`)
 
-    When the user wants to terminate in-flight fixers but keep the
-    CronJob running (so the next tick can pick the issues up again):
-
     ```
-    kubectl -n claw-code delete jobs -l app=issue-fixer
+    pkill -f 'openclaw agent --local' || true
+    rm -rf $HOME/.openclaw/.fixer-locks/* 2>/dev/null
     ```
 
     ## Reporting style
 
-    Keep replies terse. One line per piece of state. Example status
-    reply:
+    Keep replies terse. One line per piece of state. Example status:
 
     > Watcher: **running** · schedule `*/5 * * * *` · last fired
-    > 2026-05-18T10:25:00Z · 1 fixer Job active (claw-code#52).
+    > 2026-05-18T15:25:00Z · 1 fixer active (claw-code#55).
 
-    Do not paste raw kubectl JSON output to chat unless the user asks.
+    Do not paste raw kubectl / pgrep output unless the user asks.
 ---
 # Issue-watcher CronJob — polls GitHub for issues assigned to the bot
-# every 5 minutes and `kubectl create job`s an `openclaw agent --local`
-# Job per (repo, issue), bounded to 2 concurrent Jobs per repo.
+# every 5 minutes and `kubectl exec`s into the main claw-code pod,
+# spawning an `openclaw agent --local` subprocess there per (repo,
+# issue).
+#
+# Architecture, top-down:
+#   - This CronJob runs `cron-issue-spawn` (baked into the image).
+#   - cron-issue-spawn calls `heartbeat-issue-tick` (also baked in),
+#     which queries the GitHub API and lists lock dirs under
+#     ~/.openclaw/.fixer-locks/ in the claw-code pod (via kubectl
+#     exec). The lock list is the concurrency ledger: max 1 fixer
+#     per repo, because checkouts can't be shared.
+#   - For each (repo, issue) that's not locked, the spawner runs
+#     `kubectl exec <claw-code-pod> -- nohup fixer-runner ...&`.
+#   - `fixer-runner` (also baked in) acquires the per-repo lock,
+#     git-clones-or-updates ~/.openclaw/projects/<repo>/, branches,
+#     runs the embedded agent in --local mode, and releases the lock
+#     on every exit path via a bash trap.
+#
+# Toggle from chat: see the SKILL.md above.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: issue-watcher
   namespace: claw-code
 ---
-# Scoped only to claw-code. No cluster-wide access; only the Jobs API
-# in this single namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: issue-watcher
   namespace: claw-code
 rules:
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["get", "list", "watch", "create"]
   - apiGroups: [""]
-    resources: ["pods", "pods/log"]
+    resources: ["pods"]
     verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -145,9 +174,9 @@ roleRef:
   kind: Role
   name: issue-watcher
 ---
-# Permissions for the claw-code bot's chat-skill commands
-# (watcher start/stop/status/list/kill). Strictly narrower than the
-# fixer SA — only the watcher CronJob itself and fixer Jobs.
+# Permissions for the bot's chat-skill commands (CronJob get/patch
+# only). Subprocess kill happens locally inside the pod via pkill,
+# not via the K8s API.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -158,9 +187,6 @@ rules:
     resources: ["cronjobs"]
     resourceNames: ["issue-watcher"]
     verbs: ["get", "patch"]
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["get", "list", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -185,17 +211,14 @@ metadata:
     app: issue-watcher
 spec:
   schedule: "*/5 * * * *"
-  # Forbid: a tick takes seconds; never overlap. Skip if the previous
-  # one is still running (shouldn't happen, but it caps the blast radius
-  # if it ever does).
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   startingDeadlineSeconds: 120
-  # spec.suspend deliberately omitted — defaults to false, runs on
-  # initial deploy. Without the field present, `kubectl patch …
-  # suspend:true` from the chat skill stays applied even if the deploy
-  # pipeline re-applies this manifest later.
+  # spec.suspend deliberately omitted — K8s defaults to false. With
+  # the field unmanaged at deploy time, chat-driven `watcher stop`
+  # (which patches suspend=true at runtime) sticks across `kubectl
+  # apply -f k8s/` reconciles.
   jobTemplate:
     metadata:
       labels:
@@ -216,20 +239,11 @@ spec:
               image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
               imagePullPolicy: Always
               command: ["/usr/local/bin/cron-issue-spawn"]
-              env:
-                # cron-issue-spawn reads $POD_NAME to look up its own
-                # container image at runtime — spawned fixer Jobs use
-                # the same tag.
-                - name: POD_NAME
-                  valueFrom:
-                    fieldRef:
-                      fieldPath: metadata.name
-                - name: JOB_AGENT_TIMEOUT_SECONDS
-                  value: "3600"
               envFrom:
-                # GITHUB_TOKEN is the only secret the watcher itself
-                # needs (for the GitHub API calls). Model API keys are
-                # injected separately into each spawned fixer Job.
+                # GITHUB_TOKEN is the only secret the watcher needs
+                # (for the GitHub API calls). Model API keys and
+                # other env are already in the main claw-code pod,
+                # inherited by the spawned fixer subprocesses.
                 - secretRef:
                     name: claw-code-secrets
               resources:

@@ -2,40 +2,37 @@
 # cron-issue-spawn: invoked by the issue-watcher CronJob every tick.
 #
 # Calls the (read-only) tick planner to produce a JSON spawn plan, then
-# for each entry creates a K8s Job that runs `openclaw agent --local`
-# against the issue. Idempotent — the planner enforces the cap based on
-# already-running Jobs, and `kubectl create` uses a per-tick timestamp
-# suffix to keep the Job name unique within the 63-char DNS-1123 limit.
+# for each entry kubectl-exec's into the claw-code (openclaw) pod and
+# backgrounds /usr/local/bin/fixer-runner.sh there. The fixer runs as a
+# subprocess inside the main container — it shares the pod's network,
+# secrets, config, and persistent workspace volume (so it can keep a
+# long-lived git checkout under ~/.openclaw/projects/<repo>/).
 #
-# This script does NOT decide what to spawn. It only translates the
-# planner's `toSpawn` array into Job manifests. Decision logic lives in
-# heartbeat-issue-tick.py.
-#
-# Project-specific values are hardcoded for claw-code: the spawned
-# Jobs mount claw-code-secrets + claw-code-config-template, and rely on
-# AKS's managed-identity ACR pull (no imagePullSecrets, no nodeSelector,
-# no tolerations). The claw-code-local sibling has its own copy with
-# the on-prem k3s placement bits.
+# Concurrency lives in the pod's filesystem: one mkdir lock per repo,
+# max 1 fixer per repo (two subprocesses can't safely share the same
+# on-disk checkout). Issues queued for a busy repo wait for the next
+# tick.
 set -euo pipefail
 
-# Resolve our own container image so spawned fixer Jobs run the same
-# tag. The downward API can't return spec.containers[].image as a
-# scalar, so look it up via the K8s API using POD_NAME (downward-API
-# injected by the CronJob spec).
 NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
-ISSUE_FIXER_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$POD_NAME" \
-    -o jsonpath='{.spec.containers[?(@.name=="watcher")].image}')
-export ISSUE_FIXER_IMAGE
-test -n "$ISSUE_FIXER_IMAGE" || { echo "ERROR: could not resolve ISSUE_FIXER_IMAGE for $POD_NAME" >&2; exit 1; }
+
+# Resolve the running main pod (Deployment.metadata.name == "claw-code"
+# and the pod selector is `app=claw-code`, not `app=openclaw` — that
+# label was renamed when the namespace was renamed).
+OPENCLAW_POD=$(kubectl -n "$NAMESPACE" get pod \
+    -l app=claw-code \
+    -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
+    | awk '{print $1}')
+test -n "$OPENCLAW_POD" || { echo "ERROR: no Running claw-code pod found in $NAMESPACE" >&2; exit 1; }
+export OPENCLAW_POD
+echo "claw-code pod: $OPENCLAW_POD"
 
 PLAN=$(/usr/local/bin/heartbeat-issue-tick)
 echo "$PLAN" | python3 -c "
-import json, os, subprocess, sys, time
+import json, os, subprocess, sys, shlex
 plan = json.load(sys.stdin)
 
-IMAGE = os.environ['ISSUE_FIXER_IMAGE']
-TTL_SECONDS = int(os.environ.get('JOB_AGENT_TIMEOUT_SECONDS', '3600'))
-ACTIVE_DEADLINE = TTL_SECONDS + 100  # K8s kills if agent doesn't self-exit
+OPENCLAW_POD = os.environ['OPENCLAW_POD']
 NAMESPACE = plan['namespace']
 
 errors = [r for r in plan['repos'] if r.get('error')]
@@ -46,113 +43,31 @@ spawned = 0
 for r in plan['repos']:
     if r.get('error'):
         continue
-    slug = r['slug']
     for issue in r.get('toSpawn', []):
+        repo = r['repo']
         n = issue['issueNumber']
-        # Names must be <= 63 chars and DNS-1123. Slug already lowercase
-        # with dots; we replace dots with dashes for the Job name.
-        name_slug = slug.replace('.', '-')
-        ts = int(time.time())
-        job_name = f'fix-{name_slug}-{n}-{ts}'
-        job_name = job_name[:63]
+        url = issue['url']
+        title = issue['title']
 
-        message = (
-            f\"Fix GitHub issue {issue['url']} end-to-end. Use the gh-issues skill if helpful. \"
-            f\"Steps: (1) clone {r['repo']} into a temp dir, (2) create a feature branch \"
-            f\"issue-{n}-fix, (3) implement the change, (4) commit with a descriptive message, \"
-            f\"(5) push the branch, (6) open a PR back to the source repo's default branch \"
-            f\"with 'Closes #{n}' in the body, then stop. Do not delegate to subagents. \"
-            f\"Do not ask the user for confirmation. Use cameron-claw as the git author.\"
+        runner_args = ' '.join(shlex.quote(a) for a in [repo, str(n), url, title])
+        remote_cmd = (
+            f'setsid bash -c '
+            + shlex.quote(f'nohup /usr/local/bin/fixer-runner {runner_args} >/dev/null 2>&1 </dev/null &')
+            + ' >/dev/null 2>&1 </dev/null &'
         )
 
-        manifest = {
-            'apiVersion': 'batch/v1',
-            'kind': 'Job',
-            'metadata': {
-                'name': job_name,
-                'namespace': NAMESPACE,
-                'labels': {
-                    'app': 'issue-fixer',
-                    'issueRepo': slug,
-                    'issueNumber': str(n),
-                },
-            },
-            'spec': {
-                'ttlSecondsAfterFinished': 600,
-                'activeDeadlineSeconds': ACTIVE_DEADLINE,
-                'backoffLimit': 0,
-                'template': {
-                    'metadata': {
-                        'labels': {
-                            'app': 'issue-fixer',
-                            'issueRepo': slug,
-                            'issueNumber': str(n),
-                        }
-                    },
-                    'spec': {
-                        'restartPolicy': 'Never',
-                        'serviceAccountName': 'issue-watcher',
-                        'containers': [{
-                            'name': 'agent',
-                            'image': IMAGE,
-                            # K8s default: Always for :latest, IfNotPresent
-                            # otherwise. Both are fine for our tags.
-                            'command': [
-                                'openclaw', 'agent', '--local',
-                                '--timeout', str(TTL_SECONDS),
-                                '--session-id', f'issue-{slug}-{n}',
-                                '--message', message,
-                            ],
-                            'envFrom': [{'secretRef': {'name': 'claw-code-secrets'}}],
-                            'env': [
-                                {'name': 'KNOWLEDGE_BOT_ISSUE_URL', 'value': issue['url']},
-                            ],
-                            # Mount the openclaw config template directly:
-                            # the rendered claw-code-config ConfigMap is
-                            # currently empty due to a render-config.sh
-                            # namespace bug (writes to ns 'openclaw'), so
-                            # the template is the only reliable source of
-                            # provider definitions. The init container
-                            # copies it into the agent's workspace dir.
-                            'volumeMounts': [
-                                {'name': 'workspace', 'mountPath': '/home/node/.openclaw'},
-                                {'name': 'config', 'mountPath': '/template'},
-                            ],
-                            'resources': {
-                                'requests': {'cpu': '200m', 'memory': '512Mi'},
-                                'limits': {'cpu': '1500m', 'memory': '3Gi'},
-                            },
-                        }],
-                        'initContainers': [{
-                            'name': 'render-config',
-                            'image': IMAGE,
-                            'command': ['/bin/sh', '-c',
-                                'mkdir -p /home/node/.openclaw && '
-                                'cp /template/openclaw.json /home/node/.openclaw/openclaw.json'],
-                            'volumeMounts': [
-                                {'name': 'workspace', 'mountPath': '/home/node/.openclaw'},
-                                {'name': 'config', 'mountPath': '/template'},
-                            ],
-                        }],
-                        'volumes': [
-                            {'name': 'workspace', 'emptyDir': {}},
-                            {'name': 'config', 'configMap': {'name': 'claw-code-config-template'}},
-                        ],
-                    }
-                }
-            }
-        }
-
+        # Container name inside the pod is 'claw-code' (not 'openclaw').
         proc = subprocess.run(
-            ['kubectl', 'apply', '-f', '-'],
-            input=json.dumps(manifest),
-            capture_output=True, text=True,
+            ['kubectl', '-n', NAMESPACE, 'exec', OPENCLAW_POD, '-c', 'claw-code',
+             '--', 'bash', '-c', remote_cmd],
+            capture_output=True, text=True, timeout=30,
         )
         if proc.returncode != 0:
-            print(f'ERROR spawning {job_name}: {proc.stderr}', file=sys.stderr)
+            print(f'ERROR exec for {repo}#{n}: rc={proc.returncode} stderr={proc.stderr.strip()}', file=sys.stderr)
         else:
-            print(f'spawned {job_name} for {r[\"repo\"]}#{n}: {issue[\"title\"]}')
+            print(f'spawned fixer for {repo}#{n}: {title}')
             spawned += 1
 
-print(f'tick done: spawned={spawned}, deferred_due_to_limit={sum(r.get(\"deferredDueToLimit\", 0) for r in plan[\"repos\"])}')
+deferred = sum(r.get('deferredDueToLimit', 0) for r in plan['repos'])
+print(f'tick done: spawned={spawned}, deferred_due_to_limit={deferred}')
 "

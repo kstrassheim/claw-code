@@ -219,6 +219,7 @@ RUN chown -R 1000:1000 /opt/debug-mcp \
 USER root
 COPY --chmod=0755 heartbeat-issue-tick.py /usr/local/bin/heartbeat-issue-tick
 COPY --chmod=0755 cron-issue-spawn.sh    /usr/local/bin/cron-issue-spawn
+COPY --chmod=0755 fixer-runner.sh        /usr/local/bin/fixer-runner
 
 # Timezone: Europe/Zurich. Without this, libc time + Node Date default
 # to UTC, so chat timestamps, heartbeat log lines, and the runtime
