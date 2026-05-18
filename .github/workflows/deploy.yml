@@ -283,10 +283,10 @@ jobs:
             --dry-run=client -o yaml \
           | kubectl apply -f -
 
-      - name: Roll out openclaw deployment to pick up new :latest image
+      - name: Roll out claw-code deployment to pick up new :latest image
         run: |
-          kubectl rollout restart deployment/openclaw -n claw-code
-          kubectl rollout status   deployment/openclaw -n claw-code --timeout=15m
+          kubectl rollout restart deployment/claw-code -n claw-code
+          kubectl rollout status   deployment/claw-code -n claw-code --timeout=15m
 
       - name: Azure logout
         if: always()
