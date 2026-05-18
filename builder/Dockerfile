@@ -220,4 +220,15 @@ USER root
 COPY --chmod=0755 heartbeat-issue-tick.py /usr/local/bin/heartbeat-issue-tick
 COPY --chmod=0755 cron-issue-spawn.sh    /usr/local/bin/cron-issue-spawn
 
+# Timezone: Europe/Zurich. Without this, libc time + Node Date default
+# to UTC, so chat timestamps, heartbeat log lines, and the runtime
+# context the LLM sees are off by 1-2h vs the user's locale. The
+# `Europe/Zurich` IANA name handles CET ↔ CEST automatically.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tzdata \
+ && ln -snf /usr/share/zoneinfo/Europe/Zurich /etc/localtime \
+ && echo "Europe/Zurich" > /etc/timezone \
+ && rm -rf /var/lib/apt/lists/*
+ENV TZ=Europe/Zurich
+
 USER node
