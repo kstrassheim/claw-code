@@ -1,3 +1,3 @@
 # Hello
 
-Hello all!
+hello all
