@@ -213,7 +213,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: watcher
-              image: clwcodecodevdev1.azurecr.io/claw-code/claw-code:latest
+              image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
               imagePullPolicy: Always
               command: ["/usr/local/bin/cron-issue-spawn"]
               env:
