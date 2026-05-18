@@ -95,6 +95,15 @@ spec:
             - /bin/sh
             - -c
             - |
+              # Pre-create the subPath parent dirs that the main container's
+              # ConfigMap bind-mounts (workspace/TOOLS.md, workspace/skills/
+              # issue-watcher/SKILL.md) target. If we don't, kubelet creates
+              # them at main-container start as root:root mode 0755. fsGroup
+              # re-chgrps to gid 1000 but doesn't add g+w, so node can't write
+              # files like AGENTS.md into workspace/ and Telegram dispatch
+              # fails with EACCES. By pre-creating, kubelet finds the dirs
+              # already in place and the chown/chmod below cover them.
+              mkdir -p /home/node/.openclaw/workspace/skills/issue-watcher
               chown -R 1000:1000 /home/node/.openclaw
               chmod -R u+rwX,g+rwX /home/node/.openclaw
           volumeMounts:
