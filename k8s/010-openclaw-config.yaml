@@ -92,17 +92,17 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: openclaw-config
+  name: claw-code-config
   namespace: claw-code
 data:
   openclaw.json: "{}"
 ---
 # Script the init container runs. Lives in its own ConfigMap so changes
-# don't force the openclaw-config ConfigMap to be recreated.
+# don't force the claw-code-config ConfigMap to be recreated.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: openclaw-render-scripts
+  name: claw-code-render-scripts
   namespace: claw-code
 data:
   render-config.sh: |
@@ -222,11 +222,11 @@ data:
     chmod 0600 "$PERSISTENT_FILE"
     echo "Wrote $PERSISTENT_FILE ($(wc -c < "$PERSISTENT_FILE") bytes)"
 
-    # Also keep the openclaw-config ConfigMap up to date — not consumed
+    # Also keep the claw-code-config ConfigMap up to date — not consumed
     # by the main container today, but useful for debugging (`kubectl
-    # get cm openclaw-config -o yaml`) and harmless.
-    kubectl create configmap openclaw-config \
-      -n openclaw \
+    # get cm claw-code-config -o yaml`) and harmless.
+    kubectl create configmap claw-code-config \
+      -n claw-code \
       --from-file=openclaw.json=/tmp/openclaw.json \
       --dry-run=client -o yaml \
     | kubectl apply -f -

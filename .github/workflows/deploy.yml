@@ -277,7 +277,7 @@ jobs:
             k8s/tools/TOOLS-debug.md \
             > /tmp/tools-md/TOOLS.md
           echo "Assembled TOOLS.md is $(wc -c < /tmp/tools-md/TOOLS.md) bytes ($(wc -l < /tmp/tools-md/TOOLS.md) lines)."
-          kubectl create configmap openclaw-tools-md \
+          kubectl create configmap claw-code-tools-md \
             --namespace claw-code \
             --from-file=TOOLS.md=/tmp/tools-md/TOOLS.md \
             --dry-run=client -o yaml \
