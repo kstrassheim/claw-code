@@ -87,10 +87,11 @@ WIPE_FULL_STATE=0
 wipe_issue_state() {
   rm -f "$CURSOR_FILE" 2>/dev/null
   rm -f "$PROJECT_DIR/.issue-${ISSUE_NUM}.ci-fingerprint" 2>/dev/null
+  rm -f "$STATE_ROOT/issue-markers/${REPO//\//__}-${ISSUE_NUM}.lexical-asked" 2>/dev/null
   rm -f "$STATE_ROOT"/agents/main/sessions/issue-"${REPO//\//-}"-"$ISSUE_NUM"-*.jsonl 2>/dev/null
   rm -f "$STATE_ROOT"/agents/main/sessions/issue-"${REPO//\//-}"-"$ISSUE_NUM"-*.trajectory.jsonl 2>/dev/null
   rm -f "$STATE_ROOT"/agents/main/sessions/issue-"${REPO//\//-}"-"$ISSUE_NUM"-*.trajectory-path.json 2>/dev/null
-  echo "[cleanup] wiped local state for $REPO#$ISSUE_NUM (cursor + ci-fingerprint + session files)"
+  echo "[cleanup] wiped local state for $REPO#$ISSUE_NUM (cursor + ci-fingerprint + lexical-asked + session files)"
 }
 
 on_exit() {
@@ -552,7 +553,11 @@ fi
 # until the user replies (no PR + no new @-mention to bot). When the
 # user @-mentions the bot, the pre-flight gate routes to agent turn
 # normally and the agent has the user's clarification in context.
-LEXICAL_ASKED_MARKER="$PROJECT_DIR/.issue-${ISSUE_NUM}.lexical-asked"
+# Marker location: outside the git working tree on the PVC. Anything
+# inside PROJECT_DIR gets wiped by the `git clean -fdx` in the
+# fresh-branch checkout path above (.43 bug). Use a sibling dir.
+LEXICAL_ASKED_MARKER="$STATE_ROOT/issue-markers/${REPO//\//__}-${ISSUE_NUM}.lexical-asked"
+mkdir -p "$(dirname "$LEXICAL_ASKED_MARKER")"
 if [ -z "$EXISTING_PR_NUMBER" ] && [ ! -f "$LEXICAL_ASKED_MARKER" ]; then
   PATTERN_HIT="$(LEX_TITLE="$ISSUE_TITLE" LEX_BODY="$ISSUE_BODY" python3 <<'PYEOF'
 import os, re, sys
