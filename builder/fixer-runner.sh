@@ -630,6 +630,37 @@ Reply with \`@$BOT_LOGIN\` and your choice and I'll proceed."
   fi
 fi
 
+# Gate 1.6: Lexical-asked + no user reply → keep waiting silently.
+# After the lexical guard posts the ASK on a fresh issue, every
+# subsequent tick that finds the marker present + no new @-mention
+# to the bot since cursor must exit silently. Otherwise the wrapper
+# falls through to the initial agent invocation, the agent gets the
+# untouched (destructive) issue body, and ships destructive work
+# despite the ask being posted (.44 bug observed on #54/#33).
+if [ -z "$EXISTING_PR_NUMBER" ] && [ -f "$LEXICAL_ASKED_MARKER" ]; then
+  POST_ASK_NEW="$(fetch_new_mentions "$LAST_SEEN_ID" 2>/dev/null || echo '[]')"
+  POST_ASK_NEW_COUNT="$(echo "$POST_ASK_NEW" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')"
+  if [ "$POST_ASK_NEW_COUNT" = "0" ]; then
+    echo "[lexical-guard] marker present, no new @-mention since cursor=$LAST_SEEN_ID — exiting silently (waiting for user reply)"
+    exit 0
+  fi
+  echo "[lexical-guard] marker present AND $POST_ASK_NEW_COUNT new @-mention(s) since cursor — user replied, proceeding with agent"
+  # Pre-react + advance cursor so the initial prompt sees the user's
+  # reply consistently and we never re-prompt for the same comment.
+  while read -r cid; do
+    [ -z "$cid" ] && continue
+    react_to_comment "$cid"
+    if [ "$cid" -gt "$LAST_SEEN_ID" ]; then
+      LAST_SEEN_ID="$cid"
+      echo "$cid" > "$CURSOR_FILE"
+    fi
+  done < <(echo "$POST_ASK_NEW" | python3 -c "
+import sys, json
+for c in json.load(sys.stdin):
+    print(c['id'])
+")
+fi
+
 # CI-gate enforcement on the existing PR (idempotent): if any check is
 # red/pending/missing AND a reviewer is requested, remove the reviewer.
 # Runs on every tick so a premature add-reviewer is unwound within ~5
