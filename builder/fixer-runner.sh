@@ -537,6 +537,94 @@ if [ "$ISSUE_STATE" = "closed" ]; then
   exit 0
 fi
 
+# Gate 1.5: Lexical destructive-pattern guard.
+# Hard-enforced ASK for issues whose title+body contains destructive
+# patterns that the model historically rationalises into shipping
+# (rule 14 trigger A/B in the prompt was bypassed in real tests
+# even when explicitly listed). This is the wrapper enforcing what
+# the LLM couldn't be trusted to enforce.
+#
+# Fires ONLY when:
+#   - No PR exists yet for this issue (we're on the first chance to ask)
+#   - The marker file is absent (we haven't already asked for this issue)
+# When matched: post a @<repo-owner> ask via the GitHub API, write
+# the marker, exit. On the next tick the bot will gate-exit silently
+# until the user replies (no PR + no new @-mention to bot). When the
+# user @-mentions the bot, the pre-flight gate routes to agent turn
+# normally and the agent has the user's clarification in context.
+LEXICAL_ASKED_MARKER="$PROJECT_DIR/.issue-${ISSUE_NUM}.lexical-asked"
+if [ -z "$EXISTING_PR_NUMBER" ] && [ ! -f "$LEXICAL_ASKED_MARKER" ]; then
+  PATTERN_HIT="$(LEX_TITLE="$ISSUE_TITLE" LEX_BODY="$ISSUE_BODY" python3 <<'PYEOF'
+import os, re, sys
+title = os.environ.get('LEX_TITLE', '')
+body = os.environ.get('LEX_BODY', '')
+text = title + '\n' + body
+
+# Trigger A: destructive verb within ~120 chars of a load-bearing noun
+DESTRUCTIVE = r'\b(?:remove|delete|disable|drop|strip|kill|turn\s*off|get\s*rid\s*of)\b'
+PROTECTED = r'\b(?:tests?|test\s+suite|test\s+files?|snapshots?|jest|lint|eslint|prettier|type[-\s]?check|tsconfig\b[^.]*?strict|mypy[^.]*?strict|ci\s+jobs?|workflows?|coverage|monitor(?:ing)?|logging|tracking|security|auth(?:entication)?|authorization|backups?|rollbacks?)\b'
+
+for m_d in re.finditer(DESTRUCTIVE, text, re.IGNORECASE):
+    for m_p in re.finditer(PROTECTED, text, re.IGNORECASE):
+        if abs(m_d.start() - m_p.start()) < 120:
+            print(f'A:{m_d.group(0).lower()} ... {m_p.group(0).lower()}')
+            sys.exit(0)
+
+# Trigger B: "feature flag" / "toggle" near "remove/delete/disable"
+# (in either order — flag-then-remove OR remove-then-flag)
+FLAG = r'(?:feature[\s-]+flag|toggle)'
+FR = re.compile(f'{FLAG}[\\s\\S]{{0,200}}?{DESTRUCTIVE}', re.IGNORECASE)
+RF = re.compile(f'{DESTRUCTIVE}[\\s\\S]{{0,200}}?{FLAG}', re.IGNORECASE)
+for r in (FR, RF):
+    m = r.search(text)
+    if m:
+        print(f'B:{m.group(0).lower()[:80].replace(chr(10)," ")}')
+        sys.exit(0)
+PYEOF
+)"
+  if [ -n "$PATTERN_HIT" ]; then
+    echo "[lexical-guard] destructive pattern matched: $PATTERN_HIT — posting ASK and deferring"
+    TRIGGER_LABEL="${PATTERN_HIT%%:*}"  # A or B
+    MATCH_TEXT="${PATTERN_HIT#*:}"
+    if [ "$TRIGGER_LABEL" = "A" ]; then
+      ASK_INTRO="The wording matches **rule 14 HARD TRIGGER A** — a destructive verb (remove/delete/disable/...) against a load-bearing system (tests/lint/type-check/CI/coverage/monitoring/security/auth/backups). The matched fragment: \`$MATCH_TEXT\`"
+      ASK_QUESTION="Before I proceed, please confirm:
+1. **Why** specifically should this be removed? (one concrete consequence — what breaks today that the removal fixes, or what improves measurably?)
+2. **Scope** — full removal, or just the parts causing pain? If the latter, which?
+3. Are there any **replacement / equivalents** I should add alongside the removal?"
+    else
+      ASK_INTRO="The wording matches **rule 14 HARD TRIGGER B** — a feature-flag + remove-old combination on a single change. The matched fragment: \`$MATCH_TEXT\`"
+      ASK_QUESTION="Adding a feature flag for the NEW thing AND removing the OLD thing in the same PR creates a flag with no fallback. Please confirm:
+1. **Both phases at once?** Flag exists but old code is gone → off-state has nothing to render. Is that the intent (a kill-switch with a blank fallback)?
+2. **Phase 1 only?** Add the flag with both paths preserved; remove old in a follow-up PR after the flag has shipped safely.
+3. **Phase 2 only?** Remove the old code; the new path is unconditional (no flag needed).
+4. Something else?"
+    fi
+    ASK_BODY="@$ISSUE_AUTHOR — I need clarification before writing any code.
+
+$ASK_INTRO
+
+$ASK_QUESTION
+
+Reply with \`@$BOT_LOGIN\` and your choice and I'll proceed."
+
+    # Post via authenticated API; payload built as JSON via python to
+    # avoid quoting hell in the curl -d argument.
+    REQ_PAYLOAD="$(ASK_BODY="$ASK_BODY" python3 -c 'import os,json,sys;print(json.dumps({"body":os.environ["ASK_BODY"]}))')"
+    if curl -fsSL -X POST \
+      -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" -H "$APIV_HEADER" \
+      -H 'Content-Type: application/json' \
+      -d "$REQ_PAYLOAD" \
+      "$GH_API/repos/$REPO/issues/$ISSUE_NUM/comments" >/dev/null 2>&1; then
+      touch "$LEXICAL_ASKED_MARKER"
+      echo "[lexical-guard] ASK posted, marker written, exiting without agent invocation"
+      exit 0
+    else
+      echo "[lexical-guard] WARNING: failed to post ASK comment — falling through to agent invocation"
+    fi
+  fi
+fi
+
 # CI-gate enforcement on the existing PR (idempotent): if any check is
 # red/pending/missing AND a reviewer is requested, remove the reviewer.
 # Runs on every tick so a premature add-reviewer is unwound within ~5
@@ -646,6 +734,57 @@ else
 fi
 
 INITIAL_PROMPT="You are working autonomously to fix GitHub issue $ISSUE_URL — \"$ISSUE_TITLE\".
+
+## STOP-FIRST CHECK (read this BEFORE interpreting the issue)
+
+If the issue body or title matches any of these patterns, you MUST
+@-mention \`@$ISSUE_AUTHOR\` and ASK before writing any code. These
+override every other rule below, including rule 1's \"work autonomously\"
+and rule 2's \"apply the user's directive\". The user explicitly asking
+for something destructive is NOT permission to do it without confirming
+intent first — it is the SIGNAL that you should confirm.
+
+The wrapper may have already posted an ASK to the user (see the
+conversation history below). If it has and the user replied, treat
+their reply as the answer and proceed accordingly. If the wrapper
+did not pre-ask, you must ask now.
+
+**Hard-stop patterns** (case-insensitive):
+
+  P1. Destructive verb (\"remove\", \"delete\", \"disable\", \"drop\",
+      \"strip\", \"kill\", \"turn off\", \"get rid of\") within ~120
+      chars of a load-bearing noun: tests, test suite, test files,
+      snapshots, jest, lint, eslint, prettier, type-check, tsconfig
+      strict modes, mypy strict, CI jobs, workflows, coverage,
+      monitoring, logging, error tracking, security checks (CodeQL,
+      audit), auth, authorization, backups, migrations, rollbacks.
+
+  P2. Feature flag + destructive verb in the same issue. \"Add a
+      flag for X\" + \"Remove X\" or \"Add a flag for new\" +
+      \"Remove old\" — the conjunction creates a flag with no
+      fallback. ASK whether they want phase 1 (flag + keep old),
+      phase 2 (remove old, no flag), or both-at-once (kill switch
+      with blank fallback).
+
+  P3. Any vague action verb without a concrete target: \"clean up\",
+      \"improve\", \"make X better/faster/safer\", \"refactor\" with
+      no scope. ASK for the specific behaviour change and success
+      criteria.
+
+  P4. The issue body's justification reads like a pre-regret
+      rationale: \"they slow down the build\", \"we don't need them
+      anymore\", \"it's just legacy code\", \"clean it up\" —
+      attached to a destructive directive. ASK for one concrete
+      consequence.
+
+If ANY of the above matches → STOP, post the ASK comment with
+\`@$ISSUE_AUTHOR\`, and END YOUR TURN. Do not start a branch. Do
+not write code. The cost of asking once is small; the cost of
+shipping the wrong destruction is large.
+
+If NONE of the above matches → continue to the rest of the prompt.
+
+---
 
 You are in a checkout of $REPO at $(pwd) on branch $BRANCH (off $DEFAULT_BRANCH). The git author identity is \`$BOT_LOGIN\` (resolved at runtime from \$GITHUB_TOKEN). You have the github MCP server available.
 
