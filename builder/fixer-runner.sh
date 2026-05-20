@@ -164,12 +164,14 @@ fetch_issue_state() {
   | python3 -c "import sys,json; print(json.load(sys.stdin).get('state','open'))"
 }
 
-# Author of the issue (the person who created it). Used as the
-# default @-mention target when the bot needs to ask for help.
-fetch_issue_author() {
-  curl -fsSL -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" -H "$APIV_HEADER" \
-    "$GH_API/repos/$REPO/issues/$ISSUE_NUM" \
-  | python3 -c "import sys,json; print(((json.load(sys.stdin).get('user') or {}).get('login')) or '')"
+# Repository owner login — the @-mention target for any question the
+# bot needs to ask. Pinned to the repo owner (NOT the issue author) on
+# purpose: later, the bot itself may create issues (e.g. from a chat
+# command), and pinging the issue.user.login would mean the bot pings
+# itself. The repo owner is always the right human to escalate to.
+# Derived from `$REPO` (owner/name) so no API call needed.
+repo_owner_login() {
+  echo "${REPO%%/*}"
 }
 
 # Filter to comments newer than cursor where the bot is @-mentioned
@@ -429,14 +431,10 @@ fi
 
 ISSUE_BODY="$(fetch_issue_body 2>/dev/null || echo '')"
 ALL_COMMENTS_JSON="$(fetch_all_comments 2>/dev/null || echo '[]')"
-ISSUE_AUTHOR="$(fetch_issue_author 2>/dev/null || echo '')"
-if [ -z "$ISSUE_AUTHOR" ]; then
-  # Fall back to repo owner if the issue API didn't return an author —
-  # the repo owner is always who created the project, so they're the
-  # best default ask-target.
-  ISSUE_AUTHOR="${REPO%%/*}"
-fi
-echo "[author] issue #$ISSUE_NUM created by @$ISSUE_AUTHOR — will be the default @-mention target when the bot needs help"
+# Default @-mention target = repo owner (NOT issue author). Stable
+# even when the bot itself creates issues later via chat commands.
+ISSUE_AUTHOR="$(repo_owner_login)"
+echo "[mention-target] @-mention target = repo owner @$ISSUE_AUTHOR (NOT issue author; stable across bot-created issues)"
 
 ISSUE_HISTORY_TEXT="$(python3 - <<'PY'
 import os, sys, json
@@ -785,7 +783,7 @@ $BRANCH_INSTRUCTION
      (b) the PR is the final deliverable (no more commits planned),
      (c) rule 7's self-merge exception does NOT apply.
    If a specific reviewer is named in the issue body or a
-   comment, use that; otherwise default to the issue author.
+   comment, use that; otherwise default to the repo owner.
    If rule 7's exception applies (you may self-merge), do NOT
    add a reviewer — proceed to merge once CI is green.
 
@@ -844,14 +842,14 @@ $BRANCH_INSTRUCTION
           add tests
       (d) If the threshold itself is genuinely wrong (e.g. it was
           set arbitrarily and the team agreed to relax it), that
-          is a SEPARATE conversation — @-mention the issue author
+          is a SEPARATE conversation — @-mention the repo owner
           per rule 5 with the concrete numbers and your reasoning.
           Do NOT lower it as a side effect of fixing an unrelated
           PR.
 
     If your only path to green CI is lowering a threshold, that
     is a strong signal you are in the rule-5 LAST-RESORT case —
-    ASK the issue author instead of silently weakening the gate.
+    ASK the repo owner instead of silently weakening the gate.
 
 13. **ASK BEFORE writing code that depends on values you cannot
     derive from the repository.** If the task requires *any*
