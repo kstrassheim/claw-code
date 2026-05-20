@@ -744,12 +744,24 @@ $BRANCH_INSTRUCTION
    alone wastes turns. Use the **github MCP** to fetch logs:
    \`github__list_workflow_runs\`, then
    \`github__get_workflow_run_usage\` /
-   \`github__download_workflow_run_logs\` etc. **Do NOT use
-   \`gh\` CLI** — the openclaw exec tool sanitizes \`\$GITHUB_TOKEN\`
-   from subprocesses, so every \`gh\` call will fail with
-   \"please run gh auth login\". Same applies to bare
-   \`curl -H \"Authorization: Bearer \$GITHUB_TOKEN\"\` from inside
-   exec — token is gone.
+   \`github__download_workflow_run_logs\` etc.
+
+   **The github MCP is the ONLY authenticated path to GitHub from
+   inside the agent.** Every other channel — \`gh\` CLI, bare
+   \`curl\`, and \`web_fetch\` — runs without \$GITHUB_TOKEN
+   (the openclaw exec tool sanitizes the token from subprocesses)
+   and will fail predictably:
+     - \`gh ...\` → \"please run gh auth login\"
+     - \`curl -H \"Authorization: Bearer \$GITHUB_TOKEN\" ...\` →
+       401 / empty (token is gone in exec)
+     - \`web_fetch https://api.github.com/...\` → 403
+       \"Must have admin rights to Repository\" (unauthenticated)
+     - \`web_fetch https://github.com/.../actions/runs/...\` →
+       404 \"Page not found\" (logged-out HTML wall)
+   When the agent finds itself reaching for any of these against
+   a github.com URL: STOP, use the github MCP instead. Re-trying
+   the same unauthenticated path is the most common LLM-time
+   waste in this codebase.
 
    Once you have the actual error, diagnose the root cause, push a
    fix commit to the SAME branch. Post a one-line status comment
