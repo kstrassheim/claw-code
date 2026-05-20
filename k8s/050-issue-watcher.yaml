@@ -96,7 +96,7 @@ data:
 
     ### logs
 
-    For `watcher logs <repo>#<issue>` (e.g. `watcher logs kstrassheim/claw-code#55`):
+    For `watcher logs <repo>#<issue>` (e.g. `watcher logs owner/repo#55`):
 
     ```
     tail -n 80 $HOME/.openclaw/fixer-logs/<owner>_<name>-<n>.log
