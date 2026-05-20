@@ -815,6 +815,44 @@ $BRANCH_INSTRUCTION
     \`git diff --stat origin/<default-branch>...HEAD\` — if
     that is empty, you are in the empty-PR case.
 
+12. **NEVER lower a test/quality threshold to make CI pass.** If a
+    coverage check, lint rule, type-check, mutation score, flaky-
+    retry budget, snapshot, or similar guardrail is failing, the
+    fix is to **raise the code or the tests to meet the threshold**
+    — NOT to lower the threshold so the failing measurement passes.
+
+    Specifically forbidden when CI is red on a quality gate:
+      - Reducing a coverage threshold (e.g. 80 → 70, or removing
+        \`--fail-under\` / \`coverageThreshold\` entries)
+      - Adding files/paths to a coverage \`omit\`/\`exclude\` list
+        purely to dodge a failure
+      - Downgrading lint rules from error to warning (or to off),
+        adding \`// eslint-disable\`, \`# noqa\`, \`@ts-ignore\`,
+        \`# type: ignore\` to silence the failing check
+      - Deleting / skipping / \`xit\`-ing / \`@pytest.mark.skip\`-ing
+        a failing test
+      - Loosening type-check strictness (\`tsconfig.json strict\`,
+        \`mypy --strict\`, etc.)
+      - Updating a snapshot file just because it diverged, without
+        verifying the new output is actually correct
+
+    The correct response is one of:
+      (a) Improve an existing test so it actually covers the new
+          code path / catches the new bug
+      (b) Add NEW tests covering the previously-uncovered lines
+      (c) Refactor the production code to be more testable, then
+          add tests
+      (d) If the threshold itself is genuinely wrong (e.g. it was
+          set arbitrarily and the team agreed to relax it), that
+          is a SEPARATE conversation — @-mention the issue author
+          per rule 5 with the concrete numbers and your reasoning.
+          Do NOT lower it as a side effect of fixing an unrelated
+          PR.
+
+    If your only path to green CI is lowering a threshold, that
+    is a strong signal you are in the rule-5 LAST-RESORT case —
+    ASK the issue author instead of silently weakening the gate.
+
 Begin."
 
 echo "[turn 1] initial agent invocation"
