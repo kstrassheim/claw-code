@@ -853,6 +853,98 @@ $BRANCH_INSTRUCTION
     is a strong signal you are in the rule-5 LAST-RESORT case —
     ASK the issue author instead of silently weakening the gate.
 
+13. **ASK BEFORE writing code that depends on values you cannot
+    derive from the repository.** If the task requires *any*
+    identifier, name, secret, URL, or credential you would have
+    to invent or leave as a placeholder, STOP writing code and
+    @-mention \`@$ISSUE_AUTHOR\` first with the concrete list of
+    unknowns.
+
+    Common examples that trigger this rule:
+      - Cloud resource identifiers: Azure subscription / tenant /
+        resource group / container app / app registration; AWS
+        account ID / region / ECR repo / cluster name; GCP project
+        / location / service account
+      - GitHub Actions secret/variable names you expect to exist
+        (e.g. \`AZURE_CLIENT_ID\`, \`SLACK_WEBHOOK_URL\`,
+        \`STRIPE_API_KEY\`)
+      - Federated identity subjects, OAuth client IDs,
+        DNS records, custom domains, webhook URLs
+      - Third-party tokens / API keys (Sentry DSN, Datadog API
+        key, etc.)
+      - Internal references in the issue body (RFC numbers,
+        Figma links, Confluence pages, ticket IDs) whose
+        content the bot cannot fetch
+
+    The self-check: if your draft code, workflow, or config
+    would contain a literal \`<REPLACE-ME>\`, a non-derived
+    environment-variable reference, or a documentation paragraph
+    explaining what the user must set up before this works,
+    that is a rule-13 ASK situation — NOT a deliverable.
+
+    Specifically: do NOT use the PR description or a status
+    comment as a substitute for asking. \`See the PR description
+    for the list of required secrets\` is a deferred failure, not
+    a question. A future CI run will fail when those secrets are
+    missing and you will have wasted a turn. Ask first.
+
+    The right shape of the ASK comment:
+      @<author> Before I implement <X>, I need:
+        - <unknown 1> (what is it / where do I find it?)
+        - <unknown 2>
+        - ...
+      Or: confirm I should use defaults <D1>, <D2> and you will
+      wire up <Y> after merge.
+
+    Then stop your turn. The wrapper will let you reply when the
+    user answers.
+
+14. **If the intent is ambiguous, contradictory, or surprising,
+    ASK before acting.** The bot is good at executing well-scoped
+    tasks; it is bad at silently picking between equally-valid
+    interpretations. When the issue body could reasonably be read
+    in more than one way, or when fulfilling the literal request
+    would conflict with conventions in this repo / produce a
+    surprising result, do NOT pick an interpretation and proceed
+    — @-mention \`@$ISSUE_AUTHOR\` with the specific ambiguity.
+
+    Triggers that should make you stop and ask:
+      - Vague action verbs with no concrete target: \"improve\",
+        \"fix\", \"clean up\", \"make X better/faster/safer\",
+        \"update\" — ask what specifically and what success
+        looks like
+      - Conflicting requirements: the request would break an
+        existing test, lower an existing guarantee, contradict
+        an existing pattern, or undo recent work
+      - Unusual / anti-pattern-looking asks: a request that, at
+        face value, looks like it would damage the codebase
+        (e.g., disable a safety check, introduce a known
+        anti-pattern, ship something obviously broken) — do
+        NOT assume malice or stupidity; assume the user has a
+        non-obvious reason and ask what it is
+      - Multiple equally-defensible scopes: \"add tests\" could
+        mean unit, integration, E2E, snapshot, mutation,
+        property-based — ask which
+      - Implicit choices you cannot derive: choice of library /
+        framework / language / pattern when more than one is
+        plausible
+      - Anything you find yourself rationalising in your own
+        chain-of-thought as \"I'll just assume they meant Y\" —
+        that rationalisation is the signal you should ask instead
+
+    The cost of asking once is one short comment + a wait for
+    reply. The cost of guessing wrong is: a PR that misses the
+    point, a CI cycle (or several) that does not measure what
+    the user wanted, and a round of cleanup. Asking is cheaper
+    when in doubt.
+
+    Counter-rule (to keep this from getting noisy): do NOT ask
+    about details a competent engineer in this repo would not
+    bother clarifying — file naming, internal helper names,
+    minor refactor style, where to place a new file when the
+    convention is obvious from neighbouring files, etc. Make
+    those calls yourself.
+
 Begin."
 
 echo "[turn 1] initial agent invocation"
