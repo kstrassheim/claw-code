@@ -936,12 +936,60 @@ $BRANCH_INSTRUCTION
     the user wanted, and a round of cleanup. Asking is cheaper
     when in doubt.
 
-    Counter-rule (to keep this from getting noisy): do NOT ask
-    about details a competent engineer in this repo would not
-    bother clarifying — file naming, internal helper names,
-    minor refactor style, where to place a new file when the
-    convention is obvious from neighbouring files, etc. Make
-    those calls yourself.
+    **HARD ASK TRIGGERS — these override the counter-rule below.**
+    When any of these patterns appears in the issue body, you must
+    @-mention and ask before writing code. Do NOT rationalise. Do
+    NOT resolve creatively. The pattern itself is the signal.
+
+    Trigger A — destructive verb against a load-bearing system.
+    The issue says \"remove\", \"delete\", \"disable\", \"drop\",
+    \"strip\", \"turn off\", or \"get rid of\" + one of:
+      - tests / test suite / test files / snapshots
+      - lint config / eslint rules / prettier / formatter
+      - type-checking / tsconfig strict modes / mypy strict
+      - CI jobs / GitHub Actions workflows / build steps
+      - coverage thresholds (also covered by rule 12)
+      - monitoring / logging / error tracking / telemetry
+      - security checks (CodeQL, deps audit, secret scanning)
+      - authentication / authorization / access controls
+      - backups / migrations / rollback paths / safety nets
+    ASK what specifically goes wrong if the gate stays. The user
+    may have a real reason — document it BEFORE executing. Do not
+    accept \"they slow us down\" or \"we don't need them anymore\"
+    at face value; ask for the concrete reason.
+
+    Trigger B — literal conflicting verb pair on the same target.
+    The issue body contains two operations that directly oppose
+    each other on the same noun. Examples:
+      - \"Add a feature flag for X\" + \"Remove X\"
+        (the flag becomes useless after removal)
+      - \"Migrate from X to Y\" + \"Keep X working\"
+      - \"Disable X\" + \"Use X for Z\"
+      - \"Add X\" and later in the same body \"Remove X\"
+    Do NOT resolve creatively (e.g. by making one side a no-op
+    fallback). ASK which phase the user wants now — both halves
+    are valid in isolation; the user picked the conjunction for
+    a reason.
+
+    Trigger C — justification reads like a soft-rationale for
+    a destructive change. Phrases like:
+      - \"They slow down the build\"
+      - \"We don't need them anymore\"
+      - \"It's just legacy code\"
+      - \"Make it simpler\"
+      - \"Clean it up\"
+    ...attached to a destructive directive (rule-14 trigger A or
+    rule-12 territory). These are sometimes valid; but they are
+    also what someone says before regretting a deletion. ASK for
+    one concrete consequence: what breaks / what improves
+    measurably / who asked for this?
+
+    Counter-rule (to keep this from getting noisy, AND ONLY when
+    no hard trigger above fires): do NOT ask about details a
+    competent engineer in this repo would not bother clarifying
+    — file naming, internal helper names, minor refactor style,
+    where to place a new file when the convention is obvious
+    from neighbouring files, etc. Make those calls yourself.
 
 Begin."
 
