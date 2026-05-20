@@ -26,6 +26,19 @@ ISSUE_NUM="$2"
 ISSUE_URL="$3"
 ISSUE_TITLE="$4"
 
+# Resolve the bot's GH login from $GITHUB_TOKEN at startup so the
+# code is identity-agnostic (sibling deployments use different bots).
+BOT_LOGIN="$(curl -fsSL \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  https://api.github.com/user 2>/dev/null \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('login',''))" \
+  2>/dev/null)"
+if [ -z "$BOT_LOGIN" ]; then
+  echo "FATAL: could not resolve bot identity from \$GITHUB_TOKEN /user — aborting" >&2
+  exit 1
+fi
+
 STATE_ROOT="${HOME:-/home/node}/.openclaw"
 PROJECTS_ROOT="$STATE_ROOT/projects"
 PROJECT_DIR="$PROJECTS_ROOT/$REPO"
@@ -94,7 +107,7 @@ trap 'rm -rf "$LOCK_DIR"' EXIT
   openclaw agent --local \
     --timeout 3500 \
     --session-id "$SESSION_ID" \
-    --message "You are in a fresh checkout of $REPO at $(pwd) on branch $BRANCH (already branched off $DEFAULT_BRANCH). Fix issue $ISSUE_URL — \"$ISSUE_TITLE\". Steps: (1) implement the change, (2) commit with a descriptive message, (3) push the branch (\`git push -u origin $BRANCH\`), (4) open a PR back to $DEFAULT_BRANCH with \"Closes #$ISSUE_NUM\" in the body, then stop. Do not delegate to subagents. Do not ask the user for confirmation. cameron-claw is the git author identity (already configured via \$GITHUB_TOKEN)."
+    --message "You are in a fresh checkout of $REPO at $(pwd) on branch $BRANCH (already branched off $DEFAULT_BRANCH). Fix issue $ISSUE_URL — \"$ISSUE_TITLE\". Steps: (1) implement the change, (2) commit with a descriptive message, (3) push the branch (\`git push -u origin $BRANCH\`), (4) open a PR back to $DEFAULT_BRANCH with \"Closes #$ISSUE_NUM\" in the body, then stop. Do not delegate to subagents. Do not ask the user for confirmation. \`$BOT_LOGIN\` is the git author identity (resolved at runtime from \$GITHUB_TOKEN)."
   AGENT_EXIT=$?
 
   echo "[$(date -Iseconds)] fixer done   repo=$REPO  issue=#$ISSUE_NUM  agent-exit=$AGENT_EXIT"

@@ -109,7 +109,7 @@ def list_locked_repos(namespace: str, pod: str) -> set[str]:
     TTL_SECONDS. Each lock corresponds to one in-flight fixer (per-repo
     cap is 1, because the on-disk checkout can't be shared)."""
     # `find` is faster than a recursive ls; the lock-set is small
-    # (≤ one dir per repo cameron-claw is a collaborator on). Lock
+    # (≤ one dir per repo the bot is a collaborator on). Lock
     # dirs are siblings of the project tree (NOT inside it — a
     # `.fixer.lock` inside the project dir broke `git clone`).
     script = (
