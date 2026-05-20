@@ -65,9 +65,16 @@ LOCK_ROOT="$STATE_ROOT/.fixer-locks"
 LOCK_DIR="$LOCK_ROOT/${REPO//\//__}"
 LOG_DIR="$STATE_ROOT/fixer-logs"
 LOG_FILE="$LOG_DIR/${REPO//\//_}-${ISSUE_NUM}.log"
-CURSOR_FILE="$PROJECT_DIR/.issue-${ISSUE_NUM}.cursor"
+# Per-issue state files live OUTSIDE the git working tree because the
+# `git clean -fdx` in the fresh-branch checkout path wipes anything
+# under $PROJECT_DIR (.43/.45 bug observed on cursor + marker). Keep
+# all per-issue scratch in $STATE_ROOT/issue-state/ — a sibling of
+# projects/ and survives clean.
+ISSUE_STATE_DIR="$STATE_ROOT/issue-state"
+CURSOR_FILE="$ISSUE_STATE_DIR/${REPO//\//__}-${ISSUE_NUM}.cursor"
+CI_FP_FILE="$ISSUE_STATE_DIR/${REPO//\//__}-${ISSUE_NUM}.ci-fingerprint"
 
-mkdir -p "$LOG_DIR" "$LOCK_ROOT" "$(dirname "$PROJECT_DIR")"
+mkdir -p "$LOG_DIR" "$LOCK_ROOT" "$ISSUE_STATE_DIR" "$(dirname "$PROJECT_DIR")"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   echo "[$(date -Iseconds)] lock held for $REPO; aborting fixer for #$ISSUE_NUM" >> "$LOG_FILE"
@@ -86,7 +93,7 @@ WIPE_FULL_STATE=0
 
 wipe_issue_state() {
   rm -f "$CURSOR_FILE" 2>/dev/null
-  rm -f "$PROJECT_DIR/.issue-${ISSUE_NUM}.ci-fingerprint" 2>/dev/null
+  rm -f "$CI_FP_FILE" 2>/dev/null
   rm -f "$STATE_ROOT/issue-markers/${REPO//\//__}-${ISSUE_NUM}.lexical-asked" 2>/dev/null
   rm -f "$STATE_ROOT"/agents/main/sessions/issue-"${REPO//\//-}"-"$ISSUE_NUM"-*.jsonl 2>/dev/null
   rm -f "$STATE_ROOT"/agents/main/sessions/issue-"${REPO//\//-}"-"$ISSUE_NUM"-*.trajectory.jsonl 2>/dev/null
@@ -680,7 +687,9 @@ fi
 # agent invocation. Otherwise exit silently.
 WAKE_REASON=""
 if [ -n "$EXISTING_PR_NUMBER" ]; then
-  CI_FP_FILE="$PROJECT_DIR/.issue-${ISSUE_NUM}.ci-fingerprint"
+  # CI_FP_FILE is now defined at the top of the script in
+  # $ISSUE_STATE_DIR (.46 fix — was being silently wiped by git clean
+  # on every tick when defined inline here pointing into $PROJECT_DIR).
   CURRENT_CI_FP="$(ci_fingerprint_for_pr "$EXISTING_PR_NUMBER" 2>/dev/null || echo unknown)"
   LAST_CI_FP=""
   [ -f "$CI_FP_FILE" ] && LAST_CI_FP="$(cat "$CI_FP_FILE")"
