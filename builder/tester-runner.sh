@@ -389,23 +389,49 @@ sed -i \
 
 echo "[tester] invoking agent (session-id=$SESSION_ID)"
 
+# Run the agent in the background under `setsid` so it becomes its
+# own session/process-group leader. That way the watchers can signal
+# the entire descendant tree with `kill -- -$AGENT_PID` — important
+# because openclaw rewrites its own argv to "openclaw" (no flags,
+# no session-id), so `pkill -f` against the original invocation
+# matches nothing.
+setsid openclaw agent --local \
+  --timeout "$AGENT_TURN_TIMEOUT" \
+  --session-id "$SESSION_ID" \
+  --message "$(cat "$PROMPT_FILE")" \
+  </dev/null >>"$LOG_FILE" 2>&1 &
+AGENT_PID=$!
+
+# Common kill helper used by both watchers. Tries the process group
+# first (so child openclaw-agent + chromium get the signal too),
+# then falls back to a direct PID signal.
+agent_kill() {
+  local sig="${1:-TERM}"
+  kill "-$sig" -- "-$AGENT_PID" 2>/dev/null \
+    || kill "-$sig" "$AGENT_PID" 2>/dev/null \
+    || true
+}
+
 # Watcher 1 — sentinel detection (the fast-exit path).
 # The prompt instructs the agent to emit `TESTER_DONE <sha>` as its
 # very last stdout line. openclaw's --local mode doesn't always
 # produce a clean stop_reason=end_turn, so without this the agent
 # can sit idle for up to AGENT_TURN_TIMEOUT after staging drafts.
 # When we see the sentinel, give a grace window for any in-flight
-# tool call to finish, then SIGTERM the agent process so the
-# wrapper proceeds to drafts processing.
+# tool call to finish, then SIGTERM the agent's process group.
 (
-  # tail -F survives log rotation (we don't rotate, but it's the
-  # right idiom for "watch a file that might not exist yet").
   tail -n 0 -F "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
     case "$line" in
       TESTER_DONE*)
         sleep 10
-        pkill -TERM -f "openclaw agent --local --session-id $SESSION_ID" 2>/dev/null
-        # break out of tail so the subshell exits
+        agent_kill TERM
+        # If TERM isn't honored within 15 s, escalate to KILL so the
+        # wrapper never hangs waiting on a wedged agent.
+        for _ in 1 2 3 4 5; do
+          sleep 3
+          kill -0 "$AGENT_PID" 2>/dev/null || break
+        done
+        kill -0 "$AGENT_PID" 2>/dev/null && agent_kill KILL
         break
         ;;
     esac
@@ -414,21 +440,25 @@ echo "[tester] invoking agent (session-id=$SESSION_ID)"
 SENTINEL_WATCHER_PID=$!
 
 # Watcher 2 — hard wall-clock backstop.
-# If the sentinel never fires (e.g. model OOM'd, tool-error loop,
-# generic refusal), enforce MAX_LIFETIME_SECONDS so the runner
-# can't camp on the pod for an hour. SIGTERM the agent the same way.
+# If the sentinel never fires (model OOM, tool-error loop, refusal,
+# missing sentinel line), enforce MAX_LIFETIME_SECONDS so the runner
+# can't camp on the pod for an hour.
 (
   sleep "$MAX_LIFETIME_SECONDS"
   echo "[tester] MAX_LIFETIME ($MAX_LIFETIME_SECONDS s) reached — terminating agent" >> "$LOG_FILE"
-  pkill -TERM -f "openclaw agent --local --session-id $SESSION_ID" 2>/dev/null
+  agent_kill TERM
+  sleep 15
+  kill -0 "$AGENT_PID" 2>/dev/null && agent_kill KILL
 ) &
 LIFETIME_WATCHER_PID=$!
 
-openclaw agent --local \
-  --timeout "$AGENT_TURN_TIMEOUT" \
-  --session-id "$SESSION_ID" \
-  --message "$(cat "$PROMPT_FILE")" \
-  || echo "[tester] agent exited non-zero ($?) — proceeding to drafts processing"
+# Wait for the agent (in its own process group) to exit. `wait` on
+# a backgrounded child returns the child's exit status.
+wait "$AGENT_PID"
+AGENT_EXIT=$?
+if [ "$AGENT_EXIT" -ne 0 ]; then
+  echo "[tester] agent exited non-zero ($AGENT_EXIT) — proceeding to drafts processing"
+fi
 
 # Watchers will be killed by the EXIT trap; do it eagerly here too
 # so they don't keep tailing the log after we move on.
