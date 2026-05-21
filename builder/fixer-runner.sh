@@ -906,22 +906,28 @@ $BRANCH_INSTRUCTION
    PR link. Then stop. Do not open additional PRs even if you
    think the previous one is wrong — push commits to it instead.
 
-7. **Do NOT merge or close the PR — UNLESS the issue body
-   explicitly says you may.** Default: stop at \"PR opened and CI
-   green\". The user reviews and merges. The bot account
-   (@$BOT_LOGIN) is NOT in the branch-protection bypass list, so
-   an unauthorized merge attempt will fail anyway. Specifically:
-     - Do not call \`gh pr merge\`, \`merge_pull_request\`, or any
-       MCP tool that merges.
-     - Do not call \`gh pr close\` or \`close_pull_request\`.
-     - Do not call \`gh issue close\` or \`close_issue\`.
-   **Exception** — the issue body grants explicit self-merge
-   permission. Look for phrases like \"merge yourself\", \"feel
-   free to merge\", \"auto-merge\", \"you may merge when CI
-   passes\", or equivalent. If you find one, you MAY call
-   \`merge_pull_request\` once ALL required CI checks are green.
-   Be conservative: if it's ambiguous, default to \"do not merge\"
-   and ask in a comment.
+7. **Merge the PR yourself once CI is green — UNLESS the issue
+   body explicitly forbids it.** Default behavior: open PR, wait
+   for required CI checks to all pass, then call
+   \`merge_pull_request\` (squash). Post a single status comment
+   on the issue with the PR link before merging. After a
+   successful merge the wrapper will close the issue.
+
+   **Opt-out** — if the issue body contains an explicit forbid
+   phrase, STOP at \"PR opened and CI green\" without merging.
+   Look for phrases like \"do not merge\", \"don't merge\",
+   \"leave for review\", \"manual review only\", \"no auto-
+   merge\", \"hold for approval\", or equivalent. If it's
+   genuinely ambiguous, default to merging and call out in your
+   status comment that you did so based on the issue's lack of
+   an opt-out.
+
+   Do NOT close the PR or issue directly (\`gh pr close\` /
+   \`close_pull_request\` / \`gh issue close\` / \`close_issue\`)
+   — the merge handles both. Only the merge path is allowed.
+
+   Required gate: ALL required CI checks must be green before
+   you merge. If CI is red, follow rule 8 first.
 
 8. **If CI on the PR fails, fix it on the same branch.** Read the
    actual failing job logs FIRST — guessing from the workflow YAML
@@ -952,7 +958,7 @@ $BRANCH_INSTRUCTION
    naming the failing job + root cause. Do NOT open a new PR, do
    NOT close the existing one, and do NOT declare the issue done
    while CI is red — wait for the next push to go green, then post
-   the final status (or merge, if rule 7's exception applies).
+   the final status (and merge per rule 7's default-allow path).
 
    The wrapper's pre-flight gate already waits for CI to settle
    before waking you again on the next tick — you don't need to
@@ -977,11 +983,13 @@ $BRANCH_INSTRUCTION
    when ALL of the following are true:
      (a) every check-run on the PR head has conclusion=success,
      (b) the PR is the final deliverable (no more commits planned),
-     (c) rule 7's self-merge exception does NOT apply.
+     (c) rule 7's default-allow merge path is opted-out for this
+         issue (so a reviewer is the next required step).
    If a specific reviewer is named in the issue body or a
    comment, use that; otherwise default to the repo owner.
-   If rule 7's exception applies (you may self-merge), do NOT
-   add a reviewer — proceed to merge once CI is green.
+   On the default-allow merge path (no opt-out phrase in the
+   issue), do NOT add a reviewer — proceed to merge once CI is
+   green.
 
 10. **Reactions:** do NOT add reactions yourself. The wrapper
     handles marking comments as read with :+1: after each poll.
