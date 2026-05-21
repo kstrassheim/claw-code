@@ -231,10 +231,27 @@ Schema:
 ```json
 {
   "title": "concise title (1 line)",
-  "body": "markdown body with concrete details, log excerpts, screenshots referenced as `tester-screenshot:<path>`",
-  "assigneeRole": "BOT" | "OWNER"
+  "body": "markdown body with concrete details and log excerpts. Do NOT reference screenshots in the body text — the wrapper appends a Screenshots section automatically.",
+  "assigneeRole": "BOT" | "OWNER",
+  "media": [
+    {
+      "path": "/home/node/.openclaw/media/browser/<uuid>.png",
+      "alt":  "what this screenshot shows in 5-10 words"
+    }
+  ]
 }
 ```
+
+About `media`:
+  - Optional; omit or set to `[]` if there are no screenshots.
+  - Each `path` must be an absolute path that the browser tool
+    actually produced this run (it returns these as the
+    `mediaPath` field of the screenshot result, and emits them as
+    `MEDIA:<path>` lines in the agent log).
+  - The wrapper uploads each PNG to an orphan branch
+    `tester-screenshots` in the same repo and appends a
+    `## Screenshots` section to the body with `![alt](raw-url)` —
+    so do not try to embed images yourself.
 
 Use **BOT** when the issue is something the issue-solver in this
 same pod CAN fix on the next iteration:
@@ -250,24 +267,37 @@ take:
 
 ## PHASE 1 — pipeline check
 
-Use the github MCP to fetch workflow runs on branch
-`__DEFAULT_BRANCH__` at head_sha `__HEAD_SHA__`:
-  - github__list_workflow_runs (filter by head_sha)
-  - For each run with conclusion != "success":
-    - github__list_workflow_jobs to find the failed job(s)
-    - github__download_workflow_run_logs or
-      github__get_workflow_run_usage to extract the error message
+Use the github MCP to fetch workflow runs ON THIS COMMIT ONLY:
+  - github__list_workflow_runs (filter by head_sha=__HEAD_SHA__)
 
-For each distinct failure, stage one draft:
-  __DRAFTS_DIR__/01-pipeline-<workflow-name>.json
-with:
-  - title: "CI failure: <workflow> on commit __HEAD_SHA__"
-  - body: which job failed, error excerpt (≤ 50 lines), and a
-    one-sentence root-cause hypothesis if obvious from the log
-  - assigneeRole: "BOT"
+**If the call returns ZERO runs for __HEAD_SHA__** — that's not a
+failure. It means the repo's workflows are not configured to fire
+on the push event that created this commit (commonly because the
+workflows are gated on `pull_request`, or have `paths:`/`branches:`
+filters that excluded the change). It is **NOT a CI failure**.
 
-If ANY pipeline run failed → STOP after staging. The site is likely
-not in a testable state.
+In that case:
+  - Do **NOT** look at sibling commits, the most-recent PR, or the
+    most-recent run on the branch.
+  - Do **NOT** stage a draft.
+  - Log one line: "[tester] no workflow runs for __HEAD_SHA__ — pipeline not configured to fire on this push; treating as healthy"
+  - Proceed to PHASE 2.
+
+If there are runs and ALL succeeded → log it, proceed to PHASE 2.
+
+If at least one run for __HEAD_SHA__ has `conclusion != "success"`:
+  - github__list_workflow_jobs to find the failed job(s).
+  - github__download_workflow_run_logs (or
+    github__get_workflow_run_usage) to extract the error message.
+  - For each distinct failure, stage one draft:
+      __DRAFTS_DIR__/01-pipeline-<workflow-name>.json
+    with:
+      - title: "CI failure: <workflow> on commit __HEAD_SHA__"
+      - body: which job failed, error excerpt (≤ 50 lines), and a
+        one-sentence root-cause hypothesis if obvious from the log
+      - assigneeRole: "BOT"
+      - media: [] (logs are text; usually no screenshot needed)
+  - STOP after staging. The site is likely not in a testable state.
 
 ## PHASE 2 — find deployed website URL
 
@@ -295,12 +325,14 @@ parallel testers) to navigate to the URL.
 
 If the page does not load within 30 seconds (timeout, network error,
 non-Entra 5xx page):
-  - Take a screenshot.
+  - Take a screenshot. Note its `mediaPath`.
   - Stage __DRAFTS_DIR__/03-unreachable.json:
     - title: "Test site unreachable on __HEAD_SHA__"
-    - body: URL, HTTP status if any, the screenshot reference, a
-      short description of the failure mode
+    - body: URL, HTTP status if any, short description of the
+      failure mode. Do NOT mention the screenshot — the wrapper
+      attaches it.
     - assigneeRole: "OWNER"
+    - media: [{"path": "<mediaPath>", "alt": "unreachable page"}]
   - STOP.
 
 If the page loads and shows a Microsoft Entra login:
@@ -312,12 +344,13 @@ If the page loads and shows a Microsoft Entra login:
 
 If Entra explicitly shows "AADSTS…" access-denied / consent-
 required / not-assigned-to-app errors (NOT a timeout or 5xx):
-  - Screenshot.
+  - Screenshot. Note its `mediaPath`.
   - Stage __DRAFTS_DIR__/03-access-denied.json:
     - title: "Bot is denied access to test site on __HEAD_SHA__"
     - body: the exact Entra error code + message, what permission
       / role / app-assignment is needed
     - assigneeRole: "OWNER"
+    - media: [{"path": "<mediaPath>", "alt": "entra access-denied page"}]
   - STOP.
 
 ## PHASE 4 — exercise the site
@@ -331,7 +364,7 @@ You're now logged in. Test the page generically:
 
 For each DISTINCT error class (don't open 20 drafts for the same
 console message repeating on every page):
-  - Screenshot
+  - Take a screenshot. Note its `mediaPath`.
   - For HTTP errors: try to pull the corresponding cloud-side log
     via `az monitor app-insights query` / `kubectl logs` / similar
     (use `$AZURE_CONFIG_DIR` so parallel testers don't fight over
@@ -339,9 +372,10 @@ console message repeating on every page):
   - Stage __DRAFTS_DIR__/04-error-<n>.json:
     - title: short, error-class summary
     - body: URL path that triggered it, console excerpt, network
-      excerpt, cloud-log excerpt if available, screenshot
-      reference
+      excerpt, cloud-log excerpt if available. Do NOT mention the
+      screenshot in the body — the wrapper attaches it.
     - assigneeRole: "BOT"
+    - media: [{"path": "<mediaPath>", "alt": "<short error description>"}]
 
 Test in common, not deeply. The point is broad surface coverage.
 
@@ -477,6 +511,14 @@ DRAFT_COUNT=0
 for draft in "$DRAFTS_DIR"/*.json; do
   [ -f "$draft" ] || continue
   DRAFT_COUNT=$((DRAFT_COUNT + 1))
+
+  # Upload any screenshots referenced in draft.media[] to the orphan
+  # `tester-screenshots` branch and rewrite the draft body to link
+  # to them. Best-effort: the helper logs failures to stderr and
+  # leaves the body untouched on error so we still create the issue.
+  GITHUB_TOKEN="$GITHUB_TOKEN" REPO="$REPO" HEAD_SHA="$HEAD_SHA" \
+    /usr/local/bin/tester-upload-screenshots "$draft" \
+    || echo "[tester] note: screenshot upload had errors for $draft (continuing)"
 
   # Resolve assigneeRole → actual login. Map at create-time so the
   # agent never sees real GitHub logins (keeps the prompt
