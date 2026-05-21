@@ -90,7 +90,16 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 fi
 echo "$BASHPID $(date -Iseconds)" > "$LOCK_DIR/owner"
 
-trap 'rm -rf "$LOCK_DIR"' EXIT
+# Cleanup on every exit path: drop the lock and kill any watcher
+# subshells we spawned so they don't leak into the pod.
+SENTINEL_WATCHER_PID=""
+LIFETIME_WATCHER_PID=""
+cleanup() {
+  [ -n "$SENTINEL_WATCHER_PID" ] && kill "$SENTINEL_WATCHER_PID" 2>/dev/null
+  [ -n "$LIFETIME_WATCHER_PID" ] && kill "$LIFETIME_WATCHER_PID" 2>/dev/null
+  rm -rf "$LOCK_DIR"
+}
+trap cleanup EXIT
 
 exec >> "$LOG_FILE" 2>&1
 
@@ -343,9 +352,16 @@ Print a brief summary on stdout:
   - Number of drafts staged in __DRAFTS_DIR__
   - One-line description of each
 
-Then stop. The wrapper takes it from here — it reads your drafts,
-creates the issues with the correct assignees, marks __HEAD_SHA__
-as tested, and posts the summary.
+**Then your VERY LAST output line, on its own line with no surrounding
+text, must be exactly:**
+
+    TESTER_DONE __HEAD_SHA__
+
+The wrapper greps for that prefix on a tail of the log, then
+terminates this agent process within ~10 seconds and processes
+your drafts. Without that line the wrapper has no way to know you
+are finished and will hold the agent open until the per-turn
+timeout, wasting most of an hour.
 
 ## Reminders
 
@@ -372,11 +388,55 @@ sed -i \
   "$PROMPT_FILE"
 
 echo "[tester] invoking agent (session-id=$SESSION_ID)"
+
+# Watcher 1 — sentinel detection (the fast-exit path).
+# The prompt instructs the agent to emit `TESTER_DONE <sha>` as its
+# very last stdout line. openclaw's --local mode doesn't always
+# produce a clean stop_reason=end_turn, so without this the agent
+# can sit idle for up to AGENT_TURN_TIMEOUT after staging drafts.
+# When we see the sentinel, give a grace window for any in-flight
+# tool call to finish, then SIGTERM the agent process so the
+# wrapper proceeds to drafts processing.
+(
+  # tail -F survives log rotation (we don't rotate, but it's the
+  # right idiom for "watch a file that might not exist yet").
+  tail -n 0 -F "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
+    case "$line" in
+      TESTER_DONE*)
+        sleep 10
+        pkill -TERM -f "openclaw agent --local --session-id $SESSION_ID" 2>/dev/null
+        # break out of tail so the subshell exits
+        break
+        ;;
+    esac
+  done
+) &
+SENTINEL_WATCHER_PID=$!
+
+# Watcher 2 — hard wall-clock backstop.
+# If the sentinel never fires (e.g. model OOM'd, tool-error loop,
+# generic refusal), enforce MAX_LIFETIME_SECONDS so the runner
+# can't camp on the pod for an hour. SIGTERM the agent the same way.
+(
+  sleep "$MAX_LIFETIME_SECONDS"
+  echo "[tester] MAX_LIFETIME ($MAX_LIFETIME_SECONDS s) reached — terminating agent" >> "$LOG_FILE"
+  pkill -TERM -f "openclaw agent --local --session-id $SESSION_ID" 2>/dev/null
+) &
+LIFETIME_WATCHER_PID=$!
+
 openclaw agent --local \
   --timeout "$AGENT_TURN_TIMEOUT" \
   --session-id "$SESSION_ID" \
   --message "$(cat "$PROMPT_FILE")" \
   || echo "[tester] agent exited non-zero ($?) — proceeding to drafts processing"
+
+# Watchers will be killed by the EXIT trap; do it eagerly here too
+# so they don't keep tailing the log after we move on.
+kill "$SENTINEL_WATCHER_PID" 2>/dev/null
+kill "$LIFETIME_WATCHER_PID" 2>/dev/null
+SENTINEL_WATCHER_PID=""
+LIFETIME_WATCHER_PID=""
+
 rm -f "$PROMPT_FILE"
 
 # ---- post-agent: create issues from drafts ------------------------
