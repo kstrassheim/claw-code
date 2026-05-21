@@ -540,10 +540,7 @@ echo "[tester] summary written to $SUMMARY_FILE"
 cat "$SUMMARY_FILE"
 
 # Post the summary as a commit comment so the repo subscriber gets a
-# GitHub notification. The "default telegram" notification path is
-# handled by the openclaw chat bot: a separate skill watches
-# $SUMMARIES_DIR and pushes new files to telegram (see SKILL.md in
-# k8s/051-tester.yaml).
+# GitHub notification.
 SUMMARY_BODY="$(cat "$SUMMARY_FILE")"
 COMMIT_PAYLOAD="$(BODY="$SUMMARY_BODY" python3 -c '
 import os, json
@@ -555,5 +552,30 @@ curl -fsSL -X POST \
   -d "$COMMIT_PAYLOAD" \
   "$GH_API/repos/$REPO/commits/$HEAD_SHA/comments" >/dev/null 2>&1 \
   || echo "[tester] note: could not post commit comment (continuing)"
+
+# Telegram delivery — best-effort. Resolve the owner's chat id from
+# the openclaw state file (paired Telegram chats land in
+# commands.ownerAllowFrom as "telegram:<chat_id>"). Identity-agnostic:
+# no hardcoded chat ids, no usernames in the prompt or wrapper.
+TG_CHAT_ID="$(python3 - <<'PY' 2>/dev/null
+import json, os
+try:
+    with open(os.path.expanduser('~/.openclaw/openclaw.json')) as f:
+        d = json.load(f)
+    for entry in d.get('commands', {}).get('ownerAllowFrom', []):
+        if isinstance(entry, str) and entry.startswith('telegram:'):
+            print(entry.split(':', 1)[1])
+            break
+except Exception:
+    pass
+PY
+)"
+if [ -n "$TG_CHAT_ID" ]; then
+  openclaw message send \
+    --channel telegram \
+    --target "$TG_CHAT_ID" \
+    -m "$SUMMARY_BODY" >/dev/null 2>&1 \
+    || echo "[tester] note: telegram delivery failed (continuing)"
+fi
 
 echo "[$(date -Iseconds)] tester exit  repo=$REPO  sha=$HEAD_SHA  drafts=$DRAFT_COUNT  created=${#CREATED_ISSUES[@]}"
