@@ -220,6 +220,13 @@ USER root
 COPY --chmod=0755 heartbeat-issue-tick.py /usr/local/bin/heartbeat-issue-tick
 COPY --chmod=0755 cron-issue-spawn.sh    /usr/local/bin/cron-issue-spawn
 COPY --chmod=0755 fixer-runner.sh        /usr/local/bin/fixer-runner
+# Tester subsystem — parallel to the issue-fixer. Same pattern: a
+# CronJob runs cron-tester-spawn, which calls tester-tick to list
+# repos with new default-branch HEAD, then kubectl-exec's a
+# tester-runner subprocess inside the openclaw pod.
+COPY --chmod=0755 tester-tick.py          /usr/local/bin/tester-tick
+COPY --chmod=0755 cron-tester-spawn.sh    /usr/local/bin/cron-tester-spawn
+COPY --chmod=0755 tester-runner.sh        /usr/local/bin/tester-runner
 
 # Timezone: Europe/Zurich. Without this, libc time + Node Date default
 # to UTC, so chat timestamps, heartbeat log lines, and the runtime

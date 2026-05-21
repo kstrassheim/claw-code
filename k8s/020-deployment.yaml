@@ -104,6 +104,7 @@ spec:
               # fails with EACCES. By pre-creating, kubelet finds the dirs
               # already in place and the chown/chmod below cover them.
               mkdir -p /home/node/.openclaw/workspace/skills/issue-watcher
+              mkdir -p /home/node/.openclaw/workspace/skills/tester
               chown -R 1000:1000 /home/node/.openclaw
               chmod -R u+rwX,g+rwX /home/node/.openclaw
           volumeMounts:
@@ -186,6 +187,12 @@ spec:
             - name: skill-issue-watcher
               mountPath: /home/node/.openclaw/workspace/skills/issue-watcher/SKILL.md
               subPath: SKILL.md
+            # tester chat skill — controls the autonomous deployment
+            # tester. Same subPath pattern as the watcher; pod restart
+            # required to pick up ConfigMap edits.
+            - name: skill-tester
+              mountPath: /home/node/.openclaw/workspace/skills/tester/SKILL.md
+              subPath: SKILL.md
           resources:
             # Node is Standard_D2s_v3 (2 vCPU, 8 Gi). AKS reservations
             # leave ~1.85 vCPU and ~6 Gi allocatable to user pods.
@@ -222,6 +229,9 @@ spec:
         - name: skill-issue-watcher
           configMap:
             name: claw-code-skill-issue-watcher
+        - name: skill-tester
+          configMap:
+            name: claw-code-skill-tester
         - name: config-template
           configMap:
             name: claw-code-config-template

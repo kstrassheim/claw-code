@@ -1,0 +1,251 @@
+---
+# SKILL.md for the tester chat skill — mirrors the issue-watcher
+# skill so the user can toggle the autonomous tester from chat
+# (e.g. "tester stop") without an image rebuild.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claw-code-skill-tester
+  namespace: claw-code
+data:
+  SKILL.md: |
+    ---
+    name: tester
+    description: Toggle and inspect the autonomous deployment-tester that runs as a subprocess inside this pod.
+    user-invocable: true
+    ---
+
+    # tester — control the autonomous deployment tester
+
+    A CronJob `tester` (namespace `claw-code`) ticks every 10
+    minutes. On each tick it lists repos the bot collaborates on,
+    fetches their default-branch HEAD SHA, and **spawns a
+    `tester-runner` subprocess inside this very pod** for each
+    repo whose HEAD differs from the last-tested SHA on disk.
+
+    The tester is a different role from the issue-fixer:
+    - It does NOT edit code, push commits, or open PRs.
+    - It inspects CI pipelines, drives the browser plugin to test
+      deployed sites (including autonomous Entra MFA login), and
+      collects errors from the browser + cloud-side logs.
+    - It STAGES issue drafts during the run; the wrapper creates
+      real GitHub issues with the right assignee AFTER the agent
+      exits. Tester-created issues carry the label `tester`.
+
+    **Concurrency: per-repo, capped at 1**, same as the fixer but
+    on a separate lock dir (`~/.openclaw/.tester-locks/<owner>__<name>/`)
+    so the two subsystems never block each other. Per-tester
+    isolation for the browser profile (`BROWSER_PROFILE`) and
+    Azure CLI (`AZURE_CONFIG_DIR`) is set per repo so parallel
+    testers across different repos don't fight over the same
+    local resources.
+
+    Use this skill when the user says any of:
+
+    | User says | Run |
+    |---|---|
+    | `tester status`, `is the tester on?`, `what's the tester doing?` | the status command |
+    | `tester start`, `enable the tester` | the start command |
+    | `tester stop`, `pause the tester`, `disable testing` | the stop command |
+    | `tester list`, `what's being tested?`, `active testers` | the list command |
+    | `tester logs <repo>` | tail the tester log for that repo |
+    | `tester last <repo>` | print the last test-run summary for that repo |
+
+    ## Commands (run via your `exec` tool — kubectl is in PATH)
+
+    ### status
+
+    ```
+    kubectl -n claw-code get cronjob tester \
+      -o jsonpath='suspended={.spec.suspend}{"\n"}schedule={.spec.schedule}{"\n"}lastSchedule={.status.lastScheduleTime}{"\n"}lastSuccess={.status.lastSuccessfulTime}{"\n"}'
+    ```
+
+    Report `suspended=true` as **stopped**, `false` as **running**.
+
+    ### start
+
+    ```
+    kubectl -n claw-code patch cronjob tester \
+      -p '{"spec":{"suspend":false}}'
+    ```
+
+    ### stop
+
+    Two operations: suspend the CronJob AND kill every in-flight
+    tester subprocess. The user's intent on "stop" is "stop
+    testing right now", not "block new ticks".
+
+    ```
+    kubectl -n claw-code patch cronjob tester \
+      -p '{"spec":{"suspend":true}}'
+    pkill -f '/usr/local/bin/tester-runner' || true
+    rm -rf $HOME/.openclaw/.tester-locks/* 2>/dev/null
+    ```
+
+    Run all three. Then run the status command. Report:
+      - the new suspended state, and
+      - how many tester subprocesses were terminated (pkill returns
+        non-zero when nothing matched — that's fine).
+
+    ### list
+
+    ```
+    ls -1 $HOME/.openclaw/.tester-locks/ 2>/dev/null | sed 's|__|/|'
+    ```
+
+    Each line is an `<owner>/<name>` repo with an in-flight tester.
+    Empty output = nothing is being tested right now.
+
+    For details on what each tester is doing:
+
+    ```
+    pgrep -af '/usr/local/bin/tester-runner'
+    ```
+
+    ### logs
+
+    For `tester logs <repo>` (e.g. `tester logs owner/repo`):
+
+    ```
+    tail -n 80 $HOME/.openclaw/tester-logs/<owner>_<name>.log
+    ```
+
+    (The slash in the repo name becomes an underscore. The tester
+    log is one file per repo, appended across runs — different
+    from fixer logs, which are one per issue.)
+
+    ### last
+
+    For `tester last <repo>` (most recent test-run summary):
+
+    ```
+    ls -1t $HOME/.openclaw/tester-summaries/<owner>__<name>-*.md | head -1 | xargs cat
+    ```
+
+    If no summary exists yet, report "no test runs for this repo".
+
+    ## Reporting style
+
+    Keep replies terse. One line per piece of state. Example:
+
+    > Tester: **running** · schedule `*/10 * * * *` · last fired
+    > 2026-05-20T19:30:00Z · 0 testers active.
+---
+# ServiceAccount for the tester CronJob. Same pattern as
+# issue-watcher: scoped to this namespace, only used to exec into
+# the claw-code pod.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tester
+  namespace: claw-code
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tester
+  namespace: claw-code
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tester
+  namespace: claw-code
+subjects:
+  - kind: ServiceAccount
+    name: tester
+    namespace: claw-code
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tester
+---
+# The main claw-code deployment's SA needs to be able to patch the
+# tester CronJob's suspend field from chat ("tester stop / start").
+# Same field-scoped pattern as the watcher.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tester-control
+  namespace: claw-code
+rules:
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    resourceNames: ["tester"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tester-control
+  namespace: claw-code
+subjects:
+  - kind: ServiceAccount
+    name: claw-code
+    namespace: claw-code
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tester-control
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tester
+  namespace: claw-code
+  labels:
+    app: tester
+spec:
+  # Slower schedule than the issue-watcher. Tester runs only fire
+  # work when the default-branch HEAD changes per repo, so 10 min
+  # is fine; running more often just burns API calls.
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 120
+  # spec.suspend deliberately omitted — same reasoning as the
+  # issue-watcher: K8s defaults to false, so `tester stop` from
+  # chat (which patches suspend=true at runtime) sticks across
+  # `kubectl apply -f k8s/` reconciles.
+  jobTemplate:
+    metadata:
+      labels:
+        app: tester
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 300
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app: tester
+        spec:
+          serviceAccountName: tester
+          restartPolicy: Never
+          containers:
+            - name: tester
+              image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
+              imagePullPolicy: Always
+              command: ["/usr/local/bin/cron-tester-spawn"]
+              envFrom:
+                # GITHUB_TOKEN is the only secret the spawner itself
+                # needs. Model API keys + ENTRA_* live in the main
+                # claw-code pod's env and are inherited by the
+                # spawned tester-runner subprocesses.
+                - secretRef:
+                    name: claw-code-secrets
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
