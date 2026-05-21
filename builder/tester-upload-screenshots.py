@@ -133,6 +133,11 @@ def upload_to_existing_branch(repo: str, repo_path: str, content_b64: str) -> bo
     return False
 
 
+_PLACEHOLDER_RE = __import__("re").compile(
+    r"^[^\n]*tester-screenshot:[^\n]*\n?", __import__("re").MULTILINE
+)
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: tester-upload-screenshots <draft.json>", file=sys.stderr)
@@ -144,7 +149,32 @@ def main() -> int:
     with open(draft_path) as f:
         draft = json.load(f)
 
+    # Always strip stale "tester-screenshot:<name>" placeholder lines
+    # from the body — those are an old convention the agent occasionally
+    # falls back to. Cleanest to remove them before we either attach
+    # real screenshots or leave the body alone.
+    body = draft.get("body") or ""
+    new_body = _PLACEHOLDER_RE.sub("", body)
+    if new_body != body:
+        draft["body"] = new_body.rstrip() + "\n"
+
     media = draft.pop("media", None) or []
+
+    # Fallback: if the agent didn't populate media[] (older MiniMax turns
+    # often skip the new field even with the prompt update), accept a
+    # colon-separated list of paths from the wrapper. The wrapper only
+    # sets this for the FIRST draft processed in a run, so subsequent
+    # drafts in a multi-issue run don't get the same screenshots
+    # double-attached.
+    if not media:
+        fallback = os.environ.get("TESTER_FALLBACK_MEDIA", "")
+        if fallback:
+            media = [
+                {"path": p, "alt": os.path.basename(p)}
+                for p in fallback.split(":")
+                if p and os.path.isfile(p)
+            ]
+
     if not media:
         # Nothing to do — write back without the empty media key.
         with open(draft_path, "w") as f:

@@ -421,6 +421,10 @@ sed -i \
   -e "s|__DRAFTS_DIR__|$DRAFTS_DIR|g" \
   "$PROMPT_FILE"
 
+# Remember where the log was before the agent runs — used by the
+# post-agent fallback to extract just THIS run's MEDIA: lines for
+# drafts that didn't fill in media[].
+RUN_START_LINE="$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)"
 echo "[tester] invoking agent (session-id=$SESSION_ID)"
 
 # Run the agent in the background under `setsid` so it becomes its
@@ -506,6 +510,21 @@ rm -f "$PROMPT_FILE"
 # ---- post-agent: create issues from drafts ------------------------
 
 echo "[tester] processing drafts in $DRAFTS_DIR"
+
+# Extract MEDIA: paths the agent emitted after RUN_START_LINE. The
+# browser plugin prints `MEDIA:/home/node/.openclaw/media/browser/
+# <uuid>.png` for each screenshot it captures. We pass these into
+# the upload helper as a fallback for drafts that didn't populate
+# `media[]` themselves (MiniMax sometimes skips the new field).
+# Joined with ":" because paths never contain that character.
+RUN_MEDIA="$(awk -v s="$RUN_START_LINE" \
+  'NR>s && /^MEDIA:/ {sub(/^MEDIA:/, ""); printf "%s%s", sep, $0; sep=":"}' \
+  "$LOG_FILE" 2>/dev/null)"
+if [ -n "$RUN_MEDIA" ]; then
+  echo "[tester] run captured $(echo "$RUN_MEDIA" | tr ':' '\n' | wc -l) screenshot(s)"
+fi
+FALLBACK_USED=""
+
 CREATED_ISSUES=()
 DRAFT_COUNT=0
 for draft in "$DRAFTS_DIR"/*.json; do
@@ -514,9 +533,18 @@ for draft in "$DRAFTS_DIR"/*.json; do
 
   # Upload any screenshots referenced in draft.media[] to the orphan
   # `tester-screenshots` branch and rewrite the draft body to link
-  # to them. Best-effort: the helper logs failures to stderr and
-  # leaves the body untouched on error so we still create the issue.
+  # to them. The helper also strips stale "tester-screenshot:<name>"
+  # placeholder lines from the body. Only the first draft in a run
+  # gets the RUN_MEDIA fallback, so multi-issue runs don't end up
+  # double-attaching the same screenshots to every issue.
+  if [ -z "$FALLBACK_USED" ]; then
+    THIS_FALLBACK="$RUN_MEDIA"
+    FALLBACK_USED=1
+  else
+    THIS_FALLBACK=""
+  fi
   GITHUB_TOKEN="$GITHUB_TOKEN" REPO="$REPO" HEAD_SHA="$HEAD_SHA" \
+    TESTER_FALLBACK_MEDIA="$THIS_FALLBACK" \
     /usr/local/bin/tester-upload-screenshots "$draft" \
     || echo "[tester] note: screenshot upload had errors for $draft (continuing)"
 
