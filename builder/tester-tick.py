@@ -78,7 +78,8 @@ def list_candidate_repos() -> list[str]:
     is in many repos doesn't fan out unbounded per tick."""
     # /user/repos returns all repos the authed user can access:
     # owned, collaborator, org-member. affiliation=owner,collaborator
-    # excludes org-membership noise.
+    # excludes org-membership noise. `type` is mutually exclusive with
+    # `affiliation` (GitHub returns 422), so we only send affiliation.
     repos = gh_get(
         "https://api.github.com/user/repos",
         {
@@ -86,7 +87,6 @@ def list_candidate_repos() -> list[str]:
             "sort": "pushed",
             "direction": "desc",
             "per_page": str(MAX_REPOS),
-            "type": "all",
         },
     )
     return [r["full_name"] for r in repos][:MAX_REPOS]
