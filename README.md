@@ -330,47 +330,141 @@ ConfigMap are all in
 
 ### Controlling it from chat
 
-The same manifest ships an `issue-watcher` skill (mounted at
-`~/.openclaw/workspace/skills/issue-watcher/SKILL.md` via subPath
+The same manifest ships a `developer` skill (mounted at
+`~/.openclaw/workspace/skills/developer/SKILL.md` via subPath
 ConfigMap). The bot picks the skill up at session start and
 recognises plain-text triggers:
 
 | You type | What runs |
 |---|---|
-| `watcher status` | `kubectl get cronjob issue-watcher -o jsonpath=…` |
-| `watcher start` | `kubectl patch cronjob issue-watcher … suspend:false` |
-| `watcher stop`  | `kubectl patch … suspend:true` AND `pkill -f 'openclaw agent --local'` AND `rm -rf $HOME/.openclaw/.fixer-locks/*` |
-| `watcher list`  | `ls $HOME/.openclaw/.fixer-locks/` (one line per active repo) |
-| `watcher logs <repo>#<n>` | `tail $HOME/.openclaw/fixer-logs/<owner>_<name>-<n>.log` |
-| `watcher kill`  | the second half of `stop` only — terminates in-flight fixers without suspending the CronJob |
+| `developer status` | `kubectl get cronjob issue-watcher -o jsonpath=…` |
+| `developer start` | `kubectl patch cronjob issue-watcher … suspend:false` |
+| `developer stop`  | `kubectl patch … suspend:true` AND `pkill -f 'openclaw agent --local'` AND `rm -rf $HOME/.openclaw/.fixer-locks/*` |
+| `developer list`  | `ls $HOME/.openclaw/.fixer-locks/` (one line per active repo) |
+| `developer logs <repo>#<n>` | `tail $HOME/.openclaw/fixer-logs/<owner>_<name>-<n>.log` |
+| `developer kill`  | the second half of `stop` only — terminates in-flight fixers without suspending the CronJob |
 
-`watcher stop` deliberately kills in-flight subprocesses too —
+The chat-facing skill name is `developer`; the underlying CronJob is
+still called `issue-watcher` (and the lock dir is still
+`.fixer-locks/`) — those are infrastructure names below the chat
+surface.
+
+`developer stop` deliberately kills in-flight subprocesses too —
 partial work is discarded, because the user's intent on "stop" is
 "stop coding work right now", not "finish what's in progress".
 
 `spec.suspend` is *deliberately absent* from the CronJob manifest
 (K8s defaults it to `false`). The deploy workflow re-applies the
 manifest on every push to `main`, so if we set `suspend: false` in
-git, every deploy would override a chat-driven `watcher stop`. With
+git, every deploy would override a chat-driven `developer stop`. With
 the field unmanaged, runtime patches survive.
+
+### Merge policy
+
+The fixer's rule 7 is **default-allow merge**: once required CI is
+green on the PR, the agent calls `merge_pull_request` itself and
+the wrapper closes the issue. To opt a single issue out, put one
+of `do not merge`, `don't merge`, `leave for review`, `manual
+review only`, `no auto-merge`, or `hold for approval` somewhere in
+the issue body — the fixer parses for those before merging.
+
+Rule 12 forbids the agent from weakening any quality gate to get
+CI green: no lowering coverage thresholds, no skipping/`xit`-ing
+failing tests, no `// eslint-disable` / `@ts-ignore`, and no
+editing `.github/workflows/**` to make a gate non-fatal (no
+`|| true`, no `--check-coverage=false`, no
+`continue-on-error: true`). Reaching that situation is a rule-5
+LAST-RESORT — the agent comments on the issue with the concrete
+numbers and waits for direction.
+
+When CI on the PR is red, the wrapper pre-fetches the failing
+job's log via the GitHub API and injects a condensed excerpt into
+the agent's initial prompt under a `## Failing CI excerpt`
+heading, so the agent diagnoses the actual error message instead
+of guessing from the workflow YAML or asking the user to paste the
+log.
 
 ### Disabling permanently
 
-Suspend the CronJob via `watcher stop` (or `kubectl patch ... suspend:true`)
-and don't unsuspend it. To drop it entirely, delete
-`050-issue-watcher.yaml` from `k8s/` and merge — the next deploy will
-`kubectl apply -f k8s/` without it, but the existing CronJob + RBAC
-resources will linger (no garbage collection without ArgoCD). Clean
-those up manually with `kubectl delete -f` against an old copy of the
-file or by resource name.
+Suspend the CronJob via `developer stop` (or
+`kubectl patch ... suspend:true`) and don't unsuspend it. To drop
+it entirely, delete `050-issue-watcher.yaml` from `k8s/` and
+merge — the next deploy will `kubectl apply -f k8s/` without it,
+but the existing CronJob + RBAC resources will linger (no garbage
+collection without ArgoCD). Clean those up manually with
+`kubectl delete -f` against an old copy of the file or by resource
+name.
 
 ### Editing the chat skill
 
-The skill body lives inline in `k8s/050-issue-watcher.yaml`'s ConfigMap.
-Edit, push, the next deploy re-applies the ConfigMap. Then
-`kubectl rollout restart deployment/claw-code -n claw-code` once so
-the subPath mount picks up the new content (subPath ConfigMap mounts
-don't reload live).
+The skill body lives inline in `k8s/050-issue-watcher.yaml`'s
+ConfigMap. Edit, push, the next deploy re-applies the ConfigMap.
+Then `kubectl rollout restart deployment/claw-code -n claw-code`
+once so the subPath mount picks up the new content (subPath
+ConfigMap mounts don't reload live).
+
+---
+
+## Autonomous deployment tester
+
+A sibling CronJob `tester` (`*/10 * * * *`) watches the
+default-branch HEAD of every repo the bot collaborates on. On each
+tick, for any repo whose current HEAD differs from the last-tested
+SHA on disk, it spawns a `tester-runner` subprocess inside the
+claw-code pod — same pattern as the fixer, with a separate lock
+directory (`~/.openclaw/.tester-locks/<owner>__<name>/`) so the two
+subsystems never block each other.
+
+The tester is the **inverse** of the fixer:
+
+| | fixer (`developer`) | tester |
+|---|---|---|
+| Source of work | GitHub issues assigned to the bot | new default-branch HEAD |
+| Mutation rights | branches + commits + PR + merge | none — no commits, no git push |
+| Exit signal | PR merged / issue closed | issue staged + run summary |
+
+Per-run flow:
+
+1. **Pipeline check** — `github__list_workflow_runs` on the tested
+   commit. Zero runs is treated as "workflows not configured for
+   this push event", not a failure (the agent must not attribute
+   sibling-commit CI to the tested SHA).
+2. **Find a deployed URL** — search the local checkout (workflows,
+   terraform, README, k8s manifests). Prefers `dev` env URLs.
+3. **Browser open + autonomous Entra login** — uses the browser
+   plugin (with per-tester `BROWSER_PROFILE` isolation) and the
+   `ENTRA_USERNAME` / `ENTRA_PASSWORD` / `entra-totp` helpers to
+   complete MSAL sign-in end-to-end with zero user interaction.
+4. **Exercise the page** — navigate routes, fill forms, watch
+   console + network. Distinct error classes get a draft each.
+5. **Finalize** — print one summary line and the literal sentinel
+   `TESTER_DONE <head_sha>`. The wrapper's sentinel watcher pkills
+   the agent ~10s later and proceeds to issue creation.
+
+Drafts staged during the run live in
+`~/.openclaw/tester-drafts/<owner>__<name>-<sha>/` as one JSON file
+each. The wrapper reads them after the agent exits, uploads any
+referenced screenshots, and creates the GitHub issues with the
+right assignee — `BOT` for code-fixable findings (auto-routed back
+to the fixer subsystem), `OWNER` for things only a human can address
+(infrastructure access denied, missing credentials, etc.).
+
+Screenshots are uploaded to an orphan branch `tester-screenshots`
+in the same repo (one folder per `<sha>`) and embedded inline in
+the issue body via `raw.githubusercontent.com/.../tester-screenshots/...`
+URLs. The branch is auto-created on first use and shares no history
+with `main`.
+
+On completion the wrapper posts the run summary as a GitHub commit
+comment **and** sends it to Telegram via
+`openclaw message send --channel telegram` (chat id resolved from
+`commands.ownerAllowFrom` in the openclaw state file — no
+hardcoded identity in the prompt or wrapper).
+
+The full CronJob + chat skill for the tester is in
+[`k8s/051-tester.yaml`](k8s/051-tester.yaml). Chat triggers mirror
+the developer skill: `tester status`, `tester start`, `tester
+stop`, `tester list`, `tester logs <repo>`, `tester last <repo>`.
 
 ---
 
