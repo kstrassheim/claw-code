@@ -304,6 +304,75 @@ for r in sorted(runs, key=lambda x: x['name']):
 "
 }
 
+# For every failing check-run on the PR head, fetch the job log via
+# the GitHub API and pull out the last ~80 lines plus any error-
+# pattern matches. We inject this into the agent's initial prompt
+# under a "## Failing CI excerpt" heading so the agent doesn't have
+# to remember to call github__get_job_logs before reasoning — the
+# evidence is already in front of it.
+ci_failing_logs_for_pr() {
+  local pr_num="$1"
+  local head_sha
+  head_sha=$(curl -fsSL -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" -H "$APIV_HEADER" \
+    "$GH_API/repos/$REPO/pulls/$pr_num" 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])" 2>/dev/null)
+  if [ -z "$head_sha" ]; then return 0; fi
+  # Pull check-runs and pick out the failing job_ids from details_url
+  # (format: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>).
+  local FAILED_JOBS
+  FAILED_JOBS="$(curl -fsSL -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" -H "$APIV_HEADER" \
+    "$GH_API/repos/$REPO/commits/$head_sha/check-runs?per_page=100" 2>/dev/null \
+  | python3 -c "
+import sys, json, re
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for r in d.get('check_runs', []):
+    if r.get('conclusion') not in ('failure', 'cancelled', 'timed_out'):
+        continue
+    m = re.search(r'/runs/(\d+)/job/(\d+)', r.get('details_url') or '')
+    if not m:
+        continue
+    print(f\"{r['name']}\t{m.group(2)}\")
+" 2>/dev/null)"
+  if [ -z "$FAILED_JOBS" ]; then return 0; fi
+  while IFS=$'\t' read -r jobname jobid; do
+    [ -n "$jobid" ] || continue
+    echo "### ❌ $jobname"
+    echo
+    echo '```'
+    # The logs endpoint returns 302 to an Azure blob URL; -L follows it.
+    curl -fsSL -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" -H "$APIV_HEADER" \
+      "$GH_API/repos/$REPO/actions/jobs/$jobid/logs" 2>/dev/null \
+    | python3 -c "
+import sys, re
+raw = sys.stdin.read()
+# Strip ANSI + the leading ISO8601 timestamp on each line for legibility.
+ansi = re.compile(r'\x1b\\[[0-9;]*m')
+ts = re.compile(r'^\\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z\\s*')
+lines = [ts.sub('', ansi.sub('', ln)).rstrip() for ln in raw.split('\\n')]
+# 1. Show every line that looks like a failure signal
+patterns = re.compile(
+    r'\\b(error|ERROR|FAIL\\b|✗|✘|Failing:|AssertionError|Exception|Traceback|threshold|does not meet|below|not met|coverage for|expected.*to|ENOENT|exit code [1-9])\\b',
+    re.IGNORECASE,
+)
+hits = [ln for ln in lines if patterns.search(ln)]
+# 2. Plus the last 30 raw lines (often contain the summary)
+tail = [ln for ln in lines if ln.strip()][-30:]
+seen = set()
+out = []
+for ln in hits[:40] + ['---'] + tail:
+    if ln in seen: continue
+    seen.add(ln)
+    out.append(ln[:240])
+print('\\n'.join(out))
+" 2>/dev/null
+    echo '```'
+    echo
+  done <<< "$FAILED_JOBS"
+}
+
 # CI gate: returns "green" if every check-run on the PR's head SHA
 # completed=success, "pending" if none have reported yet, "not_green"
 # otherwise. The user's rule is "only request review when all pipelines
@@ -761,6 +830,26 @@ fi
 # when a PR exists.
 if [ -n "$EXISTING_PR_NUMBER" ]; then
   CI_STATUS_TEXT="$(ci_summary_text_for_pr "$EXISTING_PR_NUMBER" 2>/dev/null || echo '(could not fetch)')"
+  # Also pre-fetch failing-job log excerpts so the agent doesn't have
+  # to remember to call github__get_job_logs. Past runs have seen the
+  # agent skip the MCP step and post an ASK based on local code
+  # inspection alone (rule 8 violation in spirit). Pre-injecting the
+  # log makes the failure cause visible without an extra tool call.
+  CI_FAILURE_LOGS="$(ci_failing_logs_for_pr "$EXISTING_PR_NUMBER" 2>/dev/null || true)"
+  if [ -n "$CI_FAILURE_LOGS" ]; then
+    CI_STATUS_TEXT="$CI_STATUS_TEXT
+
+## Failing CI excerpt
+
+The wrapper already fetched the failing job logs via the GitHub API
+and condensed them below. **Read this before reasoning about the
+failure** — it is the authoritative source. Each section is one
+failing job; lines combine pattern-matched failure signals with the
+last ~30 lines of the job tail. Use this to identify the root cause
+BEFORE deciding whether to push a fix, ASK, or escalate.
+
+$CI_FAILURE_LOGS"
+  fi
 else
   CI_STATUS_TEXT="(no PR yet — CI not applicable)"
 fi
@@ -931,10 +1020,26 @@ $BRANCH_INSTRUCTION
 
 8. **If CI on the PR fails, fix it on the same branch.** Read the
    actual failing job logs FIRST — guessing from the workflow YAML
-   alone wastes turns. Use the **github MCP** to fetch logs:
+   or your local code inspection wastes turns. The wrapper has
+   ALREADY fetched the failing-job log excerpt and injected it into
+   this prompt under \"## Failing CI excerpt\" — read THAT before
+   anything else. If for some reason that section is missing (only
+   happens when the GH API was unreachable when the wrapper ran),
+   fall back to the **github MCP** to fetch logs yourself:
    \`github__list_workflow_runs\`, then
-   \`github__get_workflow_run_usage\` /
-   \`github__download_workflow_run_logs\` etc.
+   \`github__list_workflow_jobs\` →
+   \`github__get_job_logs\` /
+   \`github__download_workflow_run_logs\`.
+
+   **Hard rule** — you may NOT post an ASK about a CI failure
+   (e.g. \"can you share the job log?\", \"which test is failing?\")
+   until you have actually consulted the failing-job log lines. The
+   wrapper already gave them to you in this prompt; ignoring that
+   evidence and asking the user to copy-paste it back is a turn
+   waste. If the excerpt is present, base your diagnosis on its
+   contents. If it is missing AND github MCP also fails to return
+   logs, mention that explicitly in your status comment (so the
+   user knows the issue is API access, not your reasoning).
 
    **The github MCP is the ONLY authenticated path to GitHub from
    inside the agent.** Every other channel — \`gh\` CLI, bare
