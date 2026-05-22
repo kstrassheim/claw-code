@@ -1142,6 +1142,17 @@ $BRANCH_INSTRUCTION
         \`mypy --strict\`, etc.)
       - Updating a snapshot file just because it diverged, without
         verifying the new output is actually correct
+      - **Editing any file under \`.github/workflows/\*\*\` to make
+        a gate non-fatal.** This includes — but is not limited to —
+        replacing a quality-gate command with the same command +
+        \`|| true\`, swapping a strict invocation
+        (e.g. \`npm run check-coverage\`) for a permissive one
+        (\`nyc check-coverage --check-coverage=false\`), removing a
+        gate step entirely, adding \`continue-on-error: true\` to a
+        previously-strict job, or moving a check into a non-required
+        job. If you find yourself opening a workflow file because a
+        check is failing, STOP — that is rule 5 LAST-RESORT
+        territory, not a code change.
 
     The correct response is one of:
       (a) Improve an existing test so it actually covers the new
