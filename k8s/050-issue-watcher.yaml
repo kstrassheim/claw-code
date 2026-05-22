@@ -1,23 +1,28 @@
 ---
-# SKILL.md for the issue-watcher chat skill, mounted at
-# ~/.openclaw/workspace/skills/issue-watcher/SKILL.md via subPath.
-# Lets the user toggle / inspect the watcher from chat without an
-# image rebuild — edit, push, redeploy applies the new ConfigMap,
-# then `kubectl rollout restart deployment/claw-code` picks it up.
+# SKILL.md for the `developer` chat skill, mounted at
+# ~/.openclaw/workspace/skills/developer/SKILL.md via subPath.
+# Lets the user toggle / inspect the autonomous developer (the
+# issue-fixer subsystem) from chat without an image rebuild — edit,
+# push, redeploy applies the new ConfigMap, then `kubectl rollout
+# restart deployment/claw-code` picks it up.
+#
+# The chat-facing skill is named `developer`. The k8s CronJob that
+# implements it is still named `issue-watcher` (and the locks under
+# ~/.openclaw/.fixer-locks/ keep their fixer-* prefix).
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: claw-code-skill-issue-watcher
+  name: claw-code-skill-developer
   namespace: claw-code
 data:
   SKILL.md: |
     ---
-    name: issue-watcher
-    description: Toggle and inspect the autonomous issue-fixer that runs as a subprocess inside this pod.
+    name: developer
+    description: Toggle and inspect the autonomous developer (issue-fixer) that runs as a subprocess inside this pod.
     user-invocable: true
     ---
 
-    # issue-watcher — control the autonomous issue fixer
+    # developer — control the autonomous developer (issue-fixer)
 
     A CronJob `issue-watcher` (namespace `claw-code`) ticks every 5
     minutes. On each tick it lists open GitHub issues assigned to
@@ -34,11 +39,11 @@ data:
 
     | User says | Run |
     |---|---|
-    | `watcher status`, `is the watcher on?`, `what's the issue watcher doing?` | the status command |
-    | `watcher start`, `enable the watcher`, `turn on the issue fixer` | the start command |
-    | `watcher stop`, `pause the watcher`, `disable issue fixing` | the stop command |
-    | `watcher list`, `what issues are being fixed?`, `active fixers` | the list command |
-    | `watcher logs <repo>#<issue>` | tail the fixer log for that pair |
+    | `developer status`, `is the developer on?`, `what's the developer doing?` | the status command |
+    | `developer start`, `enable the developer`, `turn on the issue fixer` | the start command |
+    | `developer stop`, `pause the developer`, `disable issue fixing` | the stop command |
+    | `developer list`, `what issues are being fixed?`, `active developers` | the list command |
+    | `developer logs <repo>#<issue>` | tail the fixer log for that pair |
 
     ## Commands (run via your `exec` tool — kubectl is in PATH)
 
@@ -96,7 +101,7 @@ data:
 
     ### logs
 
-    For `watcher logs <repo>#<issue>` (e.g. `watcher logs owner/repo#55`):
+    For `developer logs <repo>#<issue>` (e.g. `developer logs owner/repo#55`):
 
     ```
     tail -n 80 $HOME/.openclaw/fixer-logs/<owner>_<name>-<n>.log
@@ -116,7 +121,7 @@ data:
 
     Keep replies terse. One line per piece of state. Example status:
 
-    > Watcher: **running** · schedule `*/5 * * * *` · last fired
+    > Developer: **running** · schedule `*/5 * * * *` · last fired
     > 2026-05-18T15:25:00Z · 1 fixer active (claw-code#55).
 
     Do not paste raw kubectl / pgrep output unless the user asks.

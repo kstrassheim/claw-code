@@ -103,7 +103,7 @@ spec:
               # files like AGENTS.md into workspace/ and Telegram dispatch
               # fails with EACCES. By pre-creating, kubelet finds the dirs
               # already in place and the chown/chmod below cover them.
-              mkdir -p /home/node/.openclaw/workspace/skills/issue-watcher
+              mkdir -p /home/node/.openclaw/workspace/skills/developer
               mkdir -p /home/node/.openclaw/workspace/skills/tester
               chown -R 1000:1000 /home/node/.openclaw
               chmod -R u+rwX,g+rwX /home/node/.openclaw
@@ -179,13 +179,16 @@ spec:
             - name: tools-md
               mountPath: /home/node/.openclaw/workspace/TOOLS.md
               subPath: TOOLS.md
-            # issue-watcher chat skill — drives the kubectl toggle
-            # commands. ConfigMap source is in 050-issue-watcher.yaml.
-            # Mount path is workspace/skills/ (NOT plugin-skills/) —
-            # openclaw's loadWorkspaceSkillEntries scans <workspaceDir>/
-            # skills/. Pod restart required to pick up subPath updates.
-            - name: skill-issue-watcher
-              mountPath: /home/node/.openclaw/workspace/skills/issue-watcher/SKILL.md
+            # `developer` chat skill — drives the kubectl toggle
+            # commands for the issue-fixer subsystem (the CronJob
+            # itself is still named issue-watcher; only the
+            # chat-facing skill name changed). ConfigMap source is
+            # in 050-issue-watcher.yaml. Mount path is workspace/
+            # skills/ (NOT plugin-skills/) — openclaw's
+            # loadWorkspaceSkillEntries scans <workspaceDir>/skills/.
+            # Pod restart required to pick up subPath updates.
+            - name: skill-developer
+              mountPath: /home/node/.openclaw/workspace/skills/developer/SKILL.md
               subPath: SKILL.md
             # tester chat skill — controls the autonomous deployment
             # tester. Same subPath pattern as the watcher; pod restart
@@ -226,9 +229,9 @@ spec:
         - name: tools-md
           configMap:
             name: claw-code-tools-md
-        - name: skill-issue-watcher
+        - name: skill-developer
           configMap:
-            name: claw-code-skill-issue-watcher
+            name: claw-code-skill-developer
         - name: skill-tester
           configMap:
             name: claw-code-skill-tester
