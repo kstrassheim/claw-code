@@ -4,7 +4,7 @@
 
 # Upstream openclaw base image (FROM in builder/Dockerfile).
 # Tag matches https://github.com/openclaw/openclaw releases.
-OPENCLAW_UPSTREAM=v2026.5.12
+OPENCLAW_UPSTREAM=v2026.5.22
 
 # Tools baked into the openclaw image.
 GH_CLI_VERSION=2.92.0
