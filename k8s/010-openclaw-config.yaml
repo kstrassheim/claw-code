@@ -4,9 +4,10 @@
 # stripped at pod startup by the `render-config` init container in
 # 020-deployment.yaml when MINIMAX_API_KEY is empty/unset.
 #
-# imageModel routing: vision content goes to MiniMax M2.7 first; on
-# failure (auth error if key missing, or model-doesn't-support-vision)
-# openclaw fails over to Mistral Large 3, then Medium 3.5.
+# imageModel routing: vision content goes to MiniMax M3 first (M3 is
+# natively multimodal, unlike M2.7 which was text-only); on failure
+# (auth error if key missing) openclaw fails over to Mistral Large 3,
+# then Medium 3.5.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -22,8 +23,8 @@ data:
             "fallbacks": ["mistral/mistral-large-latest"]
           },
           "imageModel": {
-            "primary": "mistral/mistral-large-3-25-12",
-            "fallbacks": ["mistral/mistral-medium-3-5-26-04"]
+            "primary": "minimax/MiniMax-M3",
+            "fallbacks": ["mistral/mistral-large-3-25-12", "mistral/mistral-medium-3-5-26-04"]
           },
           "compaction": {
             "mode": "safeguard"
@@ -53,7 +54,7 @@ data:
             "apiKey": "${MINIMAX_API_KEY}",
             "api": "anthropic-messages",
             "models": [
-              {"id": "MiniMax-M3", "name": "MiniMax M3", "contextWindow": 1000000, "maxTokens": 131072, "params": {"num_ctx": 1000000}},
+              {"id": "MiniMax-M3", "name": "MiniMax M3", "input": ["text", "image"], "contextWindow": 1000000, "maxTokens": 131072, "params": {"num_ctx": 1000000}},
               {"id": "MiniMax-M2.7", "name": "MiniMax M2.7", "contextWindow": 65536, "maxTokens": 8192, "params": {"num_ctx": 65536}},
               {"id": "MiniMax-M2.7-highspeed", "name": "MiniMax M2.7 HighSpeed", "contextWindow": 65536, "maxTokens": 8192, "params": {"num_ctx": 65536}}
             ]
@@ -136,10 +137,12 @@ data:
       const fs = require("fs");
       const c = JSON.parse(fs.readFileSync("/template/openclaw.json", "utf8"));
       if (!process.env.MISTRAL_OK) {
-        console.log("MISTRAL_API_KEY not set — stripping Mistral and imageModel");
+        console.log("MISTRAL_API_KEY not set — stripping Mistral; keeping MiniMax-M3 as imageModel");
         delete c.models?.providers?.mistral;
         if (c.agents?.defaults?.model) c.agents.defaults.model.fallbacks = [];
-        if (c.agents?.defaults) delete c.agents.defaults.imageModel;
+        // imageModel.primary is minimax/MiniMax-M3 (multimodal), which survives;
+        // only the mistral vision fallbacks need to be dropped.
+        if (c.agents?.defaults?.imageModel) c.agents.defaults.imageModel.fallbacks = [];
       }
       if (!process.env.MINIMAX_OK) {
         console.log("MINIMAX_API_KEY not set — stripping MiniMax, switching primary to Mistral");
