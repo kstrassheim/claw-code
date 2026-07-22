@@ -436,6 +436,7 @@ echo "[tester] invoking agent (session-id=$SESSION_ID)"
 setsid openclaw agent --local \
   --timeout "$AGENT_TURN_TIMEOUT" \
   --session-id "$SESSION_ID" \
+  --thinking max \
   --message "$(cat "$PROMPT_FILE")" \
   </dev/null >>"$LOG_FILE" 2>&1 &
 AGENT_PID=$!

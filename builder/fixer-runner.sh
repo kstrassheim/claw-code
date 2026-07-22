@@ -1317,6 +1317,7 @@ echo "[turn 1] initial agent invocation"
 openclaw agent --local \
   --timeout "$AGENT_TURN_TIMEOUT" \
   --session-id "$SESSION_ID" \
+  --thinking max \
   --message "$INITIAL_PROMPT" || echo "[agent] turn 1 exited non-zero ($?) — continuing into poll loop"
 
 # -- poll loop --------------------------------------------------------
@@ -1400,6 +1401,7 @@ Apply this guidance and continue from where you left off. Push commits to the br
   openclaw agent --local \
     --timeout "$AGENT_TURN_TIMEOUT" \
     --session-id "$SESSION_ID" \
+    --thinking max \
     --message "$FOLLOWUP_PROMPT" || echo "[agent] turn $turn exited non-zero ($?) — continuing"
 
   # Re-run the CI-gate enforcement after the agent turn — catches the

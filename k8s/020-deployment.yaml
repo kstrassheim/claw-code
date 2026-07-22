@@ -133,6 +133,12 @@ spec:
                   name: claw-code-secrets
                   key: MINIMAX_API_KEY
                   optional: true
+            - name: MOONSHOT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: claw-code-secrets
+                  key: MOONSHOT_API_KEY
+                  optional: true
           volumeMounts:
             - name: config-template
               mountPath: /template
