@@ -35,6 +35,18 @@ data:
           },
           "blockStreamingDefault": "on",
           "thinkingDefault": "high",
+          "models": {
+            "kimi/k3": { "params": { "thinking": "on" } },
+            "minimax/MiniMax-M3": {},
+            "minimax/MiniMax-M2.7": {},
+            "minimax/MiniMax-M2.7-highspeed": {},
+            "mistral/mistral-large-latest": {},
+            "mistral/mistral-small-latest": {},
+            "mistral/magistral-medium-latest": {},
+            "mistral/codestral-latest": {},
+            "mistral/mistral-large-3-25-12": {},
+            "mistral/mistral-medium-3-5-26-04": {}
+          },
           "bootstrapMaxChars": 30000,
           "bootstrapTotalMaxChars": 120000
         }
@@ -81,6 +93,12 @@ data:
               {"id": "MiniMax-M2.7-highspeed", "name": "MiniMax M2.7 HighSpeed", "contextWindow": 65536, "maxTokens": 8192, "params": {"num_ctx": 65536}}
             ]
           }
+        }
+      },
+      "plugins": {
+        "allow": ["kimi"],
+        "entries": {
+          "kimi": { "enabled": true }
         }
       },
       "mcp": {
@@ -282,6 +300,17 @@ data:
     cp /tmp/openclaw.json "$PERSISTENT_FILE"
     chmod 0600 "$PERSISTENT_FILE"
     echo "Wrote $PERSISTENT_FILE ($(wc -c < "$PERSISTENT_FILE") bytes)"
+
+    # Install the Kimi Coding plugin so kimi/k3 gets its native thinking
+    # contract (off|on, incl. K3's max effort). The plugin lives in the
+    # PVC-backed state dir, so this is a one-time cost per PVC; the glob
+    # check keeps pod starts fast. Skipped entirely when the Kimi key is
+    # absent (provider stripped above anyway).
+    if [ -n "${MOONSHOT_OK:-}" ] && ! ls "$PERSISTENT_DIR/npm/projects/"*kimi-provider* >/dev/null 2>&1; then
+      echo "Installing @openclaw/kimi-provider plugin..."
+      openclaw plugins install @openclaw/kimi-provider \
+        || echo "WARN: kimi plugin install failed — kimi/k3 falls back to core thinking levels"
+    fi
 
     # Also keep the claw-code-config ConfigMap up to date — not consumed
     # by the main container today, but useful for debugging (`kubectl
