@@ -1,12 +1,12 @@
 ---
 # Single source of truth for the openclaw runtime config.
-# Three providers are declared (moonshot + minimax + mistral). Any block
+# Three providers are declared (kimi + minimax + mistral). Any block
 # whose API key is empty/unset is stripped at pod startup by the
 # `render-config` init container in 020-deployment.yaml.
 #
-# Model routing: Kimi K3 Max (moonshot) is the primary model at max
-# thinking; on failure openclaw fails over to MiniMax M3, then Mistral
-# Large.
+# Model routing: Kimi K3 Max (Kimi Coding endpoint, MOONSHOT_API_KEY) is
+# the primary model at high thinking; on failure openclaw fails over to
+# MiniMax M3, then Mistral Large.
 #
 # imageModel routing: vision content goes to MiniMax M3 first (M3 is
 # natively multimodal, unlike M2.7 which was text-only); on failure
@@ -23,7 +23,7 @@ data:
       "agents": {
         "defaults": {
           "model": {
-            "primary": "moonshot/kimi-k3",
+            "primary": "kimi/k3",
             "fallbacks": ["minimax/MiniMax-M3", "mistral/mistral-large-latest"]
           },
           "imageModel": {
@@ -34,28 +34,27 @@ data:
             "mode": "safeguard"
           },
           "blockStreamingDefault": "on",
-          "thinkingDefault": "max",
+          "thinkingDefault": "high",
           "bootstrapMaxChars": 30000,
           "bootstrapTotalMaxChars": 120000
         }
       },
       "models": {
         "providers": {
-          "moonshot": {
-            "baseUrl": "https://api.moonshot.ai/v1",
+          "kimi": {
+            "baseUrl": "https://api.kimi.com/coding/v1",
             "apiKey": "${MOONSHOT_API_KEY}",
             "api": "openai-completions",
             "models": [
               {
-                "id": "kimi-k3",
+                "id": "k3",
                 "name": "Kimi K3 Max",
                 "reasoning": true,
-                "thinkingLevelMap": {"off": null, "minimal": null, "low": null, "medium": null, "high": "max", "xhigh": "max", "max": "max"},
+                "thinkingLevelMap": {"off": null, "minimal": "low", "low": "low", "medium": "low", "high": "high", "xhigh": "max", "max": "max"},
                 "input": ["text", "image"],
-                "cost": {"input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 0},
                 "contextWindow": 1048576,
                 "maxTokens": 1048576,
-                "compat": {"supportsReasoningEffort": true, "supportedReasoningEfforts": ["max"]}
+                "compat": {"supportsReasoningEffort": true, "supportedReasoningEfforts": ["low", "high", "max"]}
               }
             ]
           },
@@ -163,11 +162,11 @@ data:
       const c = JSON.parse(fs.readFileSync("/template/openclaw.json", "utf8"));
       const drop = (arr, prefix) => (arr || []).filter((m) => !m.startsWith(prefix));
       if (!process.env.MOONSHOT_OK) {
-        console.log("MOONSHOT_API_KEY not set — stripping Moonshot, switching primary to MiniMax");
-        delete c.models?.providers?.moonshot;
+        console.log("MOONSHOT_API_KEY not set — stripping Kimi, switching primary to MiniMax");
+        delete c.models?.providers?.kimi;
         if (c.agents?.defaults?.model) {
-          c.agents.defaults.model.fallbacks = drop(c.agents.defaults.model.fallbacks, "moonshot/");
-          if ((c.agents.defaults.model.primary || "").startsWith("moonshot/")) {
+          c.agents.defaults.model.fallbacks = drop(c.agents.defaults.model.fallbacks, "kimi/");
+          if ((c.agents.defaults.model.primary || "").startsWith("kimi/")) {
             c.agents.defaults.model.primary = process.env.MINIMAX_OK
               ? "minimax/MiniMax-M3"
               : "mistral/mistral-large-latest";
@@ -181,15 +180,15 @@ data:
           c.agents.defaults.model.fallbacks = drop(c.agents.defaults.model.fallbacks, "minimax/");
           if ((c.agents.defaults.model.primary || "").startsWith("minimax/")) {
             c.agents.defaults.model.primary = process.env.MOONSHOT_OK
-              ? "moonshot/kimi-k3"
+              ? "kimi/k3"
               : "mistral/mistral-large-latest";
           }
         }
         if (c.agents?.defaults?.imageModel) {
-          // kimi-k3 is natively multimodal, so it can take over vision
+          // kimi/k3 is natively multimodal, so it can take over vision
           // duty when MiniMax is absent; otherwise fall back to Mistral.
           c.agents.defaults.imageModel.primary = process.env.MOONSHOT_OK
-            ? "moonshot/kimi-k3"
+            ? "kimi/k3"
             : "mistral/mistral-large-3-25-12";
           c.agents.defaults.imageModel.fallbacks = drop(c.agents.defaults.imageModel.fallbacks, "minimax/");
         }
@@ -202,7 +201,7 @@ data:
           c.agents.defaults.imageModel.fallbacks = drop(c.agents.defaults.imageModel.fallbacks, "mistral/");
           if ((c.agents.defaults.imageModel.primary || "").startsWith("mistral/")) {
             c.agents.defaults.imageModel.primary = process.env.MOONSHOT_OK
-              ? "moonshot/kimi-k3"
+              ? "kimi/k3"
               : "minimax/MiniMax-M3";
           }
         }
