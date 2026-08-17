@@ -38,7 +38,11 @@ override.tf.json
 # !example_override.tf
 
 # Include tfplan files to ignore the plan output of command: terraform plan -out=tfplan
+# The bare name matters: -out=tfplan writes a file with no extension, which
+# *.tfplan does not match. A plan archive embeds tfstate, secrets and all.
 *.tfplan
+tfplan
+tfplan.*
 
 # Ignore CLI configuration files
 .terraformrc
