@@ -406,58 +406,50 @@ jobs:
 
       - name: Ship builder/ scripts as ConfigMaps
         # THE POINT: a change to a script reaches the cluster on the next tick,
-        # without rebuilding a ~1.8GB image for a one-line edit. The image still
-        # carries every one of these files, so a ConfigMap that fails to mount
-        # degrades to the version baked in — stale, never missing.
+        # without rebuilding a ~1.8GB image for a one-line edit. The image
+        # still carries every one of these files, so a ConfigMap that fails to
+        # mount degrades to the version baked in — stale, never missing.
         #
-        # The two halves mirror builder/kustomization.yaml: the planner half is
-        # what the CronJobs run, the runner half is what the gateway executes.
+        # THE FILE LIST IS READ FROM builder/kustomization.yaml, not repeated
+        # here. It WAS repeated here, and it drifted: the forge split added
+        # forge_github, forge_gitlab, forge_gitea and forge_azdo, and the
+        # planner ConfigMap silently shipped without them — so forge.py from
+        # the mount would have imported its host modules from the IMAGE,
+        # mixing two versions of one layer. One source makes that impossible
+        # rather than merely unlikely.
+        #
+        # SERVER-SIDE APPLY is not optional. A client-side apply stores the
+        # ENTIRE object in the kubectl.kubernetes.io/last-applied-configuration
+        # annotation, and annotations cap at 256KB:
+        #
+        #   The ConfigMap "claw-scripts-runner" is invalid:
+        #   metadata.annotations: Too long: may not be more than 262144 bytes
+        #
+        # Both halves exceed that (372KB and 470KB). Server-side apply keeps
+        # that state in managedFields, so the limit that matters becomes
+        # etcd's 1MiB for the object rather than 256KB for a copy inside it.
         run: |
           set -euo pipefail
-          kubectl create configmap claw-scripts-planner \
-            --namespace claw-code \
-            --from-file=cron-issue-spawn=builder/cron-issue-spawn.sh \
-            --from-file=cron-tester-spawn=builder/cron-tester-spawn.sh \
-            --from-file=cron-reviewer-spawn=builder/cron-reviewer-spawn.sh \
-            --from-file=heartbeat-issue-tick=builder/heartbeat-issue-tick.py \
-            --from-file=tester-tick=builder/tester-tick.py \
-            --from-file=reviewer-tick=builder/reviewer-tick.py \
-            --from-file=approval_release.py=builder/approval_release.py \
-            --from-file=forge-cli=builder/forge-cli \
-            --from-file=forge.py=builder/forge.py \
-            --from-file=issue_priority.py=builder/issue_priority.py \
-            --from-file=issue_status.py=builder/issue_status.py \
-            --from-file=lexical_guard.py=builder/lexical_guard.py \
-            --from-file=project_allowlist.py=builder/project_allowlist.py \
-            --from-file=queue_state.py=builder/queue_state.py \
-            --from-file=review_subject.py=builder/review_subject.py \
-            --from-file=story_estimate.py=builder/story_estimate.py \
-            --from-file=story_points.py=builder/story_points.py \
-            --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create configmap claw-scripts-runner \
-            --namespace claw-code \
-            --from-file=fixer-runner=builder/fixer-runner.sh \
-            --from-file=tester-runner=builder/tester-runner.sh \
-            --from-file=reviewer-runner=builder/reviewer-runner.sh \
-            --from-file=estimate-runner=builder/estimate-runner.sh \
-            --from-file=tester-upload-screenshots=builder/tester-upload-screenshots.py \
-            --from-file=mermaid-render=builder/mermaid-render \
-            --from-file=agent-limits.sh=builder/agent-limits.sh \
-            --from-file=agent-models.sh=builder/agent-models.sh \
-            --from-file=agent-thinking.sh=builder/agent-thinking.sh \
-            --from-file=agent-slot.sh=builder/agent-slot.sh \
-            --from-file=project-kind.sh=builder/project-kind.sh \
-            --from-file=project-instructions.sh=builder/project-instructions.sh \
-            --from-file=security_reports.py=builder/security_reports.py \
-            --from-file=delivering_pr.py=builder/delivering_pr.py \
-            --from-file=planning_docs.py=builder/planning_docs.py \
-            --from-file=planning_store.py=builder/planning_store.py \
-            --from-file=sprint_current.py=builder/sprint_current.py \
-            --from-file=sprint_schedule.py=builder/sprint_schedule.py \
-            --from-file=mermaid-theme.json=builder/mermaid-theme.json \
-            --from-file=list-loadable-skills=builder/list-loadable-skills.sh \
-            --from-file=lock-skill-dirs=builder/lock-skill-dirs.sh \
-            --dry-run=client -o yaml | kubectl apply -f -
+          for cm in claw-scripts-planner claw-scripts-runner; do
+            mapfile -t args < <(
+              awk -v cm="$cm" '
+                $0 ~ "name: " cm "$" { inblk = 1; next }
+                inblk && /^  - name:/ { inblk = 0 }
+                inblk && /^ *- [^ ]+=[^ ]+$/ {
+                  gsub(/^ *- /, "");
+                  split($0, kv, "=");
+                  printf "--from-file=%s=builder/%s\n", kv[1], kv[2]
+                }
+              ' builder/kustomization.yaml
+            )
+            [ "${#args[@]}" -gt 0 ] || { echo "::error::no files resolved for $cm"; exit 1; }
+            echo ">> $cm: ${#args[@]} file(s)"
+            kubectl create configmap "$cm" \
+              --namespace claw-code \
+              "${args[@]}" \
+              --dry-run=client -o yaml \
+              | kubectl apply --server-side --force-conflicts -f -
+          done
 
       - name: Build and apply openclaw-tools-md ConfigMap from k8s/tools/
         # The per-tool TOOLS-*.md files are the bot's self-description;
