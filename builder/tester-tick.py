@@ -44,6 +44,7 @@ runner into the openclaw pod for each repo with toSpawn=true.
 Env:
   GITHUB_TOKEN              bot's credentials on GitHub
   GITLAB_URL / GITLAB_API_TOKEN
+  GITEA_URL / GITEA_API_TOKEN
                             bot's credentials on GitLab; unset means the host
                             is skipped, which is the normal state
   TESTER_TTL_SECONDS        stale-lock cutoff, default 7200 (2h — tester

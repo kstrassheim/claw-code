@@ -276,7 +276,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: pr-reviewer
-              image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:latest
+              image: clwcodecodevdev2.azurecr.io/openclaw/claw-code-cron:latest
               # NOT the agent image. This container finds the openclaw pod
               # and does the real work inside it with `kubectl exec`; what
               # runs here is one stdlib-only planner. See builder/cron/.

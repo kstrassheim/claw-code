@@ -15,7 +15,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: claw-code-config-template
+  name: openclaw-config-template
   namespace: claw-code
 data:
   openclaw.json: |
@@ -47,8 +47,8 @@ data:
             "mistral/mistral-large-3-25-12": {},
             "mistral/mistral-medium-3-5-26-04": {}
           },
-          "bootstrapMaxChars": 150000,
-          "bootstrapTotalMaxChars": 200000
+          "bootstrapMaxChars": 250000,
+          "bootstrapTotalMaxChars": 300000
         }
       },
       "models": {

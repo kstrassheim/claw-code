@@ -125,6 +125,37 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && /usr/local/bin/gh --version
 
+# tea CLI + Gitea MCP server, the Gitea half of the forge layer's tooling.
+# Same shape as the gh block above; arm64 only, same as the image. `tea`
+# publishes a bare binary rather than an archive, the MCP a tar.gz.
+ARG TEA_VERSION
+ARG GITEA_MCP_VERSION
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && curl -fsSL -o /usr/local/bin/tea \
+      "https://gitea.com/gitea/tea/releases/download/v${TEA_VERSION}/tea-${TEA_VERSION}-linux-arm64" \
+ && chmod 0755 /usr/local/bin/tea \
+ && curl -fsSL -o /tmp/gitea-mcp.tar.gz \
+      "https://gitea.com/gitea/gitea-mcp/releases/download/v${GITEA_MCP_VERSION}/gitea-mcp_Linux_arm64.tar.gz" \
+ && tar -xzf /tmp/gitea-mcp.tar.gz -C /tmp \
+ && mv /tmp/gitea-mcp /usr/local/bin/gitea-mcp \
+ && chmod 0755 /usr/local/bin/gitea-mcp \
+ && rm -rf /tmp/gitea-mcp.tar.gz \
+ && apt-get purge -y --auto-remove curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && /usr/local/bin/tea --version
+
+# Azure DevOps: the `az devops` CLI extension and the official MCP server.
+# The extension rides on the azure-cli installed below rather than being its
+# own binary, so it has no version pin of its own. The MCP is npm and is
+# vendored at build time rather than resolved by npx at run time — a pod that
+# reaches the network on first use is a pod that fails when it cannot.
+ARG AZDO_MCP_VERSION
+USER root
+RUN npm install -g "@azure-devops/mcp@${AZDO_MCP_VERSION}" \
+ && npm cache clean --force
+
 # Baked-in .gitconfig: credential helper reads $GITHUB_TOKEN at git-runtime
 RUN install -d -o 1000 -g 1000 /home/node \
  && cat > /home/node/.gitconfig <<'GITCONFIG'
@@ -146,6 +177,7 @@ RUN apt-get update \
       > /etc/apt/sources.list.d/azure-cli.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends azure-cli python3-pyotp \
+ && az extension add --name azure-devops --only-show-errors \
  && apt-get purge -y --auto-remove apt-transport-https lsb-release gnupg \
  && rm -rf /var/lib/apt/lists/* \
  && /usr/bin/az --version | head -3
@@ -447,13 +479,16 @@ RUN ARCH=$(dpkg --print-architecture) \
  && ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh \
  && rm /tmp/pwsh.tar.gz \
  && mkdir -p /usr/local/share/powershell/Modules \
- # Bootstrap the NuGet package provider EXPLICITLY. Save-Module otherwise
- # prompts for it on first use, and a prompt in a -NonInteractive shell is an
- # error, not a default-yes. -Scope AllUsers so the provider is in the image
- # for the Az/Pester layer below rather than in some transient HOME.
+ # No Install-PackageProvider here. On PowerShell 7 it looks for a
+ # PackageManagement provider PACKAGE, a discovery route that is dead on
+ # Linux: it printed "No match was found ... for the provider 'NuGet'" on
+ # every build while Save-Module went on to succeed anyway, through the
+ # provider already built into PowerShellGet. An error in a green build
+ # teaches people to ignore errors; silencing it with -ErrorAction would
+ # have hidden a real failure later instead. The module assertion at the
+ # end of this RUN is what actually proves the save worked.
  && pwsh -NoProfile -NonInteractive -Command \
-      "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope AllUsers -Force | Out-Null; \
-       Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; \
+      "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; \
        Save-Module -Name PSScriptAnalyzer -RequiredVersion ${PSSCRIPTANALYZER_VERSION} -Path /usr/local/share/powershell/Modules" \
  && rm -rf /var/lib/apt/lists/* \
  # Verify here, so a broken scanner fails the BUILD instead of the first tool
@@ -470,9 +505,14 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Azure data-platform tooling — see k8s/tools/TOOLS-powershell.md:
 #   - Pester — the PowerShell test framework. The solver is required to make
 #     a runbook's unit tests pass locally before it opens a pull request.
-#   - Az.Accounts / Az.Automation / Az.DataFactory / Az.Synapse — ONLY these
-#     four, never the Az meta-module, which is several hundred MB of provider
-#     surface nothing here touches.
+#   - Az — the WHOLE meta-module, deliberately. This used to be four
+#     submodules (Accounts, Automation, DataFactory, Synapse) with a comment
+#     saying the meta-module was "several hundred MB of provider surface
+#     nothing here touches". That was true of the image and false of the work:
+#     every new Azure area the bot was asked about needed another pin, another
+#     pull request and another rebuild before it could even look. The image
+#     pays about a gigabyte once; the alternative charged a round-trip every
+#     time the answer was in a provider nobody had predicted.
 #   - msodbcsql18 + sqlcmd — so the AGENT can apply .sql files and run ad-hoc
 #     queries in its own shell.
 # Everything authenticates as the bot's Entra identity through the shared
@@ -484,10 +524,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # turns a missing keyring into an obvious failure on this line instead of an
 # unsigned-repository error twenty lines later.
 ARG PESTER_VERSION
-ARG AZ_ACCOUNTS_VERSION
-ARG AZ_AUTOMATION_VERSION
-ARG AZ_DATAFACTORY_VERSION
-ARG AZ_SYNAPSE_VERSION
+ARG AZ_VERSION
 USER root
 RUN . /etc/os-release \
  && test -s /etc/apt/keyrings/microsoft.gpg \
@@ -498,22 +535,39 @@ RUN . /etc/os-release \
       msodbcsql18 mssql-tools18 unixodbc \
  && ln -sf /opt/mssql-tools18/bin/sqlcmd /usr/local/bin/sqlcmd \
  && ln -sf /opt/mssql-tools18/bin/bcp    /usr/local/bin/bcp \
+ # No Install-PackageProvider here. On PowerShell 7 it looks for a
+ # PackageManagement provider PACKAGE, a discovery route that is dead on
+ # Linux: it printed "No match was found ... for the provider 'NuGet'" on
+ # every build while Save-Module went on to succeed anyway, through the
+ # provider already built into PowerShellGet. An error in a green build
+ # teaches people to ignore errors; silencing it with -ErrorAction would
+ # have hidden a real failure later instead. The module assertion at the
+ # end of this RUN is what actually proves the save worked.
  && pwsh -NoProfile -NonInteractive -Command \
-      "Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope AllUsers -Force | Out-Null; \
-       Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; \
-       Save-Module -Name Pester         -RequiredVersion ${PESTER_VERSION}         -Path /usr/local/share/powershell/Modules; \
-       Save-Module -Name Az.Accounts    -RequiredVersion ${AZ_ACCOUNTS_VERSION}    -Path /usr/local/share/powershell/Modules; \
-       Save-Module -Name Az.Automation  -RequiredVersion ${AZ_AUTOMATION_VERSION}  -Path /usr/local/share/powershell/Modules; \
-       Save-Module -Name Az.DataFactory -RequiredVersion ${AZ_DATAFACTORY_VERSION} -Path /usr/local/share/powershell/Modules; \
-       Save-Module -Name Az.Synapse     -RequiredVersion ${AZ_SYNAPSE_VERSION}     -Path /usr/local/share/powershell/Modules" \
+      "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; \
+       Save-Module -Name Pester -RequiredVersion ${PESTER_VERSION} -Path /usr/local/share/powershell/Modules; \
+       Save-Module -Name Az     -RequiredVersion ${AZ_VERSION}     -Path /usr/local/share/powershell/Modules" \
  && rm -rf /var/lib/apt/lists/* \
  # Fail the build loudly rather than ship an image whose agent silently cannot
  # reach a database or load the modules its runbook tests import.
  && sqlcmd -? >/dev/null 2>&1 \
+ # Assert the META-MODULE arrived, not a list of names. A hardcoded list
+ # reads like pins somebody has to maintain, and it is the wrong question
+ # anyway: `Save-Module -Name Az` either brings the whole family or it has
+ # failed, and naming eight of ~80 tests eight-eightieths of that.
+ #
+ # So: Az.Accounts as the anchor every other Az module depends on, Pester
+ # because the runbook tests import it, and a COUNT — a save that degrades to
+ # a handful of submodules is the failure this is really watching for, and it
+ # would pass a check that only asked about names it happened to list.
  && pwsh -NoProfile -NonInteractive -Command \
-      "@('Pester','Az.Accounts','Az.Automation','Az.DataFactory','Az.Synapse') | ForEach-Object { \
-         if (-not (Get-Module -ListAvailable \$_)) { throw \"missing module: \$_\" }; \
-         '{0} {1}' -f \$_, (Get-Module -ListAvailable \$_).Version[0] }"
+      "foreach (\$m in 'Pester','Az.Accounts') { \
+         if (-not (Get-Module -ListAvailable \$m)) { throw \"missing module: \$m\" } }; \
+       \$az = @((Get-Module -ListAvailable Az.*).Name | Sort-Object -Unique); \
+       if (\$az.Count -lt 30) { \
+         throw \"Az degraded to \$(\$az.Count) submodules — the meta-module did not install\" }; \
+       'Pester {0}' -f (Get-Module -ListAvailable Pester).Version[0]; \
+       'Az {0} — {1} submodules' -f (Get-Module -ListAvailable Az.Accounts).Version[0], \$az.Count"
 
 # .NET SDK + SqlPackage — SSDT/dacpac database projects.
 #
@@ -815,6 +869,10 @@ COPY --chmod=0755 forge-cli                /usr/local/bin/forge-cli
 # through this, so a build without it is a build where nothing can talk to
 # anything.
 COPY --chmod=0644 forge.py              /usr/local/bin/forge.py
+COPY --chmod=0644 forge_github.py       /usr/local/bin/forge_github.py
+COPY --chmod=0644 forge_gitlab.py       /usr/local/bin/forge_gitlab.py
+COPY --chmod=0644 forge_gitea.py        /usr/local/bin/forge_gitea.py
+COPY --chmod=0644 forge_azdo.py         /usr/local/bin/forge_azdo.py
 COPY --chmod=0644 issue_status.py       /usr/local/bin/issue_status.py
 COPY --chmod=0644 issue_priority.py     /usr/local/bin/issue_priority.py
 COPY --chmod=0644 story_points.py       /usr/local/bin/story_points.py

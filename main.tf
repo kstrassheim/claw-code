@@ -31,7 +31,7 @@ locals {
   location             = var.location
   storage_account_name = var.storage_account_name
   namespace            = var.namespace
-  aks_version          = "1.35.3"
+  aks_version          = "1.36.2"
 }
 
 # Lookup the AKS admin group by display name. The object ID changes per

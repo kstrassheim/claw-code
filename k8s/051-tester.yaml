@@ -237,7 +237,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: tester
-              image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:latest
+              image: clwcodecodevdev2.azurecr.io/openclaw/claw-code-cron:latest
               imagePullPolicy: Always
               # Named WITHOUT a directory so PATH decides — the mount at
               # /opt/claw-scripts comes first, ahead of the image copy.

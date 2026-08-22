@@ -118,7 +118,7 @@ _source_lib project-instructions || true
 # Resolve bot identity from $GITHUB_TOKEN unless explicitly pinned via
 # FIXER_BOT_LOGIN. Hardcoding the login would couple the code to one
 # deployment's identity — sibling deployments use different tokens
-# (the bot's login differs per deployment, so it is read, never assumed).
+# (e.g. sephiroth-claw vs whatever this cluster's bot is).
 if [ -n "${FIXER_BOT_LOGIN:-}" ]; then
   BOT_LOGIN="$FIXER_BOT_LOGIN"
 else

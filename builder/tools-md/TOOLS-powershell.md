@@ -19,9 +19,15 @@ deployed and will never run.
 
 - `pwsh` (PowerShell 7) on `$PATH`
 - **Pester** — the PowerShell test framework
-- **`Az.Accounts`, `Az.Automation`, `Az.DataFactory`, `Az.Synapse`** — only
-  these four, not the full `Az` meta-module. If you need another `Az.*`
-  module, say so rather than assuming it is there.
+- **`Az`** — the full meta-module, so every `Az.*` submodule is present:
+  `Az.Accounts`, `Az.Resources`, `Az.Storage`, `Az.KeyVault`, `Az.Sql`,
+  `Az.Automation`, `Az.DataFactory`, `Az.Synapse` and the rest. Import what
+  you need; you do NOT have to ask for a module to be added first.
+
+  This used to be four submodules, and the instruction here used to be "say
+  so rather than assuming it is there". That is no longer true — assume it is
+  there. If an `Import-Module Az.Something` genuinely fails, that is worth
+  reporting, because it means the meta-module install regressed.
 - **PSScriptAnalyzer** — lint + security rules (TOOLS-security section)
 
 ## Writing a runbook

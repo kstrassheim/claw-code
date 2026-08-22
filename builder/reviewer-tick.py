@@ -50,6 +50,7 @@ into the openclaw pod for each entry with toSpawn=true.
 Env:
   GITHUB_TOKEN              bot's credentials on GitHub
   GITLAB_URL / GITLAB_API_TOKEN
+  GITEA_URL / GITEA_API_TOKEN
                             bot's credentials on GitLab; unset means the host
                             is skipped, which is the normal state
   REVIEWER_TTL_SECONDS      stale-lock cutoff, default 7200 (reviews run the
@@ -312,8 +313,9 @@ def permission_reason(code: int | None) -> str:
 def main() -> None:
     if not FORGES:
         print(json.dumps({"error": "no code host is configured (set "
-                                   "GITHUB_TOKEN, or GITLAB_URL and "
-                                   "GITLAB_API_TOKEN)", "prs": []}))
+                                   "GITHUB_TOKEN, GITLAB_URL and "
+                                   "GITLAB_API_TOKEN, or GITEA_URL and "
+                                   "GITEA_API_TOKEN)", "prs": []}))
         return
     namespace = k8s_namespace()
     pod = find_openclaw_pod(namespace)
