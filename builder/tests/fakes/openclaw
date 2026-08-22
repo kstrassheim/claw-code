@@ -1,0 +1,111 @@
+#!/bin/sh
+# Fake `openclaw` for the test suite. Makes no model call and costs nothing.
+#
+# WHY THIS EXISTS
+# The runner scripts are where the expensive mistakes live — the checkout that
+# deleted a branch, the preflight that never woke the agent again, the review
+# gate. All of it sits behind an `openclaw agent` invocation, so none of it was
+# testable without either paying for a model call or being online.
+#
+# WHY POSIX SH AND NOT PYTHON
+# The first version was a Python script and died immediately: this repo is
+# developed on a machine that has `python` but no `python3`, so the shebang
+# could not resolve and every shell test failed at once with an empty result —
+# which looks exactly like a logic bug and is not one. A fake that only works
+# on some of the machines that run the suite is worse than no fake.
+#
+# WHAT IT DOES
+#   1. RECORDS every invocation to $FAKE_OPENCLAW_CALLS, one line per call, so
+#      a test can assert what the runner asked for — including --model, which
+#      is precisely what the model-selection feature has to get right.
+#   2. Appends canned output to $FAKE_OPENCLAW_LOG, so the runners' log
+#      scraping (the "stopReason" watcher, the model-call counter) sees what it
+#      expects.
+#   3. Exits with $FAKE_OPENCLAW_RC, so a test can reproduce a failing turn —
+#      including the 429 that wedged an issue in production for 109 ticks.
+
+CALLS="${FAKE_OPENCLAW_CALLS:-}"
+LOG="${FAKE_OPENCLAW_LOG:-}"
+RC="${FAKE_OPENCLAW_RC:-0}"
+STOP="${FAKE_OPENCLAW_STOP:-end_turn}"
+NCALLS="${FAKE_OPENCLAW_MODEL_CALLS:-3}"
+PROVIDER="${FAKE_OPENCLAW_PROVIDER:-kimi}"
+MODEL_ID="${FAKE_OPENCLAW_MODEL_ID:-k3}"
+
+# The transport is NOT the same for every provider, and the log line records
+# it. Measured against the live instance:
+#
+#   kimi     https://api.kimi.com/coding/v1     api=openai-completions
+#   minimax  https://api.minimax.io/anthropic   api=anthropic-messages
+#   mistral  https://api.mistral.ai/v1          openai-style
+#
+# Emitting openai-completions for everything would have this fake produce a
+# provider/API pairing that never occurs, which is exactly how a test ends up
+# asserting something the real system cannot do.
+case "$PROVIDER" in
+  minimax*) API="${FAKE_OPENCLAW_API:-anthropic-messages}" ;;
+  *)        API="${FAKE_OPENCLAW_API:-openai-completions}" ;;
+esac
+
+# --- record the invocation ---------------------------------------------------
+if [ -n "$CALLS" ]; then
+  _model=""; _timeout=""; _session=""; _local=0
+  _prev=""
+  for _a in "$@"; do
+    case "$_prev" in
+      --model)      _model="$_a" ;;
+      --timeout)    _timeout="$_a" ;;
+      --session-id) _session="$_a" ;;
+    esac
+    [ "$_a" = "--local" ] && _local=1
+    _prev="$_a"
+  done
+  # Deliberately hand-rolled JSON: one line, only fields the tests assert on.
+  printf '{"argv":"%s","model":"%s","timeout":"%s","session":"%s","local":%s}\n' \
+    "$(printf '%s ' "$@" | sed 's/"/\\"/g')" \
+    "$_model" "$_timeout" "$_session" "$_local" >> "$CALLS" 2>/dev/null || true
+fi
+
+emit_log() {
+  [ -n "$LOG" ] || return 0
+  _i=0
+  while [ "$_i" -lt "$NCALLS" ]; do
+    printf '[provider-transport-fetch] [model-fetch] response provider=%s api=%s model=%s status=200 elapsedMs=120\n' \
+      "$PROVIDER" "$API" "$MODEL_ID" >> "$LOG"
+    _i=$((_i + 1))
+  done
+  if [ "$RC" != "0" ]; then
+    printf '[provider-transport-fetch] [model-fetch] response provider=%s api=%s model=%s status=429 elapsedMs=31305\n' \
+      "$PROVIDER" "$API" "$MODEL_ID" >> "$LOG"
+    printf '[agent/embedded] embedded run agent end: isError=true model=%s provider=%s error=The AI service is temporarily overloaded.\n' \
+      "$MODEL_ID" "$PROVIDER" >> "$LOG"
+  else
+    printf '[agent] turn ended with stopReason=%s\n' "$STOP" >> "$LOG"
+  fi
+}
+
+case "${1:-}" in
+  models)
+    # What `agent-models` validates against. minimax-cn deliberately lacks the
+    # `configured` tag: it is the "listed but no credentials" case.
+    case "$*" in
+      *list*)
+        echo "Model                          Input      Ctx    Local Auth  Tags"
+        echo "kimi/k3                        text+image 1049k  no    yes   default,image,configured"
+        echo "minimax/MiniMax-M3             text+image 1000k  no    yes   configured"
+        echo "minimax/MiniMax-M2.7           text       66k    no    yes   configured"
+        echo "minimax-cn/MiniMax-M3          text+image 1000k  no    yes"
+        ;;
+    esac
+    exit 0
+    ;;
+  agent)
+    emit_log
+    exit "$RC"
+    ;;
+  infer)
+    echo '{"description":"a fake image description"}'
+    exit 0
+    ;;
+esac
+exit 0

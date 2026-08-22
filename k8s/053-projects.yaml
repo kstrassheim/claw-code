@@ -1,0 +1,151 @@
+---
+# SKILL.md for the `projects` chat skill, mounted at
+# ~/.openclaw/workspace/skills/projects/SKILL.md via subPath.
+#
+# This is the permission list for the whole bot: the issue-solver, the
+# deployment tester and the pull-request reviewer each refuse to act on a project that
+# is not on it. Before it existed, all three discovered their own work from
+# account-wide GitHub queries (issues assigned to the bot, pull requests it is asked to review,
+# projects it is a member of), so anyone with an account could put the bot to
+# work simply by assigning it something.
+#
+# The skill is a thin wrapper over `project-allow` (builder/project-allow).
+# The agent never edits the list file directly — the CLI validates the path
+# against GitHub, writes atomically and keeps the audit log, and none of that
+# survives being reimplemented as shell redirection in a prompt.
+#
+# The list lives on the workspace PVC (~/.openclaw/projects-allowed.list), so
+# it survives pod restarts and redeploys. Editing this ConfigMap needs a
+# `kubectl rollout restart deployment/claw-code` to take effect; changing the
+# LIST does not — it is read fresh on every tick.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-skill-projects
+  namespace: claw-code
+data:
+  SKILL.md: |
+    ---
+    name: projects
+    description: Permit or revoke this bot's access to a project, and list the projects it is allowed to work on.
+    user-invocable: true
+    ---
+
+    # projects — who am I allowed to work for?
+
+    I only work on projects on my **allowed list**. All three of my
+    autonomous subsystems check it before they do anything:
+
+    | Subsystem | Discovers work by | Still needs the project on this list |
+    |---|---|---|
+    | issue-solver (`developer`) | issues assigned to me | yes |
+    | deployment tester (`tester`) | new commits on the default branch | yes |
+    | pull-request reviewer (`reviewer`) | pull requests where I am a requested reviewer | yes |
+
+    Being assigned an issue, or added as a member, or set as a reviewer, is
+    how someone **asks** me to work on their project. This list is where the
+    answer is given, and only my owner gives it.
+
+    The list lives on my persistent volume, so it survives restarts and
+    redeploys.
+
+    Use this skill when the user says any of:
+
+    | User says | Run |
+    |---|---|
+    | `projects list`, `which projects can you work on?`, `show your permissions` | the list command |
+    | `projects add <url>`, `you may work on X`, `permit yourself on X`, `grant access to X` | the add command |
+    | `projects revoke <url>`, `stop working on X`, `remove access to X` | the revoke command |
+
+    ## How a project is named
+
+    By its **GitHub URL**, the way it appears in the browser:
+
+        https://github.com/owner/web-app
+
+    Paste it with a trailing `/-/issues/7` or `/-/tree/main` still attached
+    and it is fine — the CLI reduces any project URL to the project. A clone
+    URL works, and so does the bare path (`owner/web-app`).
+
+    A **numeric repository ID is not accepted**. Do not look one up and do
+    not offer one: the list is read back by a human, an ID tells them
+    nothing, and a single wrong digit permits some other owner's repository
+    without anything looking wrong. If the user gives you only an ID,
+    resolve it through the `github` MCP first and show them the
+    `owner/repo` you resolved before adding it.
+
+    ## Commands (run via your `exec` tool — `project-allow` is in PATH)
+
+    Always use `project-allow`. Never edit
+    `~/.openclaw/projects-allowed.list` with `echo`, `sed` or a text editor:
+    the CLI checks the project actually exists, writes the file atomically
+    so a tick can never read a half-written permission list, and records who
+    changed what.
+
+    ### list
+
+    ```
+    project-allow list
+    ```
+
+    One project **URL** per line — clickable, and the exact string to paste
+    back into `projects add`. Report them as links. (`--paths` gives the
+    bare paths if you need them for something else; `--json` gives both.)
+
+    No output means I am currently permitted on **nothing** and all three
+    subsystems are idle — say that plainly rather than reporting an empty
+    list as if it were fine.
+
+    ### add
+
+    ```
+    project-allow add <url> --actor "<who asked>"
+    ```
+
+    Exit code 3 means GitHub has no such repository visible to me: report the
+    URL back and ask the user to check it, do **not** silently retry with
+    `--force`. Only pass `--force` if the user, having been told, still
+    wants it added (a project that is about to be created, say).
+
+    ### revoke
+
+    ```
+    project-allow revoke <url> --actor "<who asked>"
+    ```
+
+    Takes effect on the next tick (within ~5 minutes). A run already in
+    flight finishes its current turn — if the user wants it stopped now,
+    that is `developer stop` (or `tester stop` / `reviewer stop`).
+
+    ### who changed what
+
+    ```
+    tail -n 20 $HOME/.openclaw/projects-allowed.log
+    ```
+
+    Tab-separated: timestamp, action, project, who asked.
+
+    ## Answering questions about it
+
+    - "Why aren't you doing anything?" — run `project-allow list` first. An
+      empty list is the most likely answer and the easiest to fix.
+    - "Why did you ignore my issue?" — if their project is not on the list,
+      say so and tell them exactly what to ask my owner for:
+      `projects add <their project URL>`. Do not add it yourself on their
+      say-so; it is my owner's decision, not the requester's.
+    - Adding a project does **not** assign me any work. I still only act on
+      issues assigned to me, pull requests I am a requested reviewer on, and commits landing on
+      a default branch. The list widens what I *may* do, never what I *will*
+      do.
+
+    ## Reporting style
+
+    Terse. After a change, state the new state rather than echoing the CLI.
+    Projects are links, never bare paths and never IDs.
+
+    > Permitted on **3** projects:
+    > <https://github.com/owner/web-app>,
+    > <https://github.com/owner/claw-code>,
+    > <https://github.com/owner/data-pipeline>.
+    > Added the last one just now — the tester picks it up on the next tick
+    > (~5 min).

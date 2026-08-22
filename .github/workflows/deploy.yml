@@ -2,7 +2,7 @@ name: Deploy (Push to main)
 
 # Runs on every merge to main. Four sequential jobs:
 #   1. check-llm-secrets      — fail-fast if neither LLM API key is set
-#   2. terraform-apply        — provision/update Azure infra (AKS, ACR, etc.)
+#   2. tofu-apply        — provision/update Azure infra (AKS, ACR, etc.)
 #   3. build-and-push-image   — build the openclaw image, push :latest+:sha to ACR
 #   4. deploy-to-aks          — kubectl apply -f k8s/, then rollout restart
 #
@@ -34,7 +34,7 @@ jobs:
     # Same fail-fast as in validate.yml — refuse to deploy if neither
     # LLM API key is configured. The pod's render-config init container
     # would also reject this case, but failing here saves a full
-    # terraform-apply + image-push + rollout cycle.
+    # tofu-apply + image-push + rollout cycle.
     name: At least one LLM API key configured
     runs-on: ubuntu-latest
     environment: dev
@@ -50,8 +50,8 @@ jobs:
           fi
           echo "OK — at least one LLM API key is configured."
 
-  terraform-apply:
-    name: Terraform Apply
+  tofu-apply:
+    name: OpenTofu Apply
     needs: check-llm-secrets
     runs-on: ubuntu-latest
     environment: dev
@@ -60,16 +60,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Read TERRAFORM_VERSION from /VERSIONS
+      - name: Read TOFU_VERSION from /VERSIONS
         id: tfver
         run: |
-          echo "version=$(grep '^TERRAFORM_VERSION=' VERSIONS | cut -d= -f2)" >> $GITHUB_OUTPUT
+          echo "version=$(grep '^TOFU_VERSION=' VERSIONS | cut -d= -f2)" >> $GITHUB_OUTPUT
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: ${{ steps.tfver.outputs.version }}
-          terraform_wrapper: true
+          tofu_version: ${{ steps.tfver.outputs.version }}
+          tofu_wrapper: true
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
@@ -86,37 +86,44 @@ jobs:
             --file /tmp/kubeconfig_clawcode \
             --admin
 
-      - name: Set Terraform environment variables
+      - name: Set OpenTofu environment variables
         run: |
           echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
           echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
           echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
           echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
           echo "TF_VAR_env=dev" >> $GITHUB_ENV
+          # The state-encryption key provider does NOT read ARM_* from the
+          # environment the way the backend and the azurerm provider do — it
+          # takes block arguments, fed from these TF_VARs. Without them it
+          # falls through to AzureCLICredential and fails in CI.
+          echo "TF_VAR_use_oidc=true" >> $GITHUB_ENV
+          echo "TF_VAR_arm_client_id=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "TF_VAR_arm_tenant_id=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
 
-      - name: Terraform Init
+      - name: OpenTofu Init
         run: |
-          terraform init \
+          tofu init \
             -backend-config="resource_group_name=terraform" \
             -backend-config="storage_account_name=mytofustates" \
             -backend-config="container_name=claw-code" \
             -backend-config="key=dev.tfstate" \
             -backend-config="use_azuread_auth=true"
 
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
+      - name: OpenTofu Plan
+        run: tofu plan -out=tfplan
 
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+      - name: OpenTofu Apply
+        run: tofu apply -auto-approve tfplan
 
-      - name: Upload Terraform Output
-        run: terraform output -json > terraform_output.json
+      - name: Upload OpenTofu Output
+        run: tofu output -json > tofu_output.json
 
-      - name: Upload Terraform Output artifact
+      - name: Upload OpenTofu Output artifact
         uses: actions/upload-artifact@v6
         with:
-          name: terraform-output
-          path: terraform_output.json
+          name: tofu-output
+          path: tofu_output.json
           retention-days: 30
 
       - name: Azure logout
@@ -127,7 +134,7 @@ jobs:
 
   build-and-push-image:
     name: Build and Push Docker image to ACR
-    needs: terraform-apply
+    needs: tofu-apply
     runs-on: ubuntu-latest
     environment: dev
 
@@ -170,13 +177,69 @@ jobs:
           set -euo pipefail
           SHORT_SHA="${{ github.sha }}"
           echo "short_sha=${SHORT_SHA:0:8}" >> $GITHUB_OUTPUT
-          for key in OPENCLAW_UPSTREAM GH_CLI_VERSION GITHUB_MCP_SERVER_VERSION \
-                     TERRAFORM_VERSION TERRAFORM_MCP_VERSION CODE_SERVER_VERSION \
-                     AWS_CLI_VERSION GCLOUD_VERSION ALIYUN_CLI_VERSION; do
+          for key in OPENCLAW_UPSTREAM OPENCLAW_VERSION \
+                     ALIYUN_CLI_VERSION \
+                     AWS_CLI_VERSION \
+                     AZ_ACCOUNTS_VERSION \
+                     AZ_AUTOMATION_VERSION \
+                     AZ_DATAFACTORY_VERSION \
+                     AZ_SYNAPSE_VERSION \
+                     BANDIT_VERSION \
+                     CODE_SERVER_VERSION \
+                     DOTNET_SDK_VERSION \
+                     GCLOUD_VERSION \
+                     GH_CLI_VERSION \
+                     GITHUB_MCP_SERVER_VERSION \
+                     GITLEAKS_VERSION \
+                     GIT_LFS_VERSION \
+                     KUBELOGIN_VERSION \
+                     MERMAID_CLI_VERSION \
+                     NUCLEI_TEMPLATES_VERSION \
+                     NUCLEI_VERSION \
+                     OPENTOFU_MCP_VERSION \
+                     OPENTOFU_VERSION \
+                     PESTER_VERSION \
+                     PIP_AUDIT_VERSION \
+                     PSSCRIPTANALYZER_VERSION \
+                     PWSH_VERSION \
+                     PYMONGO_VERSION \
+                     SEMGREP_MCP_VERSION \
+                     SEMGREP_VERSION \
+                     SQLPACKAGE_VERSION \
+                     TERRAFORM_MCP_VERSION \
+                     TERRAFORM_VERSION \
+                     TESTSSL_VERSION; do
             echo "${key}=$(grep "^${key}=" VERSIONS | cut -d= -f2)" >> $GITHUB_OUTPUT
           done
 
+      - name: Skip the build if this version is already in ACR
+        id: built
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.OPENCLAW_VERSION }}"
+          # THE POINT OF THIS STEP. Most merges change manifests, workflows or
+          # documentation and not the image at all, and rebuilding ~1.8GB of
+          # toolchain to publish a byte-identical layer set costs the better
+          # part of twenty minutes for nothing. The image is published under
+          # OPENCLAW_VERSION, so "is that tag already in ACR" is exactly the
+          # question "has this image been built".
+          #
+          # The consequence is a rule, not a convenience: A CHANGE UNDER
+          # builder/ THAT MUST REACH THE CLUSTER REQUIRES BUMPING
+          # OPENCLAW_VERSION. Leave it alone and the deploy will reuse what is
+          # already there — correctly, because nothing said otherwise.
+          if az acr repository show \
+               --name clwcodecodevdev1 \
+               --image "openclaw/claw-code:${TAG}" >/dev/null 2>&1; then
+            echo ">> openclaw/claw-code:${TAG} already in ACR — skipping the build"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo ">> openclaw/claw-code:${TAG} is not built yet"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build and push Docker image
+        if: steps.built.outputs.skip != 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./builder
@@ -184,16 +247,40 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.short_sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.OPENCLAW_VERSION }}
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/openclaw/openclaw-base:${{ steps.version.outputs.OPENCLAW_UPSTREAM }}
+            ALIYUN_CLI_VERSION=${{ steps.version.outputs.ALIYUN_CLI_VERSION }}
+            AWS_CLI_VERSION=${{ steps.version.outputs.AWS_CLI_VERSION }}
+            AZ_ACCOUNTS_VERSION=${{ steps.version.outputs.AZ_ACCOUNTS_VERSION }}
+            AZ_AUTOMATION_VERSION=${{ steps.version.outputs.AZ_AUTOMATION_VERSION }}
+            AZ_DATAFACTORY_VERSION=${{ steps.version.outputs.AZ_DATAFACTORY_VERSION }}
+            AZ_SYNAPSE_VERSION=${{ steps.version.outputs.AZ_SYNAPSE_VERSION }}
+            BANDIT_VERSION=${{ steps.version.outputs.BANDIT_VERSION }}
+            CODE_SERVER_VERSION=${{ steps.version.outputs.CODE_SERVER_VERSION }}
+            DOTNET_SDK_VERSION=${{ steps.version.outputs.DOTNET_SDK_VERSION }}
+            GCLOUD_VERSION=${{ steps.version.outputs.GCLOUD_VERSION }}
             GH_CLI_VERSION=${{ steps.version.outputs.GH_CLI_VERSION }}
             GITHUB_MCP_SERVER_VERSION=${{ steps.version.outputs.GITHUB_MCP_SERVER_VERSION }}
-            TERRAFORM_VERSION=${{ steps.version.outputs.TERRAFORM_VERSION }}
+            GITLEAKS_VERSION=${{ steps.version.outputs.GITLEAKS_VERSION }}
+            GIT_LFS_VERSION=${{ steps.version.outputs.GIT_LFS_VERSION }}
+            KUBELOGIN_VERSION=${{ steps.version.outputs.KUBELOGIN_VERSION }}
+            MERMAID_CLI_VERSION=${{ steps.version.outputs.MERMAID_CLI_VERSION }}
+            NUCLEI_TEMPLATES_VERSION=${{ steps.version.outputs.NUCLEI_TEMPLATES_VERSION }}
+            NUCLEI_VERSION=${{ steps.version.outputs.NUCLEI_VERSION }}
+            OPENTOFU_MCP_VERSION=${{ steps.version.outputs.OPENTOFU_MCP_VERSION }}
+            OPENTOFU_VERSION=${{ steps.version.outputs.OPENTOFU_VERSION }}
+            PESTER_VERSION=${{ steps.version.outputs.PESTER_VERSION }}
+            PIP_AUDIT_VERSION=${{ steps.version.outputs.PIP_AUDIT_VERSION }}
+            PSSCRIPTANALYZER_VERSION=${{ steps.version.outputs.PSSCRIPTANALYZER_VERSION }}
+            PWSH_VERSION=${{ steps.version.outputs.PWSH_VERSION }}
+            PYMONGO_VERSION=${{ steps.version.outputs.PYMONGO_VERSION }}
+            SEMGREP_MCP_VERSION=${{ steps.version.outputs.SEMGREP_MCP_VERSION }}
+            SEMGREP_VERSION=${{ steps.version.outputs.SEMGREP_VERSION }}
+            SQLPACKAGE_VERSION=${{ steps.version.outputs.SQLPACKAGE_VERSION }}
             TERRAFORM_MCP_VERSION=${{ steps.version.outputs.TERRAFORM_MCP_VERSION }}
-            CODE_SERVER_VERSION=${{ steps.version.outputs.CODE_SERVER_VERSION }}
-            AWS_CLI_VERSION=${{ steps.version.outputs.AWS_CLI_VERSION }}
-            GCLOUD_VERSION=${{ steps.version.outputs.GCLOUD_VERSION }}
-            ALIYUN_CLI_VERSION=${{ steps.version.outputs.ALIYUN_CLI_VERSION }}
+            TERRAFORM_VERSION=${{ steps.version.outputs.TERRAFORM_VERSION }}
+            TESTSSL_VERSION=${{ steps.version.outputs.TESTSSL_VERSION }}
           platforms: linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max

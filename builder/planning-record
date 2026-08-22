@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Record one runner invocation into the planning store.
+
+WHY A SEPARATE COMMAND
+The runners are bash and the store is Python. Rather than teach three shell
+scripts to speak MongoDB, they call this once at exit with what they already
+know. That also keeps the failure surface in one place: this command NEVER
+exits non-zero, so a planning problem can never fail a run that has otherwise
+succeeded.
+
+WHERE THE CALL COUNT COMES FROM
+Not from a counter the runner keeps — that would be a second source of truth
+and would drift. It is read from the runner's own log, counting the
+`[model-fetch] … status=` lines since the run started. That is the same
+measurement the story-point scale was calibrated against, so an estimate and
+its actual cost are expressed in the same unit.
+
+THE OFFSET MATTERS
+Runner logs are per ISSUE (or per repository for the tester) and accumulate
+across runs, so counting the whole file would attribute every previous run's
+calls to this one. `--since-line` is the line count captured at start; only
+what came after it belongs to this run.
+
+Usage (story work — solver, reviewer):
+    planning-record --role solver --repo acme/web --issue 156 \
+        --run-id "$SESSION_ID" --log "$LOG_FILE" --since-line 1234 \
+        --model minimax/MiniMax-M2.7 --started "$T0" --outcome merged
+
+Usage (deploy work — tester, which has no story):
+    planning-record --role tester --repo acme/web --sha "$HEAD_SHA" ...
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, "/usr/local/bin")
+
+CALL = re.compile(r"\[model-fetch\].*\bstatus=\d{3}")
+PROVIDER = re.compile(r"\bprovider=([a-z0-9_-]+)")
+RATE_LIMITED = re.compile(r"\[model-fetch\].*\bstatus=429")
+
+
+def count_calls(path: str, since_line: int) -> tuple[int, str, int]:
+    """(calls, provider, rate_limited) for the lines after `since_line`.
+
+    A missing or unreadable log is zero calls, not an error: the run itself
+    succeeded, and refusing to record anything because the log moved would
+    lose the outcome as well as the cost.
+    """
+    calls = rate = 0
+    provider = ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for n, line in enumerate(f, 1):
+                if n <= since_line:
+                    continue
+                if not CALL.search(line):
+                    continue
+                calls += 1
+                if RATE_LIMITED.search(line):
+                    rate += 1
+                if not provider:
+                    m = PROVIDER.search(line)
+                    if m:
+                        provider = m.group(1)
+    except OSError:
+        pass
+    return (calls, provider, rate)
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--role", required=True,
+                    choices=("solver", "reviewer", "tester", "planner"))
+    ap.add_argument("--host", default="github")
+    # `--project` and `--iid` are accepted as aliases so a caller written
+    # against either spelling keeps working; `owner/repo` and `number` are what
+    # GitHub calls them and what the document shapes use.
+    ap.add_argument("--repo", "--project", dest="repo", required=True)
+    ap.add_argument("--issue", "--iid", dest="issue")
+    ap.add_argument("--sha")
+    ap.add_argument("--run-id", required=True)
+    ap.add_argument("--log")
+    ap.add_argument("--since-line", type=int, default=0)
+    ap.add_argument("--calls", type=int)
+    ap.add_argument("--model", default="")
+    ap.add_argument("--provider", default="")
+    ap.add_argument("--worker", default="")
+    ap.add_argument("--started", default="")
+    ap.add_argument("--ended", default="")
+    ap.add_argument("--outcome", default="")
+    # Keep recording while the run is still going.
+    #
+    # Recording only at exit loses everything when a run is killed, and a run
+    # is killed by every deploy. A story that logged 200 model calls and
+    # recorded 15 produces a history row telling the estimator that an 8-point
+    # story had been over-estimated — the exact opposite of the truth, which is
+    # worse for calibration than having no row at all.
+    #
+    # Safe to repeat because the document id is derived from runId and role,
+    # so each write REPLACES the previous partial rather than adding to it.
+    ap.add_argument("--follow", action="store_true",
+                    help="keep writing the running total until killed")
+    ap.add_argument("--interval", type=int, default=120)
+    args = ap.parse_args(argv)
+
+    try:
+        import planning_docs as docs
+        import planning_store as store
+        import sprint_current
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f"[planning] modules unavailable, nothing recorded: "
+                         f"{str(e)[:80]}\n")
+        return 0
+
+    if args.follow:
+        # Partial totals until something kills us — the runner reaps this at
+        # exit and then writes the final figure itself. Never fatal, never
+        # noisy: one line per write would fill the runner log with a hundred
+        # near-identical entries over a long solve.
+        interval = max(15, args.interval)
+        sys.stderr.write(f"[planning] recording this run every {interval}s "
+                         f"until it ends\n")
+        while True:
+            record_once(args, docs, store, sprint_current, quiet=True)
+            time.sleep(interval)
+
+    record_once(args, docs, store, sprint_current)
+    return 0
+
+
+def record_once(args, docs, store, sprint_current, quiet: bool = False) -> None:
+    """Write the run's cost as it stands right now.
+
+    Idempotent by construction: planning_docs derives the document id from
+    runId and role, and the store upserts on it, so every call REPLACES the
+    previous partial rather than adding to it. That is what makes it safe to
+    call on a timer.
+    """
+    calls, provider, rate = (args.calls or 0, args.provider, 0)
+    if args.log:
+        c, p, r = count_calls(args.log, args.since_line)
+        calls = args.calls if args.calls is not None else c
+        provider = args.provider or p
+        rate = r
+
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    sprint = sprint_current.number()
+
+    try:
+        if args.role == "tester":
+            if not args.sha:
+                sys.stderr.write("[planning] tester needs --sha; nothing "
+                                 "recorded\n")
+                return
+            doc = docs.tester_work_doc(
+                host=args.host, repo=args.repo, sha=args.sha,
+                run_id=args.run_id, worker=args.worker, model=args.model,
+                provider=provider, llm_calls=calls, seconds_on_429=0,
+                started_at=args.started, ended_at=args.ended or now,
+                outcome=args.outcome, sprint_id=sprint, now=now)
+        else:
+            if not args.issue:
+                sys.stderr.write(f"[planning] {args.role} needs --issue; "
+                                 "nothing recorded\n")
+                return
+            doc = docs.work_doc(
+                host=args.host, repo=args.repo, number=args.issue,
+                run_id=args.run_id, role=args.role, worker=args.worker,
+                model=args.model, provider=provider, llm_calls=calls,
+                seconds_on_429=0, started_at=args.started,
+                ended_at=args.ended or now, outcome=args.outcome,
+                sprint_id=sprint, now=now)
+        store.write(doc)
+        if quiet:
+            return
+        sys.stderr.write(
+            f"[planning] recorded {args.role} run: {calls} model call(s)"
+            + (f" on {provider}" if provider else "")
+            + (f", {rate} rate-limited" if rate else "")
+            + (f", sprint {sprint}" if sprint else ", no sprint")
+            + "\n")
+    except Exception as e:  # noqa: BLE001
+        # Deliberately swallowed. A run that did its job must not be reported
+        # as failed because the planning store had a bad day.
+        sys.stderr.write(f"[planning] could not record this run: "
+                         f"{str(e)[:100]}\n")
+    return
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -1,3 +1,43 @@
+variable "app_name" {
+  description = <<-EOT
+    Canonical project name, and the single source of truth for two things that
+    must agree:
+
+      * the blob container in the mytofustates storage account holding this
+        project's state (backend.container_name),
+      * the RSA key in the kv-mytofustates Key Vault that wraps the state
+        encryption data key (encryption.key_provider.vault_key_name).
+
+    Referencing a variable from the backend block is OpenTofu-only (early
+    evaluation, resolved at `tofu init` before state exists) — HashiCorp
+    Terraform cannot parse it.
+  EOT
+  type        = string
+  default     = "claw-code"
+}
+
+variable "use_oidc" {
+  description = <<-EOT
+    Authenticate the azure_vault state-encryption key provider with a GitHub
+    OIDC token instead of the Azure CLI. Defaults to false so local runs use
+    your `az login` session; CI sets TF_VAR_use_oidc=true.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "arm_client_id" {
+  description = "Client ID for the key provider when use_oidc is true. Empty locally; CI sets TF_VAR_arm_client_id."
+  type        = string
+  default     = ""
+}
+
+variable "arm_tenant_id" {
+  description = "Tenant ID for the key provider when use_oidc is true. Empty locally; CI sets TF_VAR_arm_tenant_id."
+  type        = string
+  default     = ""
+}
+
 variable "env" {
   description = "Environment name"
   default     = "dev"

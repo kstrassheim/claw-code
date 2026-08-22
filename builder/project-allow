@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+"""project-allow: grant, revoke and inspect the bot's repository permissions.
+
+The bot only works on repositories that appear in this list — the issue
+solver, the deployment tester and the PR reviewer all consult it before acting
+(see project_allowlist.py for why, and where the file lives). This CLI is the
+ONLY supported way to edit it: it normalises what the user typed, checks the
+repository actually exists, writes atomically, and appends to an audit log.
+
+It exists so the `projects` chat skill does not have to hand-edit a permission
+file with shell redirection. A half-written list after a crashed `echo >>` is
+a security control in an unknown state; a skill that can only call
+add/revoke/list cannot produce one.
+
+Usage:
+  project-allow list [--paths|--json]
+  project-allow add    <repo> [<repo>...] [--force] [--actor NAME]
+  project-allow revoke <repo> [<repo>...] [--actor NAME]
+  project-allow check  <repo>
+  project-allow bootstrap
+
+<repo> is normally the repository's URL, exactly as copied out of the browser
+— https://github.com/owner/repo, with or without a trailing /issues/3 or
+/pull/7. A clone URL (HTTPS or SSH) or the bare owner/repo works too; all of
+them reduce to the same repository. A bare name with no owner is refused: it
+names nothing on an account-wide API, and guessing the owner is how the bot
+would end up permitted on somebody else's fork.
+
+`list` prints URLs (the same form you paste in); --paths prints bare
+owner/repo for scripting, and --json gives both plus whether the list could be
+read at all.
+
+Exit codes — every subsystem depends on these:
+  0  ok / permitted
+  1  usage error, bad input, or the write failed
+  2  NOT permitted — including "the list could not be read", which denies
+     (fail closed: an unreadable permission list permits nothing)
+  3  add: no such repository, or the bot cannot see it (override with --force)
+
+Env:
+  GITHUB_TOKEN                 used by `add` to verify the repository exists
+                               and to store its canonical owner/repo casing.
+                               Absent or unreachable → the add proceeds and
+                               is marked (unverified).
+  GITHUB_API_URL               API base, default https://api.github.com
+  PROJECTS_ALLOWED_BOOTSTRAP   comma-separated seed for `bootstrap`
+  PROJECT_ALLOW_ACTOR          default actor recorded in the audit log
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from project_allowlist import (  # noqa: E402
+    list_path,
+    log_path,
+    normalize,
+    parse,
+    read_local,
+)
+
+# Exit codes, named. `check` is called from shell guards in the runners and
+# from the 5-minute spawners; they branch on these numbers.
+EXIT_OK = 0
+EXIT_USAGE = 1
+EXIT_DENIED = 2
+EXIT_NO_REPO = 3
+
+CURL_TIMEOUT = 10
+
+HEADER = """\
+# Repositories this bot is permitted to work on.
+#
+# The issue solver, the deployment tester and the PR reviewer all refuse to
+# act on a repository that is not listed here — being assigned an issue, being
+# asked for a review or being added as a collaborator is how someone ASKS;
+# this file is the answer.
+#
+# Managed from chat: `projects add|revoke|list` (or `project-allow` in a
+# shell). Hand edits are read fine — one owner/repo per line, '#' starts a
+# comment — but go through the CLI when you can: it checks the repository
+# against the GitHub API and records who changed what in projects-allowed.log.
+"""
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def _actor(explicit: str) -> str:
+    return explicit or os.environ.get("PROJECT_ALLOW_ACTOR", "") or "chat"
+
+
+def _api_base() -> str:
+    return os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+
+
+def _url_for(repo: str) -> str:
+    """owner/repo → its browser URL — clickable in chat, and the exact string
+    the user would paste back into `projects add`."""
+    host = os.environ.get("GITHUB_HOST", "").strip().strip("/") or "github.com"
+    return f"https://{host}/{repo}"
+
+
+def _audit(action: str, repo: str, actor: str) -> None:
+    """Append-only record of every grant and revocation, one TSV line each:
+    timestamp, action, repo, actor.
+
+    Best-effort: failing to log must never fail the operation. But an
+    unexplained entry in a permission list is its own kind of problem, so we
+    try hard to have one, and say so loudly when we could not.
+    """
+    try:
+        os.makedirs(os.path.dirname(log_path()), exist_ok=True)
+        with open(log_path(), "a", encoding="utf-8") as f:
+            f.write(f"{_now()}\t{action}\t{repo}\t{actor}\n")
+    except OSError as e:
+        print(f"warning: could not write audit log: {e}", file=sys.stderr)
+
+
+def _write(entries: list[str]) -> None:
+    """Replace the list atomically — a reader either sees the old file or the
+    new one, never a truncated one.
+
+    Three spawners and every runner read this file at arbitrary moments, on a
+    five-minute tick nobody is coordinating with. A half-written list read at
+    the wrong instant is a permission set nobody chose: entries below the
+    truncation point silently stop being permitted.
+    """
+    target = list_path()
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    tmp = f"{target}.tmp.{os.getpid()}"
+    body = HEADER + "".join(f"{e}\n" for e in entries)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(body)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except OSError:
+        # Leave nothing behind: a stale .tmp beside a permission list invites
+        # someone to "restore" it later.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# --- GitHub -----------------------------------------------------------------
+
+
+def _http_code(stderr: str) -> str:
+    """The status out of curl's own message, when it left one."""
+    m = re.search(r"error:?\s*(\d{3})", stderr or "")
+    return m.group(1) if m else ""
+
+
+def _api_get(url: str) -> tuple[dict, str]:
+    """GET a GitHub API URL. → (parsed object, error).
+
+    error is "" on success, "unverified" when we could not ask at all (no
+    token, no curl, DNS down, timeout — the caller proceeds), and a
+    human-readable reason when GitHub actually answered no.
+
+    curl, not urllib: it is what every other GitHub call in this image uses,
+    it honours the cluster's proxy and CA configuration without a second
+    implementation of both, and `-f` gives us the one distinction that
+    matters here — the server answered an error (exit 22) versus we never
+    reached the server (any other non-zero exit).
+    """
+    token = os.environ.get("GITHUB_TOKEN", "") or os.environ.get("GH_TOKEN", "")
+    if not token:
+        return ({}, "unverified")
+    cmd = [
+        "curl", "-fsS", "--max-time", str(CURL_TIMEOUT),
+        "-H", f"Authorization: Bearer {token}",
+        "-H", "Accept: application/vnd.github+json",
+        "-H", "X-GitHub-Api-Version: 2022-11-28",
+        url,
+    ]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=CURL_TIMEOUT + 5)
+    except (OSError, subprocess.SubprocessError):
+        return ({}, "unverified")
+
+    if p.returncode == 22:  # -f: the server answered 4xx/5xx
+        code = _http_code(p.stderr)
+        if code == "401":
+            # A broken token is not an answer about the repository. Say so and
+            # let the grant through as unverified rather than claiming the
+            # repository does not exist.
+            print("warning: the API rejected our credentials (HTTP 401) — "
+                  "GITHUB_TOKEN looks wrong or expired", file=sys.stderr)
+            return ({}, "unverified")
+        if code in ("500", "502", "503", "504"):
+            return ({}, "unverified")
+        # 404 and 403 read the same here: the bot cannot see the repository,
+        # so it could not work on it even if we granted permission.
+        where = f" (HTTP {code})" if code else ""
+        return ({}, f"no such repository, or not visible to the bot{where}")
+
+    if p.returncode != 0:
+        return ({}, "unverified")
+    try:
+        data = json.loads(p.stdout or "")
+    except ValueError:
+        return ({}, "unverified")
+    if not isinstance(data, dict):
+        return ({}, "unverified")
+    return (data, "")
+
+
+def _repo_lookup(repo: str) -> tuple[str, str]:
+    """Resolve owner/repo against GitHub. → (canonical owner/repo, error).
+
+    GET /repos/{owner}/{repo} is the whole check: it 404s for a repository
+    that does not exist AND for one the bot's token cannot see, which are the
+    same thing from here — permission to work on a repository the bot cannot
+    read is permission to do nothing.
+    """
+    data, err = _api_get(f"{_api_base()}/repos/{repo}")
+    if err:
+        return ("", err)
+    return (str(data.get("full_name") or repo), "")
+
+
+# --- commands --------------------------------------------------------------
+
+
+def _why_not_a_repo(raw: str) -> str:
+    """A specific reason beats "invalid input": the mistakes people actually
+    make each have a different fix."""
+    s = (raw or "").strip()
+    if s.isdigit():
+        return ("that is a number, not a repository. Use the repository's URL "
+                "(https://github.com/<owner>/<repo>) — an id in this list is "
+                "unreadable to the next person who opens it")
+    if "/" not in s:
+        return "missing the owner — use the full URL, or <owner>/<repo>"
+    if s.count("/") >= 2 and "://" not in s and not s.startswith("git@"):
+        return ("a repository is exactly <owner>/<repo> — nothing nests. Paste "
+                "the repository URL if you copied a path out of one")
+    return "not a repository URL or owner/repo"
+
+
+def _unreadable(action: str) -> int:
+    print(f"ERROR: cannot read {list_path()} — refusing to {action} a "
+          "permission list I could not read. Nothing is permitted until this "
+          "is fixed.", file=sys.stderr)
+    return EXIT_DENIED
+
+
+def cmd_list(args: list[str]) -> int:
+    al = read_local()
+    if "--json" in args:
+        json.dump(
+            {
+                "path": list_path(),
+                "available": al.available,
+                "count": len(al.entries),
+                "repos": al.entries,
+                "urls": [_url_for(e) for e in al.entries],
+            },
+            sys.stdout,
+            indent=2,
+        )
+        sys.stdout.write("\n")
+        # Still 2 when unreadable: a caller that only checks the exit status
+        # must not read "no repositories" out of "I could not find out".
+        return EXIT_OK if al.available else EXIT_DENIED
+    if not al.available:
+        return _unreadable("print")
+    # URLs by default: the list is read by a human in chat, and a URL is both
+    # clickable and the exact string they would paste back into `projects
+    # add`. --paths is for anything consuming the output.
+    bare = "--paths" in args
+    for e in al.entries:
+        print(e if bare else _url_for(e))
+    return EXIT_OK
+
+
+def cmd_add(args: list[str]) -> int:
+    force = "--force" in args
+    actor, rest = _take_actor([a for a in args if a != "--force"])
+    if not rest:
+        print("usage: project-allow add <repo> [<repo>...] [--force] "
+              "[--actor NAME]", file=sys.stderr)
+        return EXIT_USAGE
+
+    al = read_local()
+    if not al.available:
+        return _unreadable("overwrite")
+    entries = list(al.entries)
+    existing = {e.casefold() for e in entries}
+    changed = False
+    rc = EXIT_OK
+
+    for raw in rest:
+        repo = normalize(raw)
+        if not repo:
+            print(f"x {raw}: {_why_not_a_repo(raw)}", file=sys.stderr)
+            rc = rc or EXIT_USAGE
+            continue
+        canonical, err = _repo_lookup(repo)
+        if err and err != "unverified" and not force:
+            print(f"x {repo}: {err}. Re-run with --force to add it anyway.",
+                  file=sys.stderr)
+            rc = rc or EXIT_NO_REPO
+            continue
+        if canonical and canonical.casefold() != repo.casefold():
+            print(f"note: {repo} -> {canonical} (canonical name on GitHub)")
+        repo = canonical or repo
+        if repo.casefold() in existing:
+            print(f"= {_url_for(repo)} (already permitted)")
+            continue
+        entries.append(repo)
+        existing.add(repo.casefold())
+        changed = True
+        _audit("add", repo, actor)
+        print(f"+ {_url_for(repo)}"
+              + (" (unverified)" if err == "unverified" else ""))
+
+    if changed:
+        try:
+            _write(entries)
+        except OSError as e:
+            print(f"ERROR: could not write {list_path()}: {e}", file=sys.stderr)
+            return EXIT_USAGE
+    return rc
+
+
+def cmd_revoke(args: list[str]) -> int:
+    actor, rest = _take_actor(args)
+    if not rest:
+        print("usage: project-allow revoke <repo> [<repo>...] [--actor NAME]",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    al = read_local()
+    if not al.available:
+        return _unreadable("rewrite")
+    entries = list(al.entries)
+    changed = False
+    rc = EXIT_OK
+
+    for raw in rest:
+        repo = normalize(raw)
+        if not repo:
+            print(f"x {raw}: {_why_not_a_repo(raw)}", file=sys.stderr)
+            rc = rc or EXIT_USAGE
+            continue
+        match = next((e for e in entries if e.casefold() == repo.casefold()),
+                     None)
+        if match is None:
+            print(f"= {_url_for(repo)} (was not permitted)")
+            continue
+        entries.remove(match)
+        changed = True
+        _audit("revoke", match, actor)
+        print(f"- {_url_for(match)}")
+
+    if changed:
+        try:
+            _write(entries)
+        except OSError as e:
+            print(f"ERROR: could not write {list_path()}: {e}", file=sys.stderr)
+            return EXIT_USAGE
+        # Revoking does not stop work already in flight — a runner checked its
+        # permission when it started. Say so, rather than let the owner
+        # believe an in-progress run was killed.
+        print("\nNote: a run already in flight for a revoked repository "
+              "finishes its current turn. Use `developer stop` to kill it now.")
+    return rc
+
+
+def cmd_check(args: list[str]) -> int:
+    """The hot path: called by every runner before it touches a repository,
+    and by the spawners on every tick. Deliberately filesystem-only — no
+    network — so a GitHub outage cannot turn into a permission decision."""
+    if not args:
+        print("usage: project-allow check <repo>", file=sys.stderr)
+        return EXIT_USAGE
+    al = read_local()
+    repo = normalize(args[0])
+    if al.allows(repo):
+        return EXIT_OK
+    print(f"{args[0]}: {al.deny_reason(repo) or 'not-permitted'}",
+          file=sys.stderr)
+    return EXIT_DENIED
+
+
+def cmd_bootstrap(_args: list[str]) -> int:
+    """Create the list on first boot, seeded from env, and never touch it
+    again. Called from the deployment's init container.
+
+    Without a seed, rolling this out would silently stop every subsystem until
+    someone noticed and ran `projects add` — the file is absent, so nothing is
+    permitted.
+
+    After that the FILE is the source of truth. An existing list is left
+    exactly as it is, even when the env has since changed and even when the
+    list is empty: a redeploy that re-seeded would UNDO A REVOKE, quietly
+    handing back permission the owner deliberately took away — the one bug
+    this whole subsystem exists to prevent.
+    """
+    target = list_path()
+    if os.path.exists(target):
+        al = read_local()
+        if not al.available:
+            print(f"{target} exists but could not be read — left untouched",
+                  file=sys.stderr)
+            return EXIT_OK
+        print(f"{target} exists ({len(al.entries)} repository/-ies) — "
+              "left unchanged")
+        return EXIT_OK
+    seed_raw = os.environ.get("PROJECTS_ALLOWED_BOOTSTRAP", "")
+    entries = parse(seed_raw.replace(",", "\n"))
+    try:
+        _write(entries)
+    except OSError as e:
+        print(f"ERROR: could not create {target}: {e}", file=sys.stderr)
+        return EXIT_USAGE
+    for e in entries:
+        _audit("bootstrap", e, "deploy")
+    print(f"created {target} with {len(entries)} repository/-ies"
+          + (f": {', '.join(entries)}" if entries else
+             " — nothing permitted yet, use `projects add <owner/repo>`"))
+    return EXIT_OK
+
+
+def _take_actor(args: list[str]) -> tuple[str, list[str]]:
+    actor = ""
+    rest: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--actor" and i + 1 < len(args):
+            actor = args[i + 1]
+            i += 2
+            continue
+        rest.append(args[i])
+        i += 1
+    return (_actor(actor), rest)
+
+
+COMMANDS = {
+    "list": cmd_list,
+    "add": cmd_add,
+    "revoke": cmd_revoke,
+    "remove": cmd_revoke,
+    "check": cmd_check,
+    "bootstrap": cmd_bootstrap,
+}
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return EXIT_OK if len(argv) >= 2 else EXIT_USAGE
+    cmd = COMMANDS.get(argv[1])
+    if not cmd:
+        print(f"unknown command: {argv[1]}\n", file=sys.stderr)
+        print(__doc__.strip(), file=sys.stderr)
+        return EXIT_USAGE
+    return cmd(argv[2:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

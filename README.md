@@ -30,8 +30,8 @@ claw-code/
 │   ├── 050-issue-watcher.yaml         # Issue-watcher CronJob + RBAC + chat skill
 │   └── tools/                         # Per-tool TOOLS-*.md (assembled into openclaw-tools-md ConfigMap by deploy.yml)
 └── .github/workflows/
-    ├── validate.yml      # On PR to main: check secrets, terraform plan, docker build (no push)
-    ├── deploy.yml        # On push to main: terraform apply, build+push image, kubectl apply, rollout
+    ├── validate.yml      # On PR to main: check secrets, tofu plan, docker build (no push)
+    ├── deploy.yml        # On push to main: tofu apply, build+push image, kubectl apply, rollout
     ├── seal-secrets.yml  # Read GH secrets, kubectl apply the Secret directly to the cluster (filename is historical — no kubeseal involved any more)
     └── codeql.yml        # JS security scan
 ```
@@ -139,7 +139,7 @@ matrix.
 
 ---
 
-## Stage 1: Terraform (Infrastructure)
+## Stage 1: OpenTofu (Infrastructure)
 
 ### What gets deployed
 
@@ -151,12 +151,12 @@ matrix.
 | Default-deny NetworkPolicies + DNS/HTTPS allow rules | Pure `kubernetes_network_policy_v1`, no controller required |
 | Role assignments: AcrPull on the deploy MI + AKS kubelet identity | Required so both CI and the cluster can read the registry |
 
-### Terraform workflow
+### OpenTofu workflow
 
-- **PR to `main`**: `validate.yml` runs `terraform init/validate/plan` and posts a summary; nothing is applied.
-- **Merge to `main`**: `deploy.yml` runs `terraform apply -auto-approve` as its first job, then builds + pushes the image, then `kubectl apply -f k8s/`, then rolls the openclaw deployment.
+- **PR to `main`**: `validate.yml` runs `tofu init/validate/plan` and posts a summary; nothing is applied.
+- **Merge to `main`**: `deploy.yml` runs `tofu apply -auto-approve` as its first job, then builds + pushes the image, then `kubectl apply -f k8s/`, then rolls the openclaw deployment.
 
-### Terraform variables
+### OpenTofu variables
 
 | Variable | Default | Description |
 |---|---|---|
@@ -171,6 +171,50 @@ matrix.
 | `unique_suffix` | `dev1` | Appended to globally-unique resource names (ACR, storage account) |
 
 ---
+
+### Why OpenTofu, and what that forbids
+
+This project is **OpenTofu only**. Two things in `backend.tf` are OpenTofu
+features that HashiCorp Terraform cannot parse at all:
+
+- `container_name = var.app_name` — a variable in the backend block, resolved
+  by early evaluation at `tofu init`, before state exists.
+- the `encryption` block, which wraps the state with the RSA key named
+  `claw-code` in the `kv-mytofustates` Key Vault.
+
+Running `terraform` here fails on the configuration, and even if it parsed it
+could not decrypt the state. Use `tofu`. CI does the same, via
+`opentofu/setup-opentofu` pinned to `TOFU_VERSION` in `/VERSIONS`.
+
+The one thing still spelled `terraform` is the **Azure resource group** that
+holds the state storage account. That is a resource name, not a tool.
+
+> **Migrating state.** The first apply after this change reads the existing
+> plaintext state through the `fallback {}` block in `backend.tf` and writes it
+> back encrypted. **Remove that block once the first apply succeeds** — while
+> it is there, a state that reverted to plaintext would still be accepted, and
+> the encryption would be a comment rather than a guarantee.
+
+## When the image is rebuilt — and when it is not
+
+The deploy publishes the image under `OPENCLAW_VERSION` from `/VERSIONS`, and
+skips the build entirely when that tag is already in ACR. Most merges change
+manifests, workflows or documentation and not the image; rebuilding ~1.8&nbsp;GB
+of toolchain to publish an identical layer set costs the better part of twenty
+minutes for nothing.
+
+That makes one rule, and it applies to any agent or person working here:
+
+| You changed | Bump `OPENCLAW_VERSION`? |
+| --- | --- |
+| anything under `builder/` that must reach the cluster | **Yes** |
+| a pin in `/VERSIONS` (a CLI, an MCP server, a scanner) | **Yes** |
+| `k8s/*.yaml` manifests | No — applied directly |
+| `.github/workflows/*` | No — read per run |
+| `README.md` or other documentation | No |
+
+Leave it alone and the deploy reuses what is already in ACR — correctly,
+because nothing said otherwise. Bump the trailing `.N` for an ordinary change.
 
 ## Stage 2: Custom Docker Image
 

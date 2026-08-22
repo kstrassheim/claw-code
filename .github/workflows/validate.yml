@@ -2,7 +2,7 @@ name: Validate (Pull Request)
 
 # Runs on every PR to main. Three independent validation jobs in parallel:
 #   - check-llm-secrets : fail the PR if neither LLM API key secret is set
-#   - terraform-plan    : init, validate, plan against current main state
+#   - tofu-plan    : init, validate, plan against current main state
 #   - docker-build      : build the image locally without pushing to ACR
 # None of these jobs change anything in Azure or the cluster.
 
@@ -11,7 +11,7 @@ on:
     branches:
       - main
   # Intentionally NO `paths:` filter here. Both `Docker Build (no push)`
-  # and `Terraform Plan` are required status checks on the main ruleset.
+  # and `OpenTofu Plan` are required status checks on the main ruleset.
   # If a PR doesn't touch any path the workflow cares about (e.g. a
   # README-only change), GitHub waits forever for those checks to
   # report a status and the PR is stuck unmergeable. Always running
@@ -46,8 +46,8 @@ jobs:
           fi
           echo "OK — at least one LLM API key is configured."
 
-  terraform-plan:
-    name: Terraform Plan
+  tofu-plan:
+    name: OpenTofu Plan
     runs-on: ubuntu-latest
     environment: dev
 
@@ -55,16 +55,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Read TERRAFORM_VERSION from /VERSIONS
+      - name: Read TOFU_VERSION from /VERSIONS
         id: tfver
         run: |
-          echo "version=$(grep '^TERRAFORM_VERSION=' VERSIONS | cut -d= -f2)" >> $GITHUB_OUTPUT
+          echo "version=$(grep '^TOFU_VERSION=' VERSIONS | cut -d= -f2)" >> $GITHUB_OUTPUT
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: ${{ steps.tfver.outputs.version }}
-          terraform_wrapper: true
+          tofu_version: ${{ steps.tfver.outputs.version }}
+          tofu_wrapper: true
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
@@ -81,40 +81,47 @@ jobs:
             --file /tmp/kubeconfig_clawcode \
             --admin
 
-      - name: Set Terraform environment variables
+      - name: Set OpenTofu environment variables
         run: |
           echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
           echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
           echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
           echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
           echo "TF_VAR_env=dev" >> $GITHUB_ENV
+          # The state-encryption key provider does NOT read ARM_* from the
+          # environment the way the backend and the azurerm provider do — it
+          # takes block arguments, fed from these TF_VARs. Without them it
+          # falls through to AzureCLICredential and fails in CI.
+          echo "TF_VAR_use_oidc=true" >> $GITHUB_ENV
+          echo "TF_VAR_arm_client_id=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "TF_VAR_arm_tenant_id=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
 
-      - name: Terraform Init
+      - name: OpenTofu Init
         run: |
-          terraform init \
+          tofu init \
             -backend-config="resource_group_name=terraform" \
             -backend-config="storage_account_name=mytofustates" \
             -backend-config="container_name=claw-code" \
             -backend-config="key=dev.tfstate" \
             -backend-config="use_azuread_auth=true"
 
-      - name: Terraform Validate
-        run: terraform validate
+      - name: OpenTofu Validate
+        run: tofu validate
 
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
+      - name: OpenTofu Plan
+        run: tofu plan -out=tfplan
 
-      - name: Upload Terraform Plan artifact
+      - name: Upload OpenTofu Plan artifact
         uses: actions/upload-artifact@v6
         with:
-          name: terraform-plan
+          name: tofu-plan
           path: tfplan
           retention-days: 7
 
       - name: Plan Summary
         run: |
-          echo "## Terraform Plan Summary" >> $GITHUB_STEP_SUMMARY
-          terraform show --json tfplan 2>/dev/null | \
+          echo "## OpenTofu Plan Summary" >> $GITHUB_STEP_SUMMARY
+          tofu show --json tfplan 2>/dev/null | \
             jq -r '[
               (.resources | length) as $total |
               "### Resources: \($total)",

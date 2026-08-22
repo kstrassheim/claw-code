@@ -1,0 +1,53 @@
+#!/bin/bash
+# az-login-bot: starts the INTERACTIVE az login (authorization-code flow,
+# localhost callback — NEVER device code) without opening a browser itself,
+# and prints the authorize URL for the agent to open in its browser plugin.
+# The agent completes the Microsoft sign-in as the bot account
+# ($ENTRA_USERNAME / $ENTRA_PASSWORD / entra-totp); MSAL's localhost
+# listener then receives the redirect in this same pod and az finishes in
+# the background.
+#
+# Calls /usr/bin/az directly: /usr/local/bin/az is a policy wrapper that
+# redirects every `az login` back to this script.
+set -euo pipefail
+
+if [ -f "$HOME/.openclaw/.runtime-secrets.env" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.openclaw/.runtime-secrets.env"
+fi
+
+URLFILE="$HOME/.openclaw/.az-login-url"
+LOGFILE="$HOME/.openclaw/.az-login.log"
+rm -f "$URLFILE"
+
+BROWSER=/usr/local/bin/az-browser-sink \
+  nohup /usr/bin/az login --tenant "${ENTRA_TENANT_ID:?ENTRA_TENANT_ID not set (runtime-secrets file missing?)}" \
+    --output none >"$LOGFILE" 2>&1 &
+
+for _ in $(seq 1 30); do
+  [ -s "$URLFILE" ] && break
+  sleep 1
+done
+
+if [ -s "$URLFILE" ]; then
+  cat <<EOF
+az login is now waiting in the background (log: $LOGFILE).
+
+AGENT INSTRUCTIONS — complete these steps YOURSELF, autonomously:
+1. Open the URL below in YOUR BROWSER PLUGIN (browser navigate tool).
+   NEVER send the URL or any code to the user. NEVER ask the user to
+   sign in — this login uses the BOT service account, not the user.
+2. Sign in as the bot account:
+   - username: \$ENTRA_USERNAME  (source ~/.openclaw/.runtime-secrets.env)
+   - password: \$ENTRA_PASSWORD
+   - MFA code: run 'entra-totp' for a fresh 6-digit code
+   - "Stay signed in?" -> No
+3. Microsoft redirects to localhost and az completes automatically.
+   Verify with: az account show
+
+$(cat "$URLFILE")
+EOF
+else
+  echo "ERROR: no authorize URL captured within 30s — check $LOGFILE" >&2
+  exit 1
+fi

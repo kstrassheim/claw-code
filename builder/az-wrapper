@@ -1,0 +1,15 @@
+#!/bin/bash
+# az wrapper (installed as /usr/local/bin/az, shadowing /usr/bin/az):
+# enforces the interactive-only login policy. In a headless pod a plain
+# `az login` silently falls back to DEVICE CODE, and device-code flow is
+# forbidden in this deployment — so ANY `az login` attempt is redirected
+# to az-login-bot, which runs the interactive authorization-code flow and
+# prints the authorize URL for the agent's browser plugin. Every other az
+# subcommand passes straight through to the real CLI.
+if [ "${1:-}" = "login" ]; then
+  echo "NOTE: 'az login' is managed on this pod — device-code and manual"
+  echo "login flows are disabled. Starting the interactive login instead:"
+  echo ""
+  exec /usr/local/bin/az-login-bot
+fi
+exec /usr/bin/az "$@"

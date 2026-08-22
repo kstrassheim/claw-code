@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Record a story, and place it in the sprint it is being worked in.
+
+WHY THIS EXISTS
+
+Three document kinds make up the planning store: a SPRINT, a STORY, and the
+WORK events recorded against a story. Two of them were being written — the
+sprint by the schedule tick, the work events by `planning-record` at the end
+of every run — and the story was not written by anything at all.
+
+The effect was a store that looked healthy and reported nothing. Documents
+accumulated, `planning status` said `reachable: yes`, and every sprint report
+read `0 pts (0 stories)` in every bucket, including for work that had been
+estimated, implemented, merged and closed. The delivery sweep showed the same
+hole from the other side: `examined 50 merged pull request(s), filled 0 story
+delivery date(s)` — it found the merges and had no story to attach them to.
+
+A report that says zero is worse than one that errors. Zero looks like an
+answer.
+
+WHEN IT IS CALLED
+
+At estimation, which is the first moment a story has the two things that make
+it worth recording: a size, and a decision to work it. Calling it again is
+safe and expected — the id is deterministic and the write is an upsert, so a
+re-estimate updates the same document rather than creating a second one.
+
+WHAT IT DOES NOT DO
+
+It does not decide sprint membership on its own. `derive_scope` does that from
+timestamps, and a story that cannot be classified is recorded as `unknown`
+rather than assumed to be `committed` — a guessed commitment inflates the
+sprint's committed scope and then makes the bot look like it under-delivered
+against a plan nobody ever made.
+
+It never raises. Like every other planning entry point, a store that is
+unreachable costs a spooled document, never a run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import planning_docs  # noqa: E402
+import planning_store  # noqa: E402
+import sprint_current  # noqa: E402
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--host", default="github")
+    ap.add_argument("--repo", required=True)
+    ap.add_argument("--issue", required=True)
+    ap.add_argument("--title", default="")
+    ap.add_argument("--url", default="")
+    ap.add_argument("--points", default="")
+    ap.add_argument("--points-defaulted", action="store_true")
+    ap.add_argument("--estimator", default="")
+    ap.add_argument("--labels", default="", help="comma-separated")
+    ap.add_argument("--priority", default="")
+    ap.add_argument("--origin", default="human")
+    args = ap.parse_args(argv)
+
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    try:
+        points = int(args.points) if str(args.points).strip() else None
+    except ValueError:
+        points = None
+
+    labels = [l.strip() for l in args.labels.split(",") if l.strip()]
+
+    try:
+        doc = planning_docs.story_doc(
+            host=args.host, repo=args.repo, number=args.issue,
+            title=args.title, url=args.url,
+            origin=args.origin,
+            story_points=points,
+            points_defaulted=bool(args.points_defaulted),
+            estimator=args.estimator,
+            estimated_at=now if points is not None else "",
+            labels=labels, priority=args.priority, now=now)
+
+        # Carry forward what an earlier write already established.
+        #
+        # A story is recorded from more than one place, and each caller knows
+        # only part of it: estimation knows the size and the labels, the solver
+        # knows the title and the URL, the delivery sweep knows when it merged.
+        # A plain overwrite would mean the last caller wins and every field it
+        # does not know gets blanked — the delivery date disappears and the
+        # story silently leaves the completed column of a report that has
+        # already been read.
+        #
+        # So this is a merge, not a replace: the write only fills fields, never
+        # empties them. It is deliberately every field rather than a named few,
+        # because the failure mode of the named list is a new field added to
+        # the document that nobody remembers to add here, and which then blanks
+        # itself on the next write with no error anywhere.
+        #
+        # The sprint fields are excluded and settled below: sprint membership
+        # has one authority, and a value carried forward here would be
+        # indistinguishable from one that was decided.
+        existing = planning_store.query({"id": doc["id"], "type": "story"},
+                                        limit=1)
+        keep_ours = {"id", "pk", "type", "updatedAt",
+                     "sprintId", "sprintScope", "enteredSprintAt",
+                     "sprintHistory"}
+        if existing:
+            prior = existing[0]
+            for key, was in prior.items():
+                if key in keep_ours:
+                    continue
+                if was in (None, "", [], {}):
+                    continue
+                if doc.get(key) in (None, "", [], {}):
+                    doc[key] = was
+
+        sprint = sprint_current.read() or {}
+        number = sprint.get("number")
+        if number:
+            already = (existing[0].get("sprintId") if existing else None)
+            if already == number:
+                # Same sprint as before: keep the original scope and history.
+                doc["sprintId"] = already
+                doc["sprintScope"] = existing[0].get("sprintScope", "unknown")
+                doc["enteredSprintAt"] = existing[0].get("enteredSprintAt", "")
+                doc["sprintHistory"] = existing[0].get("sprintHistory", [])
+            else:
+                # Entering a sprint APPENDS to the history, so the previous
+                # legs have to be under the document before the append: a
+                # story that is carried keeps every sprint it has been in, and
+                # `was this ever carried?` is asked of the story itself.
+                if existing:
+                    doc["sprintHistory"] = list(
+                        existing[0].get("sprintHistory") or [])
+                scope = planning_docs.derive_scope(
+                    sprint_started_at=sprint.get("startedAt", ""),
+                    entered_at=now,
+                    came_from_sprint=already)
+                planning_docs.enter_sprint(
+                    doc, sprint_id=number, scope=scope, at=now)
+        elif existing:
+            # No sprint is running. That is a legitimate state — before the
+            # first rollover, or between them — and it is not a reason to take
+            # a story out of the sprint it was worked in. Without this the
+            # story leaves the sprint's report retroactively.
+            for key in ("sprintId", "sprintScope", "enteredSprintAt",
+                        "sprintHistory"):
+                if existing[0].get(key):
+                    doc[key] = existing[0][key]
+
+        planning_store.write(doc)
+        sys.stderr.write(
+            f"[planning] recorded story {args.repo}#{args.issue}"
+            + (f" at {points} point(s)" if points is not None else " (unsized)")
+            + (f", sprint {number} ({doc.get('sprintScope')})" if number
+               else ", no sprint")
+            + "\n")
+    except Exception as exc:                      # noqa: BLE001
+        # A run that did its job must not fail because the bookkeeping about
+        # it could not be written.
+        sys.stderr.write(f"[planning] could not record the story: {exc}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

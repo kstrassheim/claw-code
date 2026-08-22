@@ -1,0 +1,112 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ---------------------------------------------------------------------------
+# THE SCRIPTS, SHIPPED AS CONFIGMAPS RATHER THAN BAKED INTO THE IMAGE.
+#
+# Almost every commit here changes a script, not a package. Baked into the
+# image that meant a version bump, a rebuild and a 1.83GB pull for a one-line
+# edit — and the pull is minutes on this node. Mounted instead, a script change
+# is a ConfigMap update: Argo applies it, kubelet refreshes the files in place,
+# and the next tick runs the new code. No rebuild, no restart, no bump.
+#
+# NO NAME-SUFFIX HASH, deliberately. Kustomize's default appends a content hash
+# to the name, which changes the reference in the pod spec and therefore ROLLS
+# THE POD — reintroducing the very image pull this exists to avoid. With a
+# stable name the ConfigMap is updated in place and kubelet syncs the mount
+# within about a minute.
+#
+# NOT subPath at the mount, for the same reason: subPath mounts never update.
+# The SKILL.md files use it and need a restart to change; these must not.
+#
+# The keys are the INSTALLED names, matching the image's COPY targets, so the
+# same file is found under the same name whichever source wins.
+#
+# Which commit is live is answerable without stamping anything: Argo records it
+# on the Application as .status.sync.revision.
+# ---------------------------------------------------------------------------
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  # A — the planner half: what the CronJobs run, and the modules they import.
+  # This is the same closure the slim cron image carries.
+  - name: claw-scripts-planner
+    files:
+      - cron-issue-spawn=cron-issue-spawn.sh
+      - cron-tester-spawn=cron-tester-spawn.sh
+      - cron-reviewer-spawn=cron-reviewer-spawn.sh
+      - heartbeat-issue-tick=heartbeat-issue-tick.py
+      - tester-tick=tester-tick.py
+      - reviewer-tick=reviewer-tick.py
+      - approval_release.py=approval_release.py
+      - forge-cli=forge-cli
+      - forge.py=forge.py
+      - issue_priority.py=issue_priority.py
+      - issue_status.py=issue_status.py
+      - lexical_guard.py=lexical_guard.py
+      - project_allowlist.py=project_allowlist.py
+      - queue_state.py=queue_state.py
+      - review_subject.py=review_subject.py
+      - story_estimate.py=story_estimate.py
+      - story_points.py=story_points.py
+  # B — the runner half: the long-running agent runners, the libraries they
+  # source, and the planning-store modules. Mounted only in the gateway; the
+  # cron pods never execute these.
+  - name: claw-scripts-runner
+    files:
+      - fixer-runner=fixer-runner.sh
+      - tester-runner=tester-runner.sh
+      - reviewer-runner=reviewer-runner.sh
+      - estimate-runner=estimate-runner.sh
+      - tester-upload-screenshots=tester-upload-screenshots.py
+      - mermaid-render=mermaid-render
+      - agent-limits.sh=agent-limits.sh
+      - agent-models.sh=agent-models.sh
+      - agent-thinking.sh=agent-thinking.sh
+      - agent-slot.sh=agent-slot.sh
+      - project-kind.sh=project-kind.sh
+      - project-instructions.sh=project-instructions.sh
+      - security_reports.py=security_reports.py
+      - delivering_pr.py=delivering_pr.py
+      - planning_docs.py=planning_docs.py
+      - planning_store.py=planning_store.py
+      - sprint_current.py=sprint_current.py
+      - sprint_schedule.py=sprint_schedule.py
+      - mermaid-theme.json=mermaid-theme.json
+      # Installed into the image and run in the pod, so they are overridable
+      # like everything else. (probe-skill-dirs.sh, verify-skills-locked.sh
+      # and verify-lockdown-effective.sh are deliberately absent: those run in
+      # CI against the checkout and the built image, never in the pod.)
+      - list-loadable-skills=list-loadable-skills.sh
+      - lock-skill-dirs=lock-skill-dirs.sh
+
+  # C — the tools documentation, as individual parts. render-config assembles
+  # them into workspace/TOOLS.md at pod start, from the same ORDER the image
+  # build used, so the two can never disagree about the sequence.
+  #
+  # The assembled document is NOT generated here and NOT committed: kustomize
+  # cannot concatenate, and a checked-in derived file is a drift waiting to
+  # happen. The parts are the single source; assembly happens twice from them.
+  - name: claw-tools-parts
+    files:
+      - tools-md/ORDER
+      - tools-md/TOOLS-alicloud.md
+      - tools-md/TOOLS-argocd.md
+      - tools-md/TOOLS-aws.md
+      - tools-md/TOOLS-debug.md
+      - tools-md/TOOLS-entra.md
+      - tools-md/TOOLS-gcp.md
+      - tools-md/TOOLS-gitflow.md
+      - tools-md/TOOLS-github.md
+      - tools-md/TOOLS-gitlab.md
+      - tools-md/TOOLS-gmail.md
+      - tools-md/TOOLS-k8s.md
+      - tools-md/TOOLS-opentofu.md
+      - tools-md/TOOLS-pentest.md
+      - tools-md/TOOLS-powershell.md
+      - tools-md/TOOLS-security.md
+      - tools-md/TOOLS-terraform.md
+      - tools-md/TOOLS-vscode.md
+      - tools-md/TOOLS.md

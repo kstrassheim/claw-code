@@ -1,0 +1,74 @@
+#!/bin/sh
+# A stand-in for mermaid-cli.
+#
+# The real one starts chromium, which no unit test should do: it would make
+# the suite depend on a browser, a font stack and ~2s per render. What is
+# worth testing is the WRAPPER — what it feeds mmdc, what it does with an
+# empty input, and whether it reports a failure instead of printing a path to
+# a file that is not a chart.
+#
+# So this reads the same arguments, writes something to --output, and lets a
+# test drive its behaviour:
+#
+#   FAKE_MMDC_FAIL=1    exit non-zero with a message on stderr
+#   FAKE_MMDC_EMPTY=1   exit 0 but leave the output file empty
+#   FAKE_MMDC_ARGS=path append the argument list, for asserting on it
+#   FAKE_MMDC_INPUT=path copy the mermaid source there, as TEXT
+#
+# The source is copied out rather than embedded in the "PNG": a test that read
+# it back from the image would be decoding binary through a text pipe, which
+# fails on the first byte of the PNG magic number.
+IN=""
+OUT=""
+prev=""
+for a in "$@"; do
+  case "$prev" in
+    --input)  IN="$a" ;;
+    --output) OUT="$a" ;;
+  esac
+  prev="$a"
+done
+
+# HOME is recorded alongside the arguments. The real chromium needs a writable
+# one — its crashpad handler dies without saying so — which makes it part of
+# what the wrapper has to get right rather than an ambient detail.
+[ -z "${FAKE_MMDC_ARGS:-}" ] || {
+  printf '%s\n' "$*" >> "$FAKE_MMDC_ARGS"
+  printf 'HOME=%s\n' "${HOME:-}" >> "$FAKE_MMDC_ARGS"
+  [ -w "${HOME:-/nonexistent}" ] && printf 'HOME_WRITABLE\n' >> "$FAKE_MMDC_ARGS"
+}
+[ -z "${FAKE_MMDC_INPUT:-}" ] || [ -z "$IN" ] || cp "$IN" "$FAKE_MMDC_INPUT"
+
+case "$1" in
+  --version) echo "11.4.2"; exit 0 ;;
+esac
+
+if [ -n "${FAKE_MMDC_FAIL:-}" ]; then
+  # Shaped like a real failure: the CAUSE first, then a dozen lines of the
+  # puppeteer stack that every mmdc failure ends with. A wrapper reporting only
+  # the last few lines shows the stack and hides the reason — which is exactly
+  # what happened in claw-mock's pod, so the fake reproduces it.
+  echo "fake mmdc: THE-ACTUAL-CAUSE goes here" >&2
+  i=0
+  while [ "$i" -lt 12 ]; do
+    echo "    at ChildProcess.onClose (launch.js:343:24)" >&2
+    i=$((i + 1))
+  done
+  exit 1
+fi
+
+[ -n "$OUT" ] || { echo "fake mmdc: no --output given" >&2; exit 2; }
+
+if [ -n "${FAKE_MMDC_EMPTY:-}" ]; then
+  : > "$OUT"
+  exit 0
+fi
+
+# The bytes do not matter; that a non-empty file appears does. The PNG magic
+# number is used so a test can tell this apart from an accidental text write.
+#
+# The mermaid source is deliberately NOT appended here. A test that read it
+# back out of this file would be decoding binary through a text pipe, which
+# dies on the first byte — use FAKE_MMDC_INPUT to see what was rendered.
+printf '\211PNG\r\n\032\n' > "$OUT"
+exit 0

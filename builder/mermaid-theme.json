@@ -1,0 +1,65 @@
+{
+  "_comment": [
+    "Chart theme for mermaid-render. Two decisions matter here and both are",
+    "measured rather than chosen by eye.",
+    "",
+    "SERIES COLOURS. Slots 1 and 2 of a validated categorical palette: blue",
+    "#2a78d6 and orange #eb6834. Checked with the data-viz validator against",
+    "this surface — worst-pair CVD separation 24.7 (protan) and 32.7 (tritan)",
+    "against a target of 8, normal-vision 33.6 against a floor of 15. Red and",
+    "green would have been the obvious pair for burndown and are the one",
+    "combination that fails for the most common colour blindness.",
+    "",
+    "EVERYTHING ELSE RECESSIVE. Axes, ticks and grid lines are ink, not colour:",
+    "the data carries the colour, the scaffolding does not compete with it. The",
+    "chart is read as a small PNG in a chat window, where a bright grid is the",
+    "first thing that makes it unreadable.",
+    "",
+    "The surface is #fcfcfb rather than pure white, which keeps the marks from",
+    "vibrating against the background at chat-image size."
+  ],
+
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Liberation Sans, DejaVu Sans, Arial, sans-serif",
+    "fontSize": "16px",
+
+    "primaryColor": "#2a78d6",
+    "primaryTextColor": "#0b0b0b",
+    "primaryBorderColor": "#2a78d6",
+    "lineColor": "#52514e",
+    "textColor": "#0b0b0b",
+    "background": "#fcfcfb",
+
+    "xyChart": {
+      "backgroundColor": "#fcfcfb",
+      "titleColor": "#0b0b0b",
+
+      "xAxisLabelColor": "#52514e",
+      "xAxisTitleColor": "#52514e",
+      "xAxisTickColor": "#c9c8c3",
+      "xAxisLineColor": "#52514e",
+
+      "yAxisLabelColor": "#52514e",
+      "yAxisTitleColor": "#52514e",
+      "yAxisTickColor": "#c9c8c3",
+      "yAxisLineColor": "#52514e",
+
+      "plotColorPalette": "#2a78d6, #eb6834, #1baf7a, #eda100, #e87ba4, #008300, #4a3aa7, #e34948"
+    },
+
+    "pie1": "#2a78d6",
+    "pie2": "#eb6834",
+    "pie3": "#1baf7a",
+    "pie4": "#eda100",
+    "pie5": "#e87ba4",
+    "pie6": "#008300",
+    "pie7": "#4a3aa7",
+    "pie8": "#e34948",
+    "pieTitleTextColor": "#0b0b0b",
+    "pieSectionTextColor": "#ffffff",
+    "pieStrokeColor": "#fcfcfb",
+    "pieStrokeWidth": "2px",
+    "pieOuterStrokeColor": "#fcfcfb"
+  }
+}

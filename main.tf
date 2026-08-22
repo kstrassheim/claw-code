@@ -1,34 +1,3 @@
-terraform {
-  required_version = ">= 1.3"
-
-  required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.0"
-    }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.30"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 3.0"
-    }
-    azuread = {
-      source  = "hashicorp/azuread"
-      version = "~> 3.0"
-    }
-  }
-
-  backend "azurerm" {
-    resource_group_name  = "terraform"
-    storage_account_name = "mytofustates"
-    container_name       = "claw-code"
-    key                  = "dev.tfstate"
-    use_azuread_auth = true
-  }
-}
-
 provider "azurerm" {
   features {}
 }
@@ -50,12 +19,12 @@ provider "helm" {
 }
 
 locals {
-  resource_group_name    = "claw-code"
-  cluster_name           = var.cluster_name
-  location               = var.location
-  storage_account_name   = var.storage_account_name
-  namespace              = var.namespace
-  aks_version            = "1.35.3"
+  resource_group_name  = "claw-code"
+  cluster_name         = var.cluster_name
+  location             = var.location
+  storage_account_name = var.storage_account_name
+  namespace            = var.namespace
+  aks_version          = "1.35.3"
 }
 
 # Lookup the AKS admin group by display name. The object ID changes per
@@ -97,12 +66,12 @@ data "azurerm_user_assigned_identity" "deploy_identity" {
 # auth. Terraform manages only the share (azurerm_storage_share) below.
 # =============================================================================
 resource "azurerm_storage_account" "pv" {
-  name                                             = local.storage_account_name
-  resource_group_name                              = data.azurerm_resource_group.rg.name
-  location                                         = data.azurerm_resource_group.rg.location
-  account_tier                                     = "Standard"
-  account_replication_type                         = "LRS"
-  min_tls_version                                  = "TLS1_2"
+  name                       = local.storage_account_name
+  resource_group_name        = data.azurerm_resource_group.rg.name
+  location                   = data.azurerm_resource_group.rg.location
+  account_tier               = "Standard"
+  account_replication_type   = "LRS"
+  min_tls_version            = "TLS1_2"
   https_traffic_only_enabled = true
 
   tags = {
@@ -113,22 +82,22 @@ resource "azurerm_storage_account" "pv" {
 
 # Create a file share in the storage account (for K8s PV)
 resource "azurerm_storage_share" "claw_code" {
-  name             = "claw-code"
+  name               = "claw-code"
   storage_account_id = azurerm_storage_account.pv.id
-  quota             = 50  # 50 GiB
+  quota              = 50 # 50 GiB
 }
 
 # =============================================================================
 # Azure Container Registry — for the custom claw-code image
 # =============================================================================
 resource "azurerm_container_registry" "acr" {
-  name                   = "clwcodecodev${var.unique_suffix}"  # clwcodecodev + suffix, max 50 chars
-  resource_group_name    = data.azurerm_resource_group.rg.name
-  location               = data.azurerm_resource_group.rg.location
-  sku                    = "Basic"
-  admin_enabled          = false  # Entra-only auth, no admin user
+  name                = "clwcodecodev${var.unique_suffix}" # clwcodecodev + suffix, max 50 chars
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+  sku                 = "Basic"
+  admin_enabled       = false # Entra-only auth, no admin user
 
-  public_network_access_enabled = true  # AKS must be able to pull; restrict via NSG rules if needed
+  public_network_access_enabled = true # AKS must be able to pull; restrict via NSG rules if needed
 
   tags = {
     environment = var.env
@@ -171,12 +140,12 @@ resource "azurerm_kubernetes_cluster" "aks" {
   sku_tier            = "Free"
 
   default_node_pool {
-    name              = "default"
-    vm_size           = var.node_size
-    node_count        = var.node_count
-    os_disk_size_gb   = 30
-    os_disk_type      = "Managed"
-    type              = "VirtualMachineScaleSets"
+    name            = "default"
+    vm_size         = var.node_size
+    node_count      = var.node_count
+    os_disk_size_gb = 30
+    os_disk_type    = "Managed"
+    type            = "VirtualMachineScaleSets"
     # Required by the azurerm provider when changing vm_size (or any
     # other field that forces a pool rotation): AKS creates a temp pool
     # under this name, migrates workloads, deletes the old pool, then
@@ -199,9 +168,9 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 
   network_profile {
-    network_plugin     = "azure"
-    load_balancer_sku  = "standard"
-    outbound_type      = "loadBalancer"
+    network_plugin    = "azure"
+    load_balancer_sku = "standard"
+    outbound_type     = "loadBalancer"
   }
 
   tags = {

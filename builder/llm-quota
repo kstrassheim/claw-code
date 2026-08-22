@@ -1,0 +1,472 @@
+#!/usr/bin/env python3
+"""llm-quota: how much has each LLM been used, and is it pushing back?
+
+Backs the `quota` command of the `developer` chat skill.
+
+WHAT THIS REPORTS, AND WHY IT IS NOT WHAT WAS ASKED FOR
+-------------------------------------------------------
+Issue #12 asked for "the weekly quota limit of each LLM". None of the three
+configured providers exposes one. Probed against the live keys:
+
+    api.moonshot.cn/v1/users/me/balance       401  (the key is for the Coding
+                                                    endpoint, not the platform)
+    api.kimi.com/coding/v1/users/me/balance   404  (no such endpoint)
+    api.minimax.io/v1/get_limit               404
+    api.mistral.ai/v1/models                  200  (reachable, no quota field)
+
+None of them returns `x-ratelimit-*` headers either, and openclaw keeps no
+token accounting of its own: `openclaw models` has no usage command, the
+session files carry no `usage` block, and the agent database has no usage
+table (only cache, auth and the memory index).
+
+So there is no quota number to read. What DOES exist is every model call the
+three runners make, logged with its provider and HTTP status: how much was
+used, and whether the provider is currently refusing.
+
+Consumption and availability, then. Not a quota. The output says so rather
+than implying a precision it does not have.
+
+WINDOW GRANULARITY
+------------------
+The model-call lines carry no timestamp of their own, so the window is
+applied per LOG FILE by last-write time. A file touched inside the window is
+counted whole. That over-counts a long-lived log that started before the
+window and under-counts nothing — stated in the output rather than hidden,
+because a number whose meaning is unclear is worse than a coarse one.
+
+WHAT THE 429s ARE — AND ARE NOT
+-------------------------------
+Every 429 in the logs so far reads:
+
+    rawError=429 The engine is currently overloaded, please try again later
+
+That is the PROVIDER being out of capacity, not our plan being out of quota.
+An earlier draft of this tool treated a rising 429 rate as "approaching the
+cap" and that was simply wrong: 52 of 52 were overload, and no quota error
+appears anywhere in the logs. The distinction matters, because the response
+is opposite — an overload passes on its own, a spent quota does not.
+
+So the warning below reports throttling as a CONDITION with a beginning and
+an end, not as a fuel gauge.
+
+  llm-quota --check   report the transition (started / recovered) once,
+                      to chat, if warnings are on. Meant for a schedule.
+  llm-quota warn on|off|status
+
+Usage:
+  llm-quota [--days N] [--json]
+"""
+
+import json
+import os
+import re
+import sys
+import time
+import urllib.request
+
+# The warning text carries emoji, and this is run from cron, from chat and by
+# hand. A reporting tool that dies on the terminal's encoding tells you
+# nothing about the thing you asked about, which is the worst possible trade.
+try:
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
+except Exception:
+    pass
+
+STATE = os.path.join(os.environ.get("HOME", "/home/node"), ".openclaw")
+LOG_DIRS = ("fixer-logs", "tester-logs", "reviewer-logs")
+
+# [model-fetch] response provider=kimi api=openai-completions model=k3 status=200 ...
+RESP = re.compile(r"\bprovider=(?P<prov>[a-z0-9_-]+)\b.*?\bstatus=(?P<status>\d{3})\b")
+
+# 429 and 403 are NOT the same event, and the log says which is which:
+#
+#   429  "The engine is currently overloaded, please try again later"
+#        -> the PROVIDER is out of capacity. Clears by itself.
+#   403  "You've reached your usage limit for this billing cycle. Your quota
+#         will be refreshed in the next cycle."
+#        -> the PLAN is exhausted. Does NOT clear by itself: it needs extra
+#           usage bought, an upgrade, or the next billing cycle.
+#
+# The second is the signal issue #12 was actually after, and it is in our own
+# logs — no web console, no extra credentials. Seen in dev, last on 2026-08-01.
+#
+# The NUMBER comes from the `status=403` responses (one line per refused call,
+# always with the provider), not from the message: one exhausted run is logged
+# four times over — agent end, failover decision, [diagnostic],
+# [model-fallback/decision] — and only some of those lines carry a runId or a
+# provider, so counting the message gave 998 attributed and 1814 unattributed
+# for the same events. The message is used only to classify:
+#
+#   403 + this message  -> the plan is spent
+#   403 without it      -> a rejected key or a permissions problem, which is a
+#                          different thing and must not be reported as quota.
+QUOTA_MSG = re.compile(r"reached your usage limit", re.I)
+
+# What each status means for "are we near a limit", in the order we report it.
+BUCKETS = [
+    ("ok", "2xx — served"),
+    ("rate_limited", "429 — rate limited"),
+    ("forbidden", "403 — plan quota exhausted"),
+    ("server_error", "5xx — provider fault"),
+    ("other", "other"),
+]
+
+
+def _bucket(status: int) -> str:
+    if 200 <= status < 300:
+        return "ok"
+    if status == 429:
+        return "rate_limited"
+    if status == 403:
+        return "forbidden"
+    if status >= 500:
+        return "server_error"
+    return "other"
+
+
+def kimi_plan() -> dict:
+    """The subscription tier, straight from the provider.
+
+    /coding/v1/me is the ONLY endpoint under /coding that answers — 14 others
+    were probed (usage, quota, limits, plan, subscription, users/me/*) and all
+    404. It names the tier ("Vivace", user_level 30) but carries no limit and
+    no consumption, which is why the numbers below come from our own logs.
+
+    Best-effort: no key, no network, any error -> {} and the report simply
+    omits the line. A quota report that cannot reach the provider should still
+    tell you what it does know.
+    """
+    key = os.environ.get("MOONSHOT_API_KEY", "")
+    if not key:
+        return {}
+    req = urllib.request.Request(
+        "https://api.kimi.com/coding/v1/me",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception:
+        return {}
+
+
+STATE_FILE = os.path.join(STATE, "llm-quota-state.json")
+
+
+def load_state() -> dict:
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(st: dict) -> None:
+    tmp = STATE_FILE + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+        os.replace(tmp, STATE_FILE)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def warnings_on(st: dict) -> bool:
+    """Off by default. A notification nobody asked for is noise, and this one
+    fires on a condition that usually clears by itself."""
+    return bool(st.get("warn", False))
+
+
+def notify(text: str) -> bool:
+    """Best-effort chat message, the same channel the solver and tester use.
+
+    Delegates to `telegram-notify`, which resolves the owner's chat from
+    openclaw's own state and fails open when nobody is paired yet. Nothing
+    here is worth failing a tick over.
+    """
+    import subprocess
+    try:
+        subprocess.run(["telegram-notify", text], timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
+def collect(days: int) -> tuple[dict, dict]:
+    cutoff = time.time() - days * 86400
+    per: dict[str, dict[str, int]] = {}
+    quota_seen = [False]   # was any 403 explained as a spent plan quota?
+    meta = {"files_scanned": 0, "files_in_window": 0, "oldest_file_age_days": 0.0}
+    for d in LOG_DIRS:
+        root = os.path.join(STATE, d)
+        if not os.path.isdir(root):
+            continue
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if not os.path.isfile(path):
+                continue
+            meta["files_scanned"] += 1
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime < cutoff:
+                continue
+            meta["files_in_window"] += 1
+            age = (time.time() - mtime) / 86400
+            meta["oldest_file_age_days"] = max(meta["oldest_file_age_days"], age)
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if QUOTA_MSG.search(line):
+                            quota_seen[0] = True
+                        if "status=" not in line or "provider=" not in line:
+                            continue
+                        m = RESP.search(line)
+                        if not m:
+                            continue
+                        prov = m.group("prov")
+                        row = per.setdefault(prov, {k: 0 for k, _ in BUCKETS})
+                        row[_bucket(int(m.group("status")))] += 1
+            except OSError:
+                continue
+    meta["quotaMessageSeen"] = quota_seen[0]
+    return per, meta
+
+
+def check(argv: list[str]) -> int:
+    """Report the TRANSITION: throttling started, or the model is working
+    normally again. Meant for a schedule (cron-issue-spawn runs it each tick).
+
+    Compares the cumulative 429 count against the previous check. A delta is
+    what matters, not a total: the totals only ever grow, so a total would
+    keep announcing an outage that ended hours ago.
+
+    Notifies once per transition, never per tick — an overload that lasts an
+    hour must not produce twelve messages.
+    """
+    st = load_state()
+    per, meta = collect(1)
+    cur = {p: r["rate_limited"] for p, r in per.items()}
+    prev = st.get("last429") or {}
+    # 403 responses are the count; the message decides whether they mean a
+    # spent plan rather than a rejected key.
+    curq = ({p: r["forbidden"] for p, r in per.items()}
+            if meta.get("quotaMessageSeen") else {})
+    prevq = st.get("lastQuota") or {}
+
+    # Clamp: log files age out of the window, so a count can legitimately
+    # shrink. A negative delta is bookkeeping, not a recovery.
+    fresh = {p: max(0, c - prev.get(p, 0)) for p, c in cur.items()}
+    hit = {p: n for p, n in fresh.items() if n > 0}
+
+    # First run ever: there is no previous count, so every 429 already in the
+    # window looks brand new and the tool would announce an outage that may
+    # have ended days ago. Record the baseline, say nothing. Caught on the
+    # first live run, which fired on 15 historical 429s.
+    if "last429" not in st:
+        st["last429"] = cur
+        st["lastQuota"] = curq
+        st.setdefault("throttled", False)
+        st.setdefault("quotaOut", False)
+        save_state(st)
+        print("baseline recorded (%d provider(s)) — no warning on the first run"
+              % len(cur))
+        return 0
+
+    # QUOTA EXHAUSTION — a different event from throttling, and the one that
+    # does not fix itself. Handled first: if the plan is spent, that is the
+    # headline, and a 429 on top of it is noise.
+    freshq = {p: max(0, c - prevq.get(p, 0)) for p, c in curq.items()}
+    hitq = {p: n for p, n in freshq.items() if n > 0}
+    was_out = bool(st.get("quotaOut"))
+    msgs: list[str] = []
+    if hitq and not was_out:
+        who = ", ".join(f"{p} ({n}x)" for p, n in sorted(hitq.items()))
+        msgs.append(
+            f"🛑 Plan quota exhausted — {who}\n\n"
+            "The provider replies 403 *You've reached your usage limit for this "
+            "billing cycle*. Unlike an overload this does NOT clear by itself: "
+            "it needs extra usage bought, a plan upgrade, or the next cycle. "
+            "Until then every agent run fails immediately.")
+        st["quotaOut"] = True
+        st["quotaSince"] = int(time.time())
+        st["quotaQuiet"] = 0
+    elif not hitq and was_out:
+        q = int(st.get("quotaQuiet", 0)) + 1
+        st["quotaQuiet"] = q
+        if q >= 2:
+            hrs = (time.time() - st.get("quotaSince", time.time())) / 3600
+            msgs.append(f"✅ Plan quota available again — no 403s for two checks "
+                        f"(exhausted for about {hrs:.1f}h).")
+            st["quotaOut"] = False
+            st["quotaQuiet"] = 0
+    elif hitq:
+        st["quotaQuiet"] = 0
+    st["lastQuota"] = curq
+
+    was = bool(st.get("throttled"))
+    now_bad = bool(hit)
+    quiet_ticks = int(st.get("quietTicks", 0))
+
+    # THROTTLING — the transient one.
+    if now_bad and not was:
+        who = ", ".join(f"{p} ({n}x)" for p, n in sorted(hit.items()))
+        msgs.append(f"⚠️ Model throttling started — {who}\n\n"
+               "The provider is returning 429 *engine overloaded*. This is the "
+               "provider running out of capacity, not our plan running out of "
+               "quota. Agent runs may die early with nothing in their report "
+               "until it clears; the next tick retries them.")
+        st["throttled"] = True
+        st["since"] = int(time.time())
+        st["quietTicks"] = 0
+    elif not now_bad and was:
+        # Two quiet checks before declaring recovery: overloads come in bursts,
+        # and a single quiet tick between two of them is not the end of one.
+        quiet_ticks += 1
+        st["quietTicks"] = quiet_ticks
+        if quiet_ticks >= 2:
+            mins = int((time.time() - st.get("since", time.time())) / 60)
+            msgs.append(f"✅ Model working normally again — no 429s for two "
+                        f"checks (throttled for about {mins} min).")
+            st["throttled"] = False
+            st["quietTicks"] = 0
+    elif now_bad:
+        st["quietTicks"] = 0
+
+    st["last429"] = cur
+    save_state(st)
+
+    # Both conditions can be reported in the same tick — an exhausted plan and
+    # an overloaded engine are independent, and hiding one behind the other
+    # would leave the operator acting on half the picture.
+    for m in msgs:
+        print(m.replace("\n\n", " "))
+        if warnings_on(st):
+            notify(m)
+    if msgs and not warnings_on(st):
+        print("(warnings are off — not sent. `llm-quota warn on` to enable)")
+    return 0
+
+
+def warn_cmd(argv: list[str]) -> int:
+    st = load_state()
+    if not argv or argv[0] == "status":
+        print("429 warnings: %s" % ("on" if warnings_on(st) else "off"))
+        if st.get("throttled"):
+            mins = int((time.time() - st.get("since", time.time())) / 60)
+            print("currently: THROTTLED for about %d min" % mins)
+        else:
+            print("currently: model working normally")
+        return 0
+    if argv[0] in ("on", "off"):
+        st["warn"] = argv[0] == "on"
+        save_state(st)
+        print("429 warnings: %s" % argv[0])
+        return 0
+    print("usage: llm-quota warn [on|off|status]", file=sys.stderr)
+    return 1
+
+
+def main(argv: list[str]) -> int:
+    if argv and argv[0] == "warn":
+        return warn_cmd(argv[1:])
+    if "--check" in argv:
+        return check(argv)
+
+    days = 7
+    as_json = "--json" in argv
+    if "--days" in argv:
+        try:
+            days = int(argv[argv.index("--days") + 1])
+        except (IndexError, ValueError):
+            print("usage: llm-quota [--days N] [--json]", file=sys.stderr)
+            return 1
+    if days < 1:
+        print("--days must be at least 1", file=sys.stderr)
+        return 1
+
+    per, meta = collect(days)
+    plan = kimi_plan()
+    st = load_state()
+
+    if as_json:
+        json.dump({"windowDays": days, "providers": per, "meta": meta,
+                   "kimiPlan": {"tier": plan.get("user_level_name"),
+                                "level": plan.get("user_level")} if plan else None,
+                   "weeklyLimit": None,
+                   "throttledNow": bool(st.get("throttled")),
+                   "warningsOn": warnings_on(st),
+                   "note": "consumption and throttling, not a provider quota — "
+                           "no configured provider exposes one"},
+                  sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    print(f"LLM usage over the last {days} day(s)")
+    if plan.get("user_level_name"):
+        print(f"Kimi plan: {plan['user_level_name']} (level {plan.get('user_level')})")
+    print()
+    if not per:
+        print("  no model calls recorded in this window")
+        print(f"  ({meta['files_scanned']} log file(s) scanned, "
+              f"{meta['files_in_window']} inside the window)")
+        return 0
+
+    # "REFUSED", not "throttled": this column sums 429 AND 403, and after the
+    # two were separated everywhere else, calling their sum throttling would
+    # undo exactly the distinction the rest of this tool insists on. Both are
+    # the provider declining the call; only one of them is capacity.
+    print(f"  {'PROVIDER':<12} {'CALLS':>7} {'OK':>7} {'429':>6} {'403':>6} {'5xx':>6}  {'REFUSED':>9}")
+    for prov in sorted(per, key=lambda p: -sum(per[p].values())):
+        r = per[prov]
+        total = sum(r.values())
+        refused = r["rate_limited"] + r["forbidden"]
+        pct = (100.0 * refused / total) if total else 0.0
+        print(f"  {prov:<12} {total:>7} {r['ok']:>7} {r['rate_limited']:>6} "
+              f"{r['forbidden']:>6} {r['server_error']:>6}  {pct:>8.1f}%")
+    print()
+    worst = max(per, key=lambda p: (per[p]["rate_limited"] + per[p]["forbidden"]))
+    w = per[worst]
+    if w["rate_limited"] + w["forbidden"]:
+        print(f"  Most refusals: {worst} — {w['rate_limited']} overloaded (429), "
+              f"{w['forbidden']} quota exhausted (403).")
+        print("  Every 429 observed so far is 'engine overloaded' — the provider")
+        print("  out of capacity, NOT the plan out of quota. It clears by itself;")
+        print("  meanwhile agent runs can die early with nothing in their report,")
+        print("  and the next tick retries them.")
+    else:
+        print("  No rate limiting or rejections in this window.")
+    print()
+    if st.get("throttled"):
+        mins = int((time.time() - st.get("since", time.time())) / 60)
+        print(f"  NOW: throttled — 429 'engine overloaded' for about {mins} min.")
+        print("  That is provider capacity, not our quota. It clears on its own.")
+    else:
+        print("  NOW: model working normally (no recent 429s).")
+    print(f"  429 warnings: {'on' if warnings_on(st) else 'off'}"
+          "  —  llm-quota warn on|off")
+    print()
+    print("  WEEKLY LIMIT: not shown. The provider exposes the tier but no limit")
+    print("  and no consumption — /coding/v1/me is the only endpoint that answers,")
+    print("  and it carries neither. Once the plan's unit is known (requests or")
+    print("  tokens) and its value configured, this becomes 'used / limit (xx%)'.")
+    print("  Tokens specifically are NOT recoverable today: each response carries")
+    print("  a usage block, but openclaw persists none of it.")
+    print()
+    print(f"  Counted from {meta['files_in_window']} of {meta['files_scanned']} runner")
+    print(f"  log file(s). The window is applied per FILE by last-write time — the")
+    print(f"  call lines carry no timestamp — so a long-lived log that started")
+    print(f"  before the window is counted whole (oldest included: "
+          f"{meta['oldest_file_age_days']:.1f}d).")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

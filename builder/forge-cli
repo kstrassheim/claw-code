@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+"""The forge interface, for callers that cannot import it.
+
+WHY A COMMAND AND NOT A SHELL LIBRARY
+-------------------------------------
+Three of the subsystems are bash — long-lived scripts that drive a checkout, a
+model and a browser — and bash cannot import a Python module. The obvious move
+is a sourced `forge.sh` that speaks the same REST the Python one does. That is
+the wrong move: it is a SECOND implementation of the seam, in a second
+language, and the two would drift. Not loudly — drift here looks like one
+subsystem understanding a host slightly differently from the others, which is
+indistinguishable from a bug in whichever one you happen to be reading.
+
+So the runners shell out to this instead, and this is the same `forge.py` the
+planners import. One implementation, one place a host's quirks are known, and
+a second host arrives in the runners for free rather than as a second port.
+
+The pattern is already how the runners reach the rest of the bot: they call
+`planning-record`, `planning-story`, `project-allow` and `agent-limits` the
+same way, and none of those reimplement anything either.
+
+THE CONTRACT, WHICH IS THE POINT OF USING IT FROM SHELL
+
+  stdout is DATA and nothing else — JSON for a record, one bare word for a
+  reduction like the check state. Every message for a human goes to stderr, so
+  `X="$(forge-cli issue ...)"` cannot capture a warning and hand it to a parser.
+
+  exit 0 means the answer on stdout is real. A READ that failed exits 1 and
+  prints nothing, which is what lets a runner write `|| return 1` and mean it —
+  the old shape, where a failed `curl` produced an empty string that the next
+  `python3 -c` read as an issue with no title and no labels, is exactly how an
+  unreadable issue became "an open, unlabelled, unestimated issue" and got sent
+  to the model as work.
+
+  A WRITE that failed exits 1 as well, and every runner already treats a failed
+  write as "leave it alone and say so".
+
+Bodies come from a FILE, never from an argument. Comment bodies are model
+output: they contain newlines, quotes, backticks and `$(...)`, and an argument
+is a shell injection waiting for the first review that quotes a command.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import forge  # noqa: E402
+
+
+def _out(value) -> None:
+    """Data to stdout, in the one shape a caller can parse without guessing."""
+    if isinstance(value, str):
+        sys.stdout.write(value + "\n")
+    else:
+        json.dump(value, sys.stdout)
+        sys.stdout.write("\n")
+
+
+def _say(message: str) -> None:
+    sys.stderr.write(f"[forge] {message}\n")
+
+
+def _body(args) -> str:
+    """The text of a comment, from a file or from stdin.
+
+    `--body-file -` reads stdin, which is what a runner already holding the
+    text in a heredoc uses.
+    """
+    if args.body_file == "-":
+        return sys.stdin.read()
+    with open(args.body_file, encoding="utf-8") as f:
+        return f.read()
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Ask a code host something.")
+    ap.add_argument("--repo", required=True, help="owner/name or group/project")
+    sub = ap.add_subparsers(dest="verb", required=True)
+
+    # Every verb below `--number` addresses one item. Spelled out rather than
+    # generated, so `--help` reads as documentation of what can be asked.
+    for name, help_text in (
+            ("issue", "one issue, in the neutral shape"),
+            ("comments", "every note on an issue")):
+        sub.add_parser(name, help=help_text).add_argument(
+            "--number", required=True, type=int)
+
+    p = sub.add_parser("comment", help="say something on an issue")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--body-file", required=True)
+
+    p = sub.add_parser("add-labels", help="add labels to an issue")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--labels", required=True, help="comma-separated")
+
+    p = sub.add_parser("remove-label", help="take one label off an issue")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--label", required=True)
+
+    p = sub.add_parser("ensure-label", help="define a label in the repository")
+    p.add_argument("--name", required=True)
+    p.add_argument("--color", default="")
+    p.add_argument("--description", default="")
+
+    p = sub.add_parser("close-issue", help="close an issue, recording why")
+    p.add_argument("--number", required=True, type=int)
+    # Intent, never a field name: one host has a native close reason and the
+    # other writes a label, and no caller is asked to know which.
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--delivered", action="store_true")
+    g.add_argument("--revoked", action="store_true")
+
+    p = sub.add_parser("comment-on-change-request",
+                       help="say something on a change request, not the issue")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--body-file", required=True)
+
+    p = sub.add_parser("close-change-request",
+                       help="close a change request WITHOUT merging it")
+    p.add_argument("--number", required=True, type=int)
+
+    p = sub.add_parser("delete-branch",
+                       help="delete a branch (refuses the default branch)")
+    p.add_argument("--branch", required=True)
+
+    p = sub.add_parser("open-issues", help="every open issue in the repository")
+    p.add_argument("--limit", type=int, default=100)
+
+    p = sub.add_parser("create-issue", help="open an issue; prints its number")
+    p.add_argument("--title", required=True)
+    p.add_argument("--body-file", default="")
+    p.add_argument("--labels", default="")
+    p.add_argument("--assignees", default="", help="comma-separated")
+
+    for name, help_text in (
+            ("change-request", "one change request, in the neutral shape"),
+            ("change-request-comments", "every note on a change request"),
+            ("change-request-files", "what a change touches"),
+            ("review-verdicts", "reviews left on a change request"),
+            ("review-requests", "who has been asked to review"),
+            ("security-findings", "findings the host raised against a change")):
+        sub.add_parser(name, help=help_text).add_argument(
+            "--number", required=True, type=int)
+
+    p = sub.add_parser("change-requests-for-issue",
+                       help="open change requests that would close an issue")
+    p.add_argument("--number", required=True, type=int)
+
+    p = sub.add_parser("recent-change-requests",
+                       help="change requests by most recently updated")
+    p.add_argument("--state", default="closed")
+    p.add_argument("--limit", type=int, default=50)
+
+    p = sub.add_parser("submit-review", help="leave a review with a verdict")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--verdict", required=True,
+                   choices=("approve", "request-changes", "comment"))
+    p.add_argument("--body-file", required=True)
+
+    p = sub.add_parser("request-review", help="ask accounts to review")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--reviewers", required=True, help="comma-separated")
+
+    p = sub.add_parser("unrequest-review", help="withdraw a review request")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--reviewers", required=True, help="comma-separated")
+
+    p = sub.add_parser("merge", help="merge a change request")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--no-squash", action="store_true")
+    p.add_argument("--keep-branch", action="store_true")
+
+    p = sub.add_parser("react", help="acknowledge one comment")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--comment-id", required=True)
+    p.add_argument("--emoji", default="eyes")
+
+    p = sub.add_parser("checks", help="green|failed|pending|none for a commit")
+    p.add_argument("--sha", required=True)
+
+    p = sub.add_parser("check-list", help="each check on a commit, with its state")
+    p.add_argument("--sha", required=True)
+
+    p = sub.add_parser("failing-check-log",
+                       help="output of the first failing check on a commit")
+    p.add_argument("--sha", required=True)
+    p.add_argument("--limit", type=int, default=20000)
+
+    p = sub.add_parser("branch-head", help="the commit a branch points at")
+    p.add_argument("--branch", required=True)
+
+    sub.add_parser("default-branch", help="the default branch and its head")
+
+    p = sub.add_parser("file-at-ref", help="one file's text at one commit")
+    p.add_argument("--path", required=True)
+    p.add_argument("--ref", required=True)
+
+    p = sub.add_parser("comment-on-commit", help="say something on a commit")
+    p.add_argument("--sha", required=True)
+    p.add_argument("--body-file", required=True)
+
+    sub.add_parser("identity", help="the account these credentials are")
+    sub.add_parser("noun", help="what a person calls a change here")
+
+    args = ap.parse_args(argv)
+
+    forges = forge.configured()
+    if not forges:
+        _say("no code host is configured — no credentials for any of them")
+        return 1
+    f = forges.of(args.repo)
+
+    try:
+        if args.verb == "issue":
+            record = f.issue(args.repo, args.number)
+            if not record:
+                # Empty is NOT printed as `{}`. A caller that got an empty
+                # record would read every field as absent and act on it.
+                _say(f"could not read {args.repo}#{args.number}")
+                return 1
+            _out(record)
+            return 0
+
+        if args.verb == "comments":
+            _out(f.comments(args.repo, args.number))
+            return 0
+
+        if args.verb == "comment":
+            ok = f.post_comment(args.repo, args.number, _body(args))
+            if not ok:
+                _say(f"could not comment on {args.repo}#{args.number}")
+            return 0 if ok else 1
+
+        if args.verb == "add-labels":
+            labels = [l.strip() for l in args.labels.split(",") if l.strip()]
+            if not labels:
+                return 0
+            ok = f.add_labels(args.repo, args.number, labels)
+            if not ok:
+                _say(f"could not label {args.repo}#{args.number} "
+                     f"{', '.join(labels)}")
+            return 0 if ok else 1
+
+        if args.verb == "remove-label":
+            # The caller passes the label as a person writes it. Encoding it
+            # for a URL is transport, and belongs on the other side of this.
+            ok = f.remove_label(args.repo, args.number, args.label)
+            if not ok:
+                _say(f"could not remove '{args.label}' from "
+                     f"{args.repo}#{args.number}")
+            return 0 if ok else 1
+
+        if args.verb == "ensure-label":
+            ok = f.ensure_label(args.repo, args.name, args.color,
+                                args.description)
+            if not ok:
+                _say(f"could not define '{args.name}' in {args.repo}")
+            return 0 if ok else 1
+
+        if args.verb == "close-issue":
+            ok = f.close_issue(args.repo, args.number, bool(args.delivered))
+            if not ok:
+                _say(f"could not close {args.repo}#{args.number}")
+            return 0 if ok else 1
+
+        if args.verb == "comment-on-change-request":
+            with open(args.body_file, encoding="utf-8") as fh:
+                body = fh.read()
+            ok = f.post_change_request_comment(args.repo, args.number, body)
+            if not ok:
+                _say(f"could not comment on {args.repo} change request "
+                     f"#{args.number}")
+            return 0 if ok else 1
+
+        if args.verb == "close-change-request":
+            ok = f.close_change_request(args.repo, args.number)
+            if not ok:
+                _say(f"could not close {args.repo} change request "
+                     f"#{args.number}")
+            return 0 if ok else 1
+
+        if args.verb == "delete-branch":
+            # False here means "still there", which is the safe reading — the
+            # host refuses the default branch and so does the forge.
+            ok = f.delete_branch(args.repo, args.branch)
+            if not ok:
+                _say(f"could not delete branch '{args.branch}' in {args.repo}")
+            return 0 if ok else 1
+
+        if args.verb == "open-issues":
+            _out(f.open_issues(args.repo, args.limit))
+            return 0
+
+        if args.verb == "create-issue":
+            labels = [l.strip() for l in args.labels.split(",") if l.strip()]
+            who = [a.strip() for a in args.assignees.split(",") if a.strip()]
+            body = _body(args) if args.body_file else ""
+            number = f.create_issue(args.repo, args.title, body, labels, who)
+            if not number:
+                _say(f"could not open an issue in {args.repo}")
+                return 1
+            _out(str(number))
+            return 0
+
+        if args.verb == "noun":
+            # "pull request" in a merge-request project is a bug report
+            # waiting to happen, and every line this bot writes is read by
+            # somebody who uses one word or the other.
+            _out(f.change_request_noun)
+            return 0
+
+        if args.verb == "identity":
+            who = f.bot_identity()
+            if not who:
+                # An unknown identity is not "" to a caller: every "has the
+                # bot already said this?" check would answer about nobody.
+                _say("could not resolve the account these credentials are")
+                return 1
+            _out(who)
+            return 0
+
+        if args.verb == "change-request":
+            record = f.change_request(args.repo, args.number)
+            if not record:
+                _say(f"could not read change request "
+                     f"{args.repo}#{args.number}")
+                return 1
+            _out(record)
+            return 0
+
+        if args.verb == "change-request-comments":
+            _out(f.change_request_comments(args.repo, args.number))
+            return 0
+
+        if args.verb == "change-request-files":
+            _out(f.change_request_files(args.repo, args.number))
+            return 0
+
+        if args.verb == "change-requests-for-issue":
+            _out(f.open_change_requests_for_issue(args.repo, args.number))
+            return 0
+
+        if args.verb == "recent-change-requests":
+            _out(f.recent_change_requests(args.repo, args.state, args.limit))
+            return 0
+
+        if args.verb == "review-verdicts":
+            _out(f.review_verdicts(args.repo, args.number))
+            return 0
+
+        if args.verb == "review-requests":
+            _out(f.review_requests(args.repo, args.number))
+            return 0
+
+        if args.verb == "security-findings":
+            _out(f.security_findings(args.repo, args.number))
+            return 0
+
+        if args.verb == "submit-review":
+            ok = f.submit_review(args.repo, args.number, args.verdict,
+                                 _body(args))
+            if not ok:
+                # NOT a rejection of the work. At least one host refuses a
+                # review from the change's own author, and the bot authors
+                # everything it opens — the verdict a gate reads is the
+                # comment, not this.
+                _say(f"the review was not recorded on {args.repo}"
+                     f"#{args.number}")
+            return 0 if ok else 1
+
+        if args.verb == "request-review":
+            names = [r.strip() for r in args.reviewers.split(",") if r.strip()]
+            ok = f.request_review(args.repo, args.number, names)
+            if not ok:
+                _say(f"nobody was asked to review {args.repo}#{args.number}")
+            return 0 if ok else 1
+
+        if args.verb == "unrequest-review":
+            names = [r.strip() for r in args.reviewers.split(",") if r.strip()]
+            ok = f.remove_review_request(args.repo, args.number, names)
+            if not ok:
+                _say(f"could not withdraw the review request on "
+                     f"{args.repo}#{args.number}")
+            return 0 if ok else 1
+
+        if args.verb == "merge":
+            ok = f.merge(args.repo, args.number,
+                         squash=not args.no_squash,
+                         delete_branch=not args.keep_branch)
+            if not ok:
+                _say(f"could not merge {args.repo}#{args.number}")
+            return 0 if ok else 1
+
+        if args.verb == "react":
+            ok = f.react(args.repo, args.number, args.comment_id, args.emoji)
+            if not ok:
+                _say(f"could not react to comment {args.comment_id}")
+            return 0 if ok else 1
+
+        if args.verb == "checks":
+            # One bare word, and always one of four. This is the only place
+            # check semantics are decided, and the caller compares the word.
+            _out(f.checks_state(args.repo, args.sha))
+            return 0
+
+        if args.verb == "check-list":
+            _out(f.checks(args.repo, args.sha))
+            return 0
+
+        if args.verb == "failing-check-log":
+            # Empty is a legitimate answer — nothing failed, or the failure
+            # has no log — so this is a success with no output rather than a
+            # failure, and the caller tests the string.
+            _out(f.failing_check_log(args.repo, args.sha, args.limit))
+            return 0
+
+        if args.verb == "branch-head":
+            sha = f.branch_head(args.repo, args.branch)
+            if not sha:
+                _say(f"could not read {args.branch} in {args.repo}")
+                return 1
+            _out(sha)
+            return 0
+
+        if args.verb == "default-branch":
+            branch, sha = f.default_branch_head(args.repo)
+            if not branch:
+                _say(f"could not read the default branch of {args.repo}")
+                return 1
+            _out({"branch": branch, "sha": sha})
+            return 0
+
+        if args.verb == "file-at-ref":
+            # A file that is not there is "" and a SUCCESS: every caller of
+            # this reads an optional file most repositories do not have.
+            _out(f.file_at_ref(args.repo, args.path, args.ref))
+            return 0
+
+        if args.verb == "comment-on-commit":
+            ok = f.comment_on_commit(args.repo, args.sha, _body(args))
+            if not ok:
+                _say(f"could not comment on {args.sha[:12]}")
+            return 0 if ok else 1
+
+    except forge.ForgeError as exc:
+        # A read that could not be answered. Nothing on stdout, so a caller
+        # capturing the output gets the empty string AND a non-zero status.
+        _say(str(exc))
+        return 1
+    except OSError as exc:
+        _say(str(exc))
+        return 1
+
+    _say(f"unknown verb: {args.verb}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

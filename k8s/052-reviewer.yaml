@@ -1,0 +1,325 @@
+---
+# SKILL.md for the reviewer chat skill — mirrors the tester skill so
+# the user can toggle the autonomous pull-request reviewer from chat
+# (e.g. "reviewer stop") without an image rebuild.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-skill-reviewer
+  namespace: claw-code
+data:
+  SKILL.md: |
+    ---
+    name: reviewer
+    description: Toggle and inspect the autonomous pull-request reviewer that runs as a subprocess inside this pod.
+    user-invocable: true
+    ---
+
+    # reviewer — control the autonomous pull-request reviewer
+
+    A CronJob `pr-reviewer` (namespace `claw-code`) ticks every 5
+    minutes, at minute 2 of each interval. On each tick it searches
+    GitHub for open pull requests where this bot is a requested
+    reviewer, checks the head commit's checks, and **spawns a
+    `reviewer-runner` subprocess inside this very pod** for each pull
+    request whose checks are green and whose head commit or description
+    has changed since the last review.
+
+    The reviewer is a different role from the issue-fixer:
+    - It does NOT edit code, push commits, open or merge pull
+      requests, or create issues.
+    - It checks the branch out into its OWN tree
+      (`~/.openclaw/review-projects/<owner>/<name>/`), runs the app
+      locally where that is possible, verifies the linked issue's
+      acceptance criteria, and reads the code-scanning alerts raised
+      against that head.
+    - It posts ONE machine-readable verdict comment whose first line is
+      `🔎 REVIEW RESULT: APPROVED (sha <sha>)` or
+      `🔎 REVIEW RESULT: CHANGES REQUIRED (sha <sha>)`, then submits a
+      GitHub review (APPROVE / REQUEST_CHANGES).
+    - A run that did not complete posts **nothing at all** and retries
+      on the next tick. A provider outage must never wedge a pull
+      request as "changes required".
+
+    **Concurrency: per-repo, capped at 1**, on its own lock dir
+    (`~/.openclaw/.reviewer-locks/<owner>__<name>/`) so the reviewer,
+    the fixer and the tester never block each other.
+
+    Use this skill when the user says any of:
+
+    | User says | Run |
+    |---|---|
+    | `reviewer status`, `is the reviewer on?`, `what's the reviewer doing?` | the status command |
+    | `reviewer start`, `enable reviews` | the start command |
+    | `reviewer stop`, `pause the reviewer`, `disable reviews` | the stop command |
+    | `reviewer list`, `what's being reviewed?`, `active reviewers` | the list command |
+    | `reviewer logs <repo>#<n>` | tail the reviewer log for that pull request |
+    | `reviewer last <repo>#<n>` | print the last review summary for that pull request |
+    | `reviewer security`, `security level` | `security-level` |
+    | `reviewer security <level>`, `set security to high` | `security-level set <level>` |
+
+    ## Commands (run via your `exec` tool — kubectl is in PATH)
+
+    ### status
+
+    ```
+    kubectl -n claw-code get cronjob pr-reviewer \
+      -o jsonpath='suspended={.spec.suspend}{"\n"}schedule={.spec.schedule}{"\n"}lastSchedule={.status.lastScheduleTime}{"\n"}lastSuccess={.status.lastSuccessfulTime}{"\n"}'
+    ```
+
+    Report `suspended=true` as **stopped**, `false` as **running**.
+
+    ### start
+
+    ```
+    kubectl -n claw-code patch cronjob pr-reviewer \
+      -p '{"spec":{"suspend":false}}'
+    ```
+
+    ### stop
+
+    Two operations: suspend the CronJob AND kill every in-flight
+    reviewer subprocess. The user's intent on "stop" is "stop
+    reviewing right now", not "block new ticks".
+
+    ```
+    kubectl -n claw-code patch cronjob pr-reviewer \
+      -p '{"spec":{"suspend":true}}'
+    pkill -f '/usr/local/bin/reviewer-runner' || true
+    rm -rf $HOME/.openclaw/.reviewer-locks/* 2>/dev/null
+    ```
+
+    Run all three. Then run the status command. Report:
+      - the new suspended state,
+      - how many reviewer subprocesses were terminated (pkill returns
+        non-zero when nothing matched — that's fine), and
+      - **always this consequence, in the same reply**:
+
+    > While the reviewer is stopped, nothing reviews the bot's pull
+    > requests — so the issue-solver merges green pull requests
+    > directly, with no second opinion on whether the change actually
+    > does what the issue asked. Start the reviewer again to restore
+    > the review gate.
+
+    That sentence is not optional. Stopping the reviewer silently
+    changes how code reaches the default branch, and the person who
+    typed "reviewer stop" is the only one who can weigh that.
+
+    ### list
+
+    ```
+    ls -1 $HOME/.openclaw/.reviewer-locks/ 2>/dev/null | sed 's|__|/|'
+    ```
+
+    Each line is an `<owner>/<name>` repo with an in-flight review.
+    Empty output = nothing is being reviewed right now.
+
+    For details on what each reviewer is doing:
+
+    ```
+    pgrep -af '/usr/local/bin/reviewer-runner'
+    ```
+
+    ### logs
+
+    For `reviewer logs <repo>#<n>` (e.g. `reviewer logs owner/repo#12`):
+
+    ```
+    tail -n 80 $HOME/.openclaw/reviewer-logs/<owner>_<name>-<n>.log
+    ```
+
+    (The slash in the repo name becomes an underscore. Reviewer logs
+    are one file per pull request, appended across runs.)
+
+    ### last
+
+    For `reviewer last <repo>#<n>` (most recent review summary):
+
+    ```
+    cat $HOME/.openclaw/reviewer-summaries/<owner>__<name>__<n>.last-review.md
+    ```
+
+    If no summary exists yet, report "no completed review for that pull
+    request".
+
+    ### security threshold
+
+    The minimum code-scanning severity a review reports. Findings below
+    it are dropped before the reviewing agent sees them.
+
+    ```
+    security-level
+    security-level set high     # critical|high|medium|low|off
+    security-level reset
+    ```
+
+    A change applies to the next review that starts; one already in
+    flight keeps its threshold. `off` disables security reporting
+    entirely — say so plainly when the user asks for it.
+
+    ## Reporting style
+
+    Keep replies terse. One line per piece of state. Example:
+
+    > Reviewer: **running** · schedule `2-59/5 * * * *` · last fired
+    > 2026-08-17T09:32:00Z · 1 review active (owner/repo).
+---
+# ServiceAccount for the reviewer CronJob. Same pattern as the tester:
+# scoped to this namespace, only used to exec into the openclaw pod.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pr-reviewer
+  namespace: claw-code
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pr-reviewer
+  namespace: claw-code
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pr-reviewer
+  namespace: claw-code
+subjects:
+  - kind: ServiceAccount
+    name: pr-reviewer
+    namespace: claw-code
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pr-reviewer
+---
+# The openclaw deployment's SA needs to be able to patch the reviewer
+# CronJob's suspend field from chat ("reviewer stop / start"). Scoped by
+# resourceNames to that one CronJob, same as the tester and the watcher.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pr-reviewer-control
+  namespace: claw-code
+rules:
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    resourceNames: ["pr-reviewer"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pr-reviewer-control
+  namespace: claw-code
+subjects:
+  - kind: ServiceAccount
+    name: openclaw
+    namespace: claw-code
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pr-reviewer-control
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pr-reviewer
+  namespace: claw-code
+  labels:
+    app: pr-reviewer
+spec:
+  # Every 5 minutes, offset by 2 — deliberately staggered from the
+  # issue-watcher (*/5) and the tester (*/10) so no two planners spawn
+  # in the same minute. The three subsystems share one model-concurrency
+  # gate, and a tie there is decided by whoever asked first rather than
+  # by what matters most.
+  schedule: "2-59/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 120
+  # spec.suspend deliberately omitted — same reasoning as the tester and
+  # the issue-watcher: K8s defaults to false, ArgoCD ServerSideApply
+  # leaves the absent field unmanaged, so a `reviewer stop` from chat
+  # sticks across reconciles instead of being reverted on the next sync.
+  jobTemplate:
+    metadata:
+      labels:
+        app: pr-reviewer
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 300
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app: pr-reviewer
+        spec:
+          serviceAccountName: pr-reviewer
+          # No node pinning here. The origin of this CronJob pinned it to one
+          # node because that cluster had two very unequal nodes and a ~1.8GB
+          # image being re-pulled every few minutes churned the small one.
+          # AKS pulls from ACR onto uniform nodes, so the constraint does not
+          # apply and pinning would only reduce where this can be scheduled.
+          volumes:
+            - name: claw-scripts
+              configMap:
+                name: claw-scripts-planner
+                defaultMode: 0755
+          restartPolicy: Never
+          containers:
+            - name: pr-reviewer
+              image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
+              # NOT the agent image. This container finds the openclaw pod
+              # and does the real work inside it with `kubectl exec`; what
+              # runs here is one stdlib-only planner. See builder/cron/.
+              imagePullPolicy: IfNotPresent
+              # Named WITHOUT a directory so PATH decides, and PATH puts the
+              # ConfigMap mount (/opt/claw-scripts) ahead of the image copy in
+              # /usr/local/bin. Spelling the image path here made the mount
+              # decorative for the whole spawn chain: the CronJob ran the
+              # image's spawner, which spawned the image's runner, so a script
+              # shipped by ConfigMap was never executed and an edit only landed
+              # at the next version bump. A mount that fails still resolves —
+              # to the image copy, stale but present.
+              command: ["cron-reviewer-spawn"]
+              env:
+                # The mounted scripts win over the image's copies — see the
+                # gateway deployment for why the image keeps a fallback set.
+                - name: PATH
+                  value: "/opt/claw-scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                - name: PYTHONPATH
+                  value: "/opt/claw-scripts:/usr/local/bin"
+              volumeMounts:
+                # Planner half ONLY. These pods never execute a runner — they
+                # find the openclaw pod and exec into it — so mounting the
+                # runner half here would be 478KB the container cannot use.
+                - name: claw-scripts
+                  mountPath: /opt/claw-scripts
+              envFrom:
+                # GITHUB_TOKEN is the only secret the spawner itself
+                # needs. Model API keys live in the openclaw pod's env
+                # and are inherited by the spawned reviewer-runner
+                # subprocesses.
+                - secretRef:
+                    name: openclaw-secrets
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  # Measured peak in this container: 18 MiB for python3 with
+                  # every module the tick imports, plus 39 MiB for kubectl —
+                  # ~57 MiB with both live. 192Mi is >3x that, which covers a
+                  # larger `get pods` response as the namespace grows. The
+                  # agent work this schedules runs in the openclaw pod, which
+                  # has its own 5.5Gi limit; none of it happens here.
+                  memory: 192Mi

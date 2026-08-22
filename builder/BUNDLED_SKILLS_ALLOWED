@@ -1,0 +1,69 @@
+# Upstream openclaw skills to KEEP in the built image.
+#
+# THIS LIST IS EMPTY, ON PURPOSE.
+#
+# The bot has exactly four skills, all of them defined in this repository and
+# mounted from ConfigMaps in k8s/: `developer`, `tester`, `reviewer` and
+# `projects`. Those are the ones it is supposed to have, and they are the only
+# ones anybody reviewed. Everything openclaw bundles at /app/skills — around
+# fifty of them, from 1password and apple-notes to spotify-player and trello —
+# is removed at build time.
+#
+# WHY AN ALLOWLIST AND NOT A DENYLIST
+# -----------------------------------
+# This started as a denylist of three: clawhub, skill-creator and mcporter.
+# A denylist has the wrong default. It only stops what somebody already
+# thought of, every upstream release can add capabilities that arrive switched
+# on, and nothing about that is visible in a diff of this repository — the
+# image just quietly grows. An allowlist inverts it: a new bundled skill is
+# removed by default, and keeping one is a line in this file that a human has
+# to write and a reviewer gets to see.
+#
+# The three that prompted it are the sharpest examples, and worth naming
+# because they explain what "capability" means here:
+#
+#   clawhub        The skill marketplace client. Its own description: "Search
+#                  ClawHub for skills when a requested capability is not
+#                  already available; install, verify, update, publish, or
+#                  sync skills." It downloads other people's skills into the
+#                  running agent.
+#   skill-creator  Guides the agent through authoring new SKILL.md files.
+#   mcporter       Dynamic MCP-server gateway — loads tool servers over
+#                  HTTP/stdio at runtime, routing around the static MCP
+#                  registration in openclaw.json, which is the list that
+#                  decides what tools exist at all.
+#
+# A skill is instructions the agent will follow, so a skill it acquires by
+# itself can tell it to do anything the sandbox permits — including working
+# around the allowed-projects permission list. That is why the bar is "did
+# this go through a pull request", not "does it look harmful".
+#
+# NOTE — removing a skill removes INSTRUCTIONS, not the ability behind them.
+# `openclaw skills install` is a CLI and stays in the image; the agent's exec
+# tool can call it. What actually stops an install is that its destination
+# directories are root-owned and read-only — see SKILLS-DIR-READONLY in
+# k8s/020-deployment.yaml. This file and that lockdown are both needed.
+#
+# TO KEEP ONE: add its directory name on its own line, and say why. It will
+# be loadable by the agent from then on.
+#
+# ---------------------------------------------------------------------------
+# Skills also ship INSIDE extensions, not just in /app/skills:
+#   /app/extensions/<ext>/skills/<name>/    (and mirrored under /app/dist/)
+# That second location only came to light when the strip was widened and the
+# build failed on six of them. Four belong to extensions that are not in
+# openclaw.json's plugins.allow — open-prose, imessage, memory-wiki — so they
+# were inert weight and are removed. The two below belong to extensions that
+# ARE enabled, and they are kept deliberately:
+
+# The deployment tester's core loop is browser work: open the deployed app,
+# complete an Entra sign-in, smoke-test the flows
+# (builder/tester-runner.sh). "browser" is in plugins.allow, so the plugin — the tooling — is
+# enabled either way; this skill is the instructions for driving it. Dropping
+# it would leave the tool without its guidance, and whether TOOLS-entra.md and
+# the runner prompts cover the gap is not something a build can answer.
+browser-automation
+
+# "canvas" is likewise in plugins.allow. Kept for the same reason: an enabled
+# plugin should keep the instructions that come with it.
+canvas

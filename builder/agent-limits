@@ -1,0 +1,218 @@
+#!/bin/sh
+# agent-limits: read and change how long each subsystem may run, at runtime.
+#
+# Backs the `limits` commands of the developer / tester / reviewer chat
+# skills. Writes ~/.openclaw/agent-limits.conf on the workspace PVC, which
+# builder/agent-limits.sh reads at the start of every runner — so a change
+# applies to the NEXT spawned run, with nothing restarted and nothing
+# redeployed.
+#
+# Usage:
+#   agent-limits list
+#   agent-limits get   <key>
+#   agent-limits set   <key> <duration>
+#   agent-limits reset <key>|all
+#
+# Keys:
+#   solver.turn       one agent invocation of the issue solver   (default 58m)
+#   solver.lifetime   the solver's whole poll loop               (default 6h)
+#   tester.run        the tester's single agent run              (default 58m)
+#   reviewer.run      the reviewer's single agent run            (default 58m)
+#
+# Durations: 3600, 90s, 45m, 3h, 1h30m. Range 60s..24h.
+#
+# Exit codes: 0 ok · 1 usage/unknown key · 2 bad duration · 3 write failed
+set -eu
+
+STATE_DIR="${HOME:-/home/node}/.openclaw"
+AGENT_LIMITS_FILE="${AGENT_LIMITS_FILE:-$STATE_DIR/agent-limits.conf}"
+LIB="$(dirname "$0")/agent-limits.sh"
+[ -r "$LIB" ] || LIB=/usr/local/bin/agent-limits.sh
+# shellcheck source=/dev/null
+. "$LIB"
+
+# key|default-seconds|what it bounds
+KEYS='solver.turn|3500|one agent invocation of the issue solver
+solver.lifetime|21600|the issue solver'"'"'s whole poll loop (several turns)
+tester.run|3500|the tester'"'"'s single agent run
+reviewer.run|3500|the reviewer'"'"'s single agent run'
+
+# Settings that are NOT durations. Kept in their own table because every
+# duration path here — parsing, the 60s floor, the h/m/s rendering — is wrong
+# for them: a story-point threshold of 3 would be rejected as "under a
+# minute", and `off` is a meaningless duration but a valid switch.
+#
+# key|kind|default|what it does
+SETTINGS='solver.small.max_points|count|3|stories at or below this are implemented on solver.small and reviewed on reviewer.small (0 or off disables both)
+planning.split_points|count|13|a story sized AT or above this is not started — the bot asks for it to be split (off = never; only 2,3,5,8,13 differ)
+solver.autoruntime|flag|on|derive the solver'"'"'s runtime from the story points (a configured solver.turn/solver.lifetime still wins)'
+
+_default_for()  { printf '%s\n' "$KEYS" | awk -F'|' -v k="$1" '$1==k{print $2}'; }
+_desc_for()     { printf '%s\n' "$KEYS" | awk -F'|' -v k="$1" '$1==k{print $3}'; }
+_known()        { [ -n "$(_default_for "$1")" ]; }
+_kind_for()     { printf '%s\n' "$SETTINGS" | awk -F'|' -v k="$1" '$1==k{print $2}'; }
+_sdefault_for() { printf '%s\n' "$SETTINGS" | awk -F'|' -v k="$1" '$1==k{print $3}'; }
+_sdesc_for()    { printf '%s\n' "$SETTINGS" | awk -F'|' -v k="$1" '$1==k{print $4}'; }
+_is_setting()   { [ -n "$(_kind_for "$1")" ]; }
+
+_human() {  # seconds -> 3h, 1h30m, 45m, 90s
+  _h=$(( $1 / 3600 )); _m=$(( ($1 % 3600) / 60 )); _s=$(( $1 % 60 )); _o=""
+  [ "$_h" -gt 0 ] && _o="${_h}h"
+  [ "$_m" -gt 0 ] && _o="${_o}${_m}m"
+  [ "$_s" -gt 0 ] && _o="${_o}${_s}s"
+  printf '%s\n' "${_o:-0s}"
+}
+
+_write() {  # atomic: a runner may read this file at any moment
+  mkdir -p "$(dirname "$AGENT_LIMITS_FILE")"
+  _tmp="$AGENT_LIMITS_FILE.tmp.$$"
+  cat > "$_tmp" || return 3
+  mv -f "$_tmp" "$AGENT_LIMITS_FILE" || { rm -f "$_tmp"; return 3; }
+}
+
+_header() {
+  cat <<'EOF'
+# How long each subsystem may run. Managed from chat — see the `limits`
+# commands of the developer / tester / reviewer skills, or run `agent-limits`.
+#
+# Read at the START of every runner, so a change applies to the next spawned
+# run: nothing to restart, nothing to redeploy. A key that is missing,
+# unparseable or out of range falls back to the built-in default rather than
+# stopping the subsystem.
+EOF
+}
+
+cmd_list() {
+  printf '%-18s %-10s %-10s %s\n' KEY EFFECTIVE DEFAULT BOUNDS
+  printf '%s\n' "$KEYS" | while IFS='|' read -r k d desc; do
+    eff="$(agent_limit "$k" "$d")"
+    mark=""; [ "$eff" = "$d" ] || mark=" *"
+    printf '%-18s %-10s %-10s %s%s\n' "$k" "$(_human "$eff")" "$(_human "$d")" "$desc" "$mark"
+  done
+  echo
+  printf '%-22s %-10s %-10s %s\n' SETTING EFFECTIVE DEFAULT WHAT
+  printf '%s\n' "$SETTINGS" | while IFS='|' read -r k kind d desc; do
+    case "$kind" in
+      # A disabled count is stored as 0 and REPORTED as off. Asked "what is
+      # the split limit", the honest answer is "off", not "0" — 0 reads as a
+      # number of points, which is the one thing it does not mean. The chat
+      # skills answer from this output, so it is where the word has to appear.
+      count) eff="$(agent_count "$k" "$d")"; [ "$eff" = "0" ] && eff="off" ;;
+      flag)  eff="$(agent_flag  "$k" "$d")" ;;
+      *)     eff="$d" ;;
+    esac
+    mark=""; [ "$eff" = "$d" ] || mark=" *"
+    printf '%-22s %-10s %-10s %s%s\n' "$k" "$eff" "$d" "$desc" "$mark"
+  done
+  echo
+  echo "* = set explicitly. Store: $AGENT_LIMITS_FILE"
+}
+
+cmd_get() {
+  [ $# -ge 1 ] || { echo "usage: agent-limits get <key>" >&2; return 1; }
+  if _is_setting "$1"; then
+    case "$(_kind_for "$1")" in
+      count)
+        _g="$(agent_count "$1" "$(_sdefault_for "$1")")"
+        [ "$_g" = "0" ] && _g="off"
+        printf '%s\n' "$_g" ;;
+      flag)  agent_flag  "$1" "$(_sdefault_for "$1")" ;;
+    esac
+    return 0
+  fi
+  _known "$1" || { echo "unknown key: $1" >&2; return 1; }
+  agent_limit "$1" "$(_default_for "$1")"
+}
+
+_store_raw() {  # $1 = key, $2 = literal value to write
+  { [ -r "$AGENT_LIMITS_FILE" ] && sed 's/#.*//' "$AGENT_LIMITS_FILE" | awk 'NF' \
+      | grep -vE "^[[:space:]]*$(printf '%s' "$1" | sed 's/\./\\./g')[[:space:]]*=" || true; } > "/tmp/al.$$"
+  { _header; cat "/tmp/al.$$"; echo "$1 = $2"; } | _write
+  rm -f "/tmp/al.$$"
+}
+
+cmd_set_setting() {  # a non-duration setting
+  _key="$1"; _val="$2"
+  case "$(_kind_for "$_key")" in
+    count)
+      _norm="$(printf '%s' "$_val" | tr -d '[:space:]' | tr 'A-Z' 'a-z')"
+      case "$_norm" in
+        off|none|disabled|false) _norm=0 ;;
+        *[!0-9]*)
+          echo "not a whole number: $_val (use a positive number, or 0/off to disable)" >&2
+          return 2 ;;
+      esac
+      _store_raw "$_key" "$_norm" || return 3
+      if [ "$_norm" = "0" ]; then
+        echo "$_key = 0 — disabled"
+      else
+        echo "$_key = $_norm"
+      fi
+      ;;
+    flag)
+      _norm="$(printf '%s' "$_val" | tr -d '[:space:]' | tr 'A-Z' 'a-z')"
+      case "$_norm" in
+        on|true|yes|enabled|auto) _norm=on ;;
+        off|false|no|disabled)    _norm=off ;;
+        *) echo "not on or off: $_val" >&2; return 2 ;;
+      esac
+      _store_raw "$_key" "$_norm" || return 3
+      echo "$_key = $_norm"
+      ;;
+    *) echo "unknown setting: $_key" >&2; return 1 ;;
+  esac
+  echo "Applies to the next run that starts; anything in flight keeps its old value."
+}
+
+cmd_set() {
+  [ $# -ge 2 ] || { echo "usage: agent-limits set <key> <duration|value>" >&2; return 1; }
+  if _is_setting "$1"; then cmd_set_setting "$1" "$2"; return $?; fi
+  _known "$1" || { echo "unknown key: $1 (see: agent-limits list)" >&2; return 1; }
+  secs="$(_al_parse "$2")" || { echo "not a duration: $2 (try 90s, 45m, 3h, 1h30m)" >&2; return 2; }
+  if ! _al_sane "$secs"; then
+    echo "out of range: $(_human "$secs") — allowed ${AGENT_LIMIT_MIN}s..$(_human "$AGENT_LIMIT_MAX")" >&2
+    echo "  under a minute kills every agent before it can work; over a day" >&2
+    echo "  outlives the lock TTL, so a wedged runner would hold its repo." >&2
+    return 2
+  fi
+  { [ -r "$AGENT_LIMITS_FILE" ] && sed 's/#.*//' "$AGENT_LIMITS_FILE" | awk 'NF' \
+      | grep -vE "^[[:space:]]*$(printf '%s' "$1" | sed 's/\./\\./g')[[:space:]]*=" || true; } > "/tmp/al.$$"
+  { _header; cat "/tmp/al.$$"; echo "$1 = $secs"; } | _write
+  rm -f "/tmp/al.$$"
+  echo "$1 = $(_human "$secs")  (was $(_human "$(agent_limit "$1" "$(_default_for "$1")")" ))"
+  echo "Applies to the next run that starts; anything in flight keeps its old limit."
+}
+
+cmd_reset() {
+  [ $# -ge 1 ] || { echo "usage: agent-limits reset <key>|all" >&2; return 1; }
+  if [ "$1" = "all" ]; then
+    _header | _write
+    echo "all limits back to defaults"
+    return 0
+  fi
+  _known "$1" || _is_setting "$1" || { echo "unknown key: $1" >&2; return 1; }
+  { [ -r "$AGENT_LIMITS_FILE" ] && sed 's/#.*//' "$AGENT_LIMITS_FILE" | awk 'NF' \
+      | grep -vE "^[[:space:]]*$(printf '%s' "$1" | sed 's/\./\\./g')[[:space:]]*=" || true; } > "/tmp/al.$$"
+  { _header; cat "/tmp/al.$$"; } | _write
+  rm -f "/tmp/al.$$"
+  # A SETTING has no duration default, so rendering it through _human() —
+  # which does `$1 / 3600` — printed a shell arithmetic error and then the
+  # word "default" with nothing after it. The chat skills read this line back
+  # to the operator, so the error was the answer they got to "reset it".
+  if _is_setting "$1"; then
+    _rd="$(_sdefault_for "$1")"
+    [ "$_rd" = "0" ] && _rd="off"
+    echo "$1 back to default $_rd"
+  else
+    echo "$1 back to default $(_human "$(_default_for "$1")")"
+  fi
+}
+
+case "${1:-list}" in
+  list)  shift 2>/dev/null || true; cmd_list ;;
+  get)   shift; cmd_get   "$@" ;;
+  set)   shift; cmd_set   "$@" ;;
+  reset) shift; cmd_reset "$@" ;;
+  -h|--help|help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "unknown command: $1" >&2; sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+esac
