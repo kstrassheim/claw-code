@@ -121,6 +121,9 @@ import json, os, subprocess, sys, shlex
 plan = json.load(sys.stdin)
 
 OPENCLAW_POD = os.environ['OPENCLAW_POD']
+# Same default as the shell above. Read from the environment rather than
+# interpolated, so the value cannot differ between the two halves of this file.
+CONTAINER = os.environ.get('OPENCLAW_CONTAINER', 'claw-code')
 NAMESPACE = plan['namespace']
 
 errors = [r for r in plan['repos'] if r.get('error')]
@@ -173,7 +176,7 @@ for r in plan['repos']:
         )
 
         proc = subprocess.run(
-            ['kubectl', '-n', NAMESPACE, 'exec', OPENCLAW_POD, '-c', 'openclaw',
+            ['kubectl', '-n', NAMESPACE, 'exec', OPENCLAW_POD, '-c', CONTAINER,
              '--', 'bash', '-c', remote_cmd],
             capture_output=True, text=True, timeout=30,
         )
