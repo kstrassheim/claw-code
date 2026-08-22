@@ -96,7 +96,7 @@ spec:
         # node still can't write to it after the regroup. Runs as root
         # in a busybox-style shell from the openclaw image; idempotent.
         - name: fix-perms
-          image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
+          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:latest
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 0
@@ -141,7 +141,7 @@ spec:
         # up the rendered value when it starts (envFrom resolves after
         # initContainers complete).
         - name: render-config
-          image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
+          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:latest
           imagePullPolicy: Always
           command: ["/bin/sh", "/scripts/render-config.sh"]
           env:
@@ -202,7 +202,7 @@ spec:
               memory: 256Mi
       containers:
         - name: claw-code
-          image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
+          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:latest
           imagePullPolicy: Always
           env:
             # THE MOUNT COMES FIRST, and that ordering is the mechanism: the

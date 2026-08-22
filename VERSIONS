@@ -4,17 +4,17 @@
 
 # Upstream openclaw base image (FROM in builder/Dockerfile).
 # Tag matches https://github.com/openclaw/openclaw releases.
-OPENCLAW_UPSTREAM=v2026.7.1
+OPENCLAW_UPSTREAM=v2026.7.1-2
 
 # The tag this project's OWN image is published under, and the thing the build
 # skips on. Bump the trailing .N for any change to builder/ that must reach the
 # cluster; leave it alone and the deploy reuses the image already in ACR
 # instead of rebuilding it.
-OPENCLAW_VERSION=v2026.7.1-1.0
+OPENCLAW_VERSION=v2026.7.1-2.0
 
 # Tools baked into the openclaw image.
-GH_CLI_VERSION=2.92.0
-GITHUB_MCP_SERVER_VERSION=1.0.3
+GH_CLI_VERSION=2.98.0
+GITHUB_MCP_SERVER_VERSION=1.10.1
 AWS_CLI_VERSION=2.34.45
 GCLOUD_VERSION=567.0.0
 ALIYUN_CLI_VERSION=3.3.14
@@ -25,7 +25,7 @@ TERRAFORM_VERSION=1.13.0
 # a Terraform-managed project, and reading one does not mean managing this one
 # with it. The two pins are independent on purpose.
 TOFU_VERSION=1.12.6
-TERRAFORM_MCP_VERSION=0.5.2
+TERRAFORM_MCP_VERSION=1.2.0
 CODE_SERVER_VERSION=4.118.0
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ GIT_LFS_VERSION=3.7.1
 KUBELOGIN_VERSION=0.2.19
 MERMAID_CLI_VERSION=11.12.0
 NUCLEI_TEMPLATES_VERSION=10.4.7
-NUCLEI_VERSION=3.11.0
+NUCLEI_VERSION=3.11.1
 OPENTOFU_MCP_VERSION=0.1.5
 OPENTOFU_VERSION=1.12.6
 PESTER_VERSION=5.7.1
@@ -53,6 +53,6 @@ PSSCRIPTANALYZER_VERSION=1.25.0
 PWSH_VERSION=7.6.4
 PYMONGO_VERSION=4.17.0
 SEMGREP_MCP_VERSION=0.9.0
-SEMGREP_VERSION=1.172.0
+SEMGREP_VERSION=1.174.0
 SQLPACKAGE_VERSION=170.4.83
 TESTSSL_VERSION=3.2.4

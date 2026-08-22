@@ -170,7 +170,7 @@ matrix.
 | Resource | Purpose |
 |---|---|
 | AKS cluster (1× Standard_D2pds_v5, arm64, 2 vCPU / 8 GiB) | K8s cluster |
-| Azure Container Registry (`clwcodecodevdev1`, Basic SKU) | Hosts the custom openclaw image |
+| Azure Container Registry (`clwcodecodevdev2`, Basic SKU) | Hosts the custom openclaw image |
 | Azure Storage Account (`clwcodecodev`) | Backs the openclaw workspace PVC |
 | Default-deny NetworkPolicies + DNS/HTTPS allow rules | Pure `kubernetes_network_policy_v1`, no controller required |
 | Role assignments: AcrPull on the deploy MI + AKS kubelet identity | Required so both CI and the cluster can read the registry |
@@ -287,7 +287,7 @@ job builds and pushes on every merge to `main`:
    `az acr import`).
 2. `docker buildx build --platform linux/arm64` against `builder/`.
 3. Push `:latest` and `:<short_sha>` to
-   `clwcodecodevdev1.azurecr.io/openclaw/claw-code`.
+   `clwcodecodevdev2.azurecr.io/openclaw/claw-code`.
 
 The Deployment references `:latest` with `imagePullPolicy: Always`, so
 the post-push `kubectl rollout restart` step is what actually picks up
@@ -298,11 +298,11 @@ To build locally for testing (arm64 host or buildx multi-platform):
 ```bash
 cd builder/
 docker buildx build --platform linux/arm64 \
-  --build-arg BASE_IMAGE=clwcodecodevdev1.azurecr.io/openclaw/openclaw-base:$(grep '^OPENCLAW_UPSTREAM=' ../VERSIONS | cut -d= -f2) \
-  -t clwcodecodevdev1.azurecr.io/openclaw/claw-code:dev .
+  --build-arg BASE_IMAGE=clwcodecodevdev2.azurecr.io/openclaw/openclaw-base:$(grep '^OPENCLAW_UPSTREAM=' ../VERSIONS | cut -d= -f2) \
+  -t clwcodecodevdev2.azurecr.io/openclaw/claw-code:dev .
 ```
 
-`az acr login --name clwcodecodevdev1` first if you want to push to ACR
+`az acr login --name clwcodecodevdev2` first if you want to push to ACR
 from your workstation.
 
 ---

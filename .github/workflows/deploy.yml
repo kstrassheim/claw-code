@@ -22,7 +22,7 @@ on:
       - '.github/workflows/deploy.yml'
 
 env:
-  REGISTRY: clwcodecodevdev1.azurecr.io
+  REGISTRY: clwcodecodevdev2.azurecr.io
   IMAGE_NAME: openclaw/claw-code
 
 permissions:
@@ -149,7 +149,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Login to ACR
-        run: az acr login --name clwcodecodevdev1
+        run: az acr login --name clwcodecodevdev2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -160,12 +160,12 @@ jobs:
           OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS | cut -d= -f2)
           SRC_TAG="${OPENCLAW_UPSTREAM#v}"
           if az acr repository show \
-               --name clwcodecodevdev1 \
+               --name clwcodecodevdev2 \
                --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}" >/dev/null 2>&1; then
             echo "openclaw/openclaw-base:${OPENCLAW_UPSTREAM} already present in ACR — skipping import"
           else
             az acr import \
-              --name clwcodecodevdev1 \
+              --name clwcodecodevdev2 \
               --source "ghcr.io/openclaw/openclaw:${SRC_TAG}" \
               --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}"
           fi
@@ -228,7 +228,7 @@ jobs:
           # OPENCLAW_VERSION. Leave it alone and the deploy will reuse what is
           # already there — correctly, because nothing said otherwise.
           if az acr repository show \
-               --name clwcodecodevdev1 \
+               --name clwcodecodevdev2 \
                --image "openclaw/claw-code:${TAG}" >/dev/null 2>&1; then
             echo ">> openclaw/claw-code:${TAG} already in ACR — skipping the build"
             echo "skip=true" >> $GITHUB_OUTPUT

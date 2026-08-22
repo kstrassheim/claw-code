@@ -22,7 +22,7 @@ on:
   # explaining "why is my PR blocked" three times a week.
 
 env:
-  REGISTRY: clwcodecodevdev1.azurecr.io
+  REGISTRY: clwcodecodevdev2.azurecr.io
   IMAGE_NAME: openclaw/claw-code
 
 permissions:
@@ -168,15 +168,15 @@ jobs:
           # own registry, so on a pull request that has not created the
           # registry yet there is nothing to log in to and nothing to pull.
           # Failing here would block the very PR that provisions it.
-          if az acr show --name clwcodecodevdev1 >/dev/null 2>&1; then
-            az acr login --name clwcodecodevdev1
+          if az acr show --name clwcodecodevdev2 >/dev/null 2>&1; then
+            az acr login --name clwcodecodevdev2
             echo "present=true" >> $GITHUB_OUTPUT
           else
             echo "present=false" >> $GITHUB_OUTPUT
             {
               echo "## Docker build skipped"
               echo
-              echo "The registry \`clwcodecodevdev1\` does not exist yet, so the base"
+              echo "The registry \`clwcodecodevdev2\` does not exist yet, so the base"
               echo "image this Dockerfile builds FROM cannot be pulled and **the image"
               echo "was not validated by this run**."
               echo
@@ -199,12 +199,12 @@ jobs:
           OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS | cut -d= -f2)
           SRC_TAG="${OPENCLAW_UPSTREAM#v}"
           if az acr repository show \
-               --name clwcodecodevdev1 \
+               --name clwcodecodevdev2 \
                --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}" >/dev/null 2>&1; then
             echo "openclaw/openclaw-base:${OPENCLAW_UPSTREAM} already present in ACR — skipping import"
           else
             az acr import \
-              --name clwcodecodevdev1 \
+              --name clwcodecodevdev2 \
               --source "ghcr.io/openclaw/openclaw:${SRC_TAG}" \
               --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}"
           fi

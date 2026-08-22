@@ -14,11 +14,14 @@ variable "cosmos_location" {
     of small documents per tick and is not on any request path, so a
     neighbouring region costs nothing that matters.
 
-    Set this back to the project's own region once capacity allows, or request
-    access via https://aka.ms/cosmosdbquota.
+    Back to the project's own region: the account that failed was left behind
+    in a Failed state and was itself blocking the retry. With that removed and
+    zone redundancy off, West Europe takes it — and everything living in one
+    region is worth more than the escape hatch, which stays here for the next
+    time capacity bites.
   EOT
   type        = string
-  default     = "northeurope"
+  default     = "westeurope"
 }
 
 variable "cosmos_account_name" {
@@ -93,8 +96,15 @@ variable "location" {
 }
 
 variable "node_size" {
-  description = "VM size for AKS node pool. Default is arm64 (Standard_D2pds_v5, 2 vCPU / 8 GiB) — matches the openclaw image build target (linux/arm64) and is ~$20/mo cheaper than the x86 D2s_v3 equivalent."
-  default     = "Standard_D2pds_v5"
+  description = <<-EOT
+    VM size for the AKS node pool. arm64, matching the image build target
+    (linux/arm64) and cheaper than the x86 equivalent.
+
+    Cobalt v6 (Standard_D2ps_v6) rather than the v5 it replaced: newer silicon
+    at the same 2 vCPU / 8 GiB. The v6 `ps` line has no local temp disk, which
+    costs nothing here because the node pool already uses a managed OS disk.
+  EOT
+  default     = "Standard_D2ps_v6"
   type        = string
 }
 
@@ -125,5 +135,5 @@ variable "aks_admin_group_name" {
 variable "unique_suffix" {
   description = "Unique suffix appended to globally-unique resource names (max 4 chars, e.g. 'dev1'). Used to make storage account and ACR names unique across deployments."
   type        = string
-  default     = "dev1"
+  default     = "dev2"
 }
