@@ -306,34 +306,35 @@ data:
       echo "No existing openclaw.json on the PVC — writing rendered config as-is"
     fi
 
-    # Ensure the gateway has an auth token BEFORE the config is persisted.
+    # Stamp the gateway auth token from the environment.
     #
-    # gateway.auth is runtime state: the block above carries it forward from an
-    # existing PVC file, and openclaw generates it on first run. Neither happens
-    # on a fresh PVC — the carry-forward has nothing to read, and openclaw exits
-    # before generating anything:
+    # openclaw refuses to start without one ("Refusing to bind gateway to lan
+    # without auth", exit 78). It treats gateway.auth as runtime state —
+    # generated on first run, carried forward from the PVC by the merge above.
+    # Neither happens on a fresh PVC, so a new cluster could never start a pod.
     #
-    #     Refusing to bind gateway to lan without auth.  (exit 78)
-    #
-    # So the pod crashlooped on every new cluster. Generating it here closes the
-    # bootstrap gap; once written it is carried forward like any other runtime
-    # state, so it stays stable across restarts and redeploys.
+    # The token is now an OpenTofu resource instead: created once, held in
+    # encrypted state, delivered here through claw-code-secrets. This runs
+    # AFTER the carry-forward on purpose — the value from state is
+    # authoritative, so an older token left on the PVC is replaced rather than
+    # winning.
+    if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+      echo "ERROR: OPENCLAW_GATEWAY_TOKEN is empty — the gateway will refuse to bind."
+      echo "It comes from the gateway_token OpenTofu output via claw-code-secrets."
+      exit 1
+    fi
     if command -v node >/dev/null 2>&1; then
       node -e '
-        const fs = require("fs"), crypto = require("crypto");
+        const fs = require("fs");
         const f = process.argv[1];
         const c = JSON.parse(fs.readFileSync(f, "utf8"));
         c.gateway = c.gateway || {};
-        if (c.gateway.auth && c.gateway.auth.token) {
-          console.log("gateway.auth.token already present — keeping it");
-        } else {
-          c.gateway.auth = {...(c.gateway.auth || {}), mode: "token", token: crypto.randomBytes(32).toString("hex")};
-          console.log("Generated a gateway.auth.token (none on the PVC yet)");
-          fs.writeFileSync(f, JSON.stringify(c, null, 2));
-        }
+        c.gateway.auth = {...(c.gateway.auth || {}), mode: "token", token: process.env.OPENCLAW_GATEWAY_TOKEN};
+        fs.writeFileSync(f, JSON.stringify(c, null, 2));
+        console.log("Stamped gateway.auth.token from OPENCLAW_GATEWAY_TOKEN");
       ' /tmp/openclaw.json
     else
-      echo "WARN: node unavailable — cannot ensure gateway.auth.token; gateway may refuse to bind"
+      echo "WARN: node unavailable — cannot stamp gateway.auth.token"
     fi
 
     cp /tmp/openclaw.json "$PERSISTENT_FILE"

@@ -216,7 +216,17 @@ jobs:
         run: tofu apply -auto-approve tfplan
 
       - name: Upload OpenTofu Output
-        run: tofu output -json > tofu_output.json
+        # Sensitive outputs are STRIPPED. `tofu output -json` prints them in
+        # the clear, and this file is uploaded as a build artifact that anyone
+        # with repository read access can download — gateway_token must not go
+        # there. Consumers that need a sensitive value read it from state
+        # themselves (see the apply-secrets job).
+        run: |
+          set -euo pipefail
+          tofu output -json \
+            | jq 'with_entries(select(.value.sensitive != true))' \
+            > tofu_output.json
+          echo "non-sensitive outputs: $(jq -r 'keys | join(", ")' tofu_output.json)"
 
       - name: Upload OpenTofu Output artifact
         uses: actions/upload-artifact@v7
@@ -443,7 +453,7 @@ jobs:
     #
     # This used to be a separate workflow, triggered by hand. The cluster was
     # then recreated by the region move, the Secret went with it — it lives
-    # only in the cluster, not in git and not in OpenTofu state — and no one
+    # only in the cluster, not in git — and no one
     # re-ran it. The deploy did not report that: it applied every manifest,
     # then spent ten minutes reaching the deployment progress deadline while
     # the render-config init container crashlooped on a missing API key and
@@ -458,6 +468,11 @@ jobs:
       KUBECONFIG: /tmp/kubeconfig
 
     steps:
+      # tofu init needs the .tf files; this job had no checkout because it was
+      # lifted from a standalone workflow that only ever called kubectl.
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
@@ -472,6 +487,38 @@ jobs:
             --name claw-code-aks \
             --file /tmp/kubeconfig \
             --admin
+
+      - name: Read TOFU_VERSION from /VERSIONS
+        run: |
+          grep '^TOFU_VERSION=' VERSIONS | cut -d= -f2 | sed 's/^/TOFU_VERSION=/' >> "$GITHUB_ENV"
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+
+      - name: Read the gateway token from OpenTofu state
+        # NOT from the tofu-output artifact: sensitive outputs are stripped
+        # from that file precisely so this value never lands somewhere
+        # downloadable. Reading it from state keeps it inside the job, and
+        # ::add-mask keeps it out of the log if anything later echoes it.
+        env:
+          TF_VAR_env: dev
+          TF_VAR_use_oidc: "true"
+          TF_VAR_arm_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+          TF_VAR_arm_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          tofu init \
+            -backend-config="resource_group_name=terraform" \
+            -backend-config="storage_account_name=mytofustates" \
+            -backend-config="container_name=claw-code" \
+            -backend-config="key=dev.tfstate" \
+            -backend-config="use_azuread_auth=true"
+          TOKEN="$(tofu output -raw gateway_token)"
+          [ -n "$TOKEN" ] || { echo "::error::gateway_token is empty in the OpenTofu state"; exit 1; }
+          echo "::add-mask::$TOKEN"
+          echo "OPENCLAW_GATEWAY_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
       - name: Install kubectl
         run: |
@@ -503,6 +550,7 @@ jobs:
           kubectl create secret generic claw-code-secrets \
             --namespace claw-code \
             --dry-run=client \
+            --from-literal=OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
             --from-literal=MISTRAL_API_KEY="$MISTRAL_API_KEY" \
             --from-literal=MINIMAX_API_KEY="$MINIMAX_API_KEY" \
             --from-literal=MOONSHOT_API_KEY="$MOONSHOT_API_KEY" \
