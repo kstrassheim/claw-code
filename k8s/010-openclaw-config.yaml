@@ -23,8 +23,8 @@ data:
       "agents": {
         "defaults": {
           "model": {
-            "primary": "mistral/mistral-medium-latest",
-            "fallbacks": ["mistral/mistral-small-latest", "mistral/mistral-large-latest", "kimi/k3", "minimax/MiniMax-M3"]
+            "primary": "mistral/mistral-large-latest",
+            "fallbacks": ["mistral/mistral-medium-latest", "mistral/mistral-small-latest", "kimi/k3", "minimax/MiniMax-M3"]
           },
           "imageModel": {
             "primary": "minimax/MiniMax-M3",
