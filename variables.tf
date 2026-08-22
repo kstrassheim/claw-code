@@ -1,3 +1,26 @@
+variable "cosmos_location" {
+  description = <<-EOT
+    Region for the planning-store Cosmos account, separate from the rest of the
+    project.
+
+    West Europe refuses new Cosmos accounts under capacity pressure, with an
+    error that names zone redundancy even when `zone_redundant = false` is set:
+
+      "Sorry, we are currently experiencing high demand in West Europe region
+       for the zonal redundant (Availability Zones) accounts"
+
+    That is a regional capacity limit, not something the configuration can
+    satisfy, so the region has to be movable. The planning store is a handful
+    of small documents per tick and is not on any request path, so a
+    neighbouring region costs nothing that matters.
+
+    Set this back to the project's own region once capacity allows, or request
+    access via https://aka.ms/cosmosdbquota.
+  EOT
+  type        = string
+  default     = "northeurope"
+}
+
 variable "cosmos_account_name" {
   description = <<-EOT
     Cosmos account name for the planning store.

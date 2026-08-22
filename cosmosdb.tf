@@ -35,8 +35,11 @@ resource "azurerm_federated_identity_credential" "pod" {
 }
 
 resource "azurerm_cosmosdb_account" "planning" {
-  name                = var.cosmos_account_name
-  location            = local.location
+  name = var.cosmos_account_name
+
+  # NOT local.location — see var.cosmos_location. West Europe refuses new
+  # accounts under capacity pressure, and no setting here can satisfy it.
+  location            = var.cosmos_location
   resource_group_name = data.azurerm_resource_group.rg.name
 
   offer_type = "Standard"
@@ -61,7 +64,7 @@ resource "azurerm_cosmosdb_account" "planning" {
   }
 
   geo_location {
-    location          = local.location
+    location          = var.cosmos_location
     failover_priority = 0
     zone_redundant    = false
   }
