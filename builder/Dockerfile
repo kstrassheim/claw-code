@@ -776,8 +776,20 @@ ENV PUPPETEER_SKIP_DOWNLOAD=1 \
 # --disable-dev-shm-usage as well: the default /dev/shm in a container is 64MB
 # and chromium crashes rendering anything large, which looks like a broken
 # diagram rather than a full tmpfs.
+#
+# "timeout" raises chromium's LAUNCH ceiling from puppeteer's 30s default. On a
+# native arm64 builder the browser is up in a couple of seconds and this never
+# applies; under QEMU emulation it does not finish in thirty and the build dies
+# on the smoke render with
+#
+#     TimeoutError: Timed out after waiting 30000ms
+#
+# while the image itself is perfectly fine. The same file is used at RUNTIME by
+# mermaid-render, so this also stops a chart falling back to ASCII on a loaded
+# node — the ceiling only matters when something is slow, and waiting is a
+# better answer there than giving up.
 RUN printf '%s\n' \
-      '{"args":["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]}' \
+      '{"args":["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"],"timeout":180000}' \
       > /etc/puppeteer-no-sandbox.json \
  && chmod 0644 /etc/puppeteer-no-sandbox.json
 
