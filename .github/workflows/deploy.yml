@@ -434,9 +434,92 @@ jobs:
           az logout
           rm -rf ~/.azure 2>/dev/null || true
 
+  apply-secrets:
+    name: Apply claw-code-secrets to cluster
+    # Runs after the infrastructure exists (the cluster has to be there to
+    # apply into) and IN PARALLEL with the image build, which needs nothing
+    # from it — so reconciling the Secret costs no wall-clock.
+    #
+    # This used to be a separate workflow, triggered by hand. The cluster was
+    # then recreated by the region move, the Secret went with it — it lives
+    # only in the cluster, not in git and not in OpenTofu state — and no one
+    # re-ran it. The deploy did not report that: it applied every manifest,
+    # then spent ten minutes reaching the deployment progress deadline while
+    # the render-config init container crashlooped on a missing API key and
+    # all three CronJob pods sat in CreateContainerConfigError.
+    #
+    # Reconciling it on every deploy removes that failure mode. Re-applying an
+    # unchanged Secret is a no-op, so doing it every time costs nothing.
+    needs: tofu-apply
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      KUBECONFIG: /tmp/kubeconfig
+
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group claw-code \
+            --name claw-code-aks \
+            --file /tmp/kubeconfig \
+            --admin
+
+      - name: Install kubectl
+        run: |
+          ARCH=$(dpkg --print-architecture)
+          mkdir -p "$HOME/.local/bin"
+          KUBECTL_VERSION="$(curl -sL https://dl.k8s.io/release/stable.txt)"
+          curl -sLo "$HOME/.local/bin/kubectl" \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl"
+          chmod +x "$HOME/.local/bin/kubectl"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Apply claw-code-secrets
+        env:
+          MISTRAL_API_KEY:         ${{ secrets.MISTRAL_API_KEY }}
+          MINIMAX_API_KEY:         ${{ secrets.MINIMAX_API_KEY }}
+          MOONSHOT_API_KEY:        ${{ secrets.MOONSHOT_API_KEY }}
+          GEMINI_API_KEY:          ${{ secrets.GEMINI_API_KEY }}
+          # secrets.GITHUB_TOKEN is reserved by GitHub Actions (returns the
+          # auto-generated workflow token, not our bot PAT). Use the
+          # explicit BOT_GITHUB_TOKEN secret and apply it under the same
+          # k8s-side key name (GITHUB_TOKEN) that openclaw expects.
+          GITHUB_TOKEN:            ${{ secrets.BOT_GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN:      ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          ENTRA_TENANT_ID:         ${{ secrets.ENTRA_TENANT_ID }}
+          ENTRA_USERNAME:          ${{ secrets.ENTRA_USERNAME }}
+          ENTRA_PASSWORD:          ${{ secrets.ENTRA_PASSWORD }}
+          ENTRA_TOTP_SEED:         ${{ secrets.ENTRA_TOTP_SEED }}
+        run: |
+          kubectl create secret generic claw-code-secrets \
+            --namespace claw-code \
+            --dry-run=client \
+            --from-literal=MISTRAL_API_KEY="$MISTRAL_API_KEY" \
+            --from-literal=MINIMAX_API_KEY="$MINIMAX_API_KEY" \
+            --from-literal=MOONSHOT_API_KEY="$MOONSHOT_API_KEY" \
+            --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY" \
+            --from-literal=GITHUB_TOKEN="$GITHUB_TOKEN" \
+            --from-literal=TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+            --from-literal=ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
+            --from-literal=ENTRA_USERNAME="$ENTRA_USERNAME" \
+            --from-literal=ENTRA_PASSWORD="$ENTRA_PASSWORD" \
+            --from-literal=ENTRA_TOTP_SEED="$ENTRA_TOTP_SEED" \
+            -o yaml \
+          | kubectl apply -f -
+
   deploy-to-aks:
     name: Deploy to AKS (apply manifests + rollout)
-    needs: build-and-push-image
+    # Both, not just the image: the manifests reference claw-code-secrets, and
+    # a pod that rolls before the Secret exists crashloops instead of starting.
+    needs: [build-and-push-image, apply-secrets]
     runs-on: ubuntu-latest
     environment: dev
     env:

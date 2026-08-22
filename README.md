@@ -31,15 +31,15 @@ claw-code/
 │   └── tools/                         # Per-tool TOOLS-*.md (assembled into openclaw-tools-md ConfigMap by deploy.yml)
 └── .github/workflows/
     ├── validate.yml      # On PR to main: check secrets, tofu plan, docker build (no push)
-    ├── deploy.yml        # On push to main: tofu apply, build+push image, kubectl apply, rollout
-    ├── seal-secrets.yml  # Read GH secrets, kubectl apply the Secret directly to the cluster (filename is historical — no kubeseal involved any more)
+    ├── deploy.yml        # On push to main: tofu apply, then (image build ∥ apply secrets), kubectl apply, rollout
     └── codeql.yml        # JS security scan
 ```
 
-Secrets are not stored in the repo — they come from the `seal-secrets`
-workflow which reads GitHub Actions secrets (per the `dev` environment)
-and applies a plain Kubernetes Secret straight to the cluster via
-`kubectl apply -f -` (the manifest never touches disk or git).
+Secrets are not stored in the repo — the deploy's `apply-secrets` job reads
+GitHub Actions secrets (per the `dev` environment) and applies a plain
+Kubernetes Secret straight to the cluster via `kubectl apply -f -` (the
+manifest never touches disk or git). It runs on every deploy, after
+`tofu-apply` and in parallel with the image build.
 
 ---
 
@@ -362,7 +362,7 @@ How the render works (see `010-openclaw-config.yaml` and the
 
 To toggle a provider on or off: add or remove the matching
 `MISTRAL_API_KEY` / `MINIMAX_API_KEY` GitHub Actions secret. The
-`seal-secrets` workflow seals it into `openclaw-secrets`, the next pod
+deploy's `apply-secrets` job writes it into `claw-code-secrets`, the next pod
 restart re-runs the render, and the config tracks the new state.
 
 ---
@@ -720,9 +720,12 @@ K8s manifests in `k8s/` are applied to the cluster by `deploy.yml`'s
 No in-cluster GitOps controller — the GitHub Actions runner is the
 deploy actor.
 
-Secrets are handled separately by `seal-secrets.yml`: it reads GitHub
+Secrets are handled by the deploy's `apply-secrets` job: it reads GitHub
 Actions secrets and `kubectl apply`s a plain Kubernetes Secret directly
-to the cluster. The manifest is piped from `kubectl create -o yaml`
+to the cluster. It was once a separate, manually-triggered workflow; that
+meant a recreated cluster silently lost the Secret and the next deploy hung
+for ten minutes on a crashlooping init container, so it is part of the
+pipeline now. The manifest is piped from `kubectl create -o yaml`
 into `kubectl apply -f -` and never written to disk or committed — so
 there is no encryption round-trip and no Sealed Secrets controller in
 the cluster (unlike the claw-code-local sibling, which commits the
