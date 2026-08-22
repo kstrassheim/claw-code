@@ -60,9 +60,14 @@ def load_template(path: str) -> dict:
     for doc in docs:
         if not doc:
             continue
-        if (doc.get("metadata") or {}).get("name") == "openclaw-config-template":
+        # Matched on the ROLE, not one deployment's name. The ConfigMap is
+        # called `openclaw-config-template` in one project and
+        # `claw-code-config-template` in another; hardcoding either makes this
+        # check silently inapplicable to the other, which is worse than the
+        # naming difference it was pinning.
+        if str((doc.get("metadata") or {}).get("name") or "").endswith("config-template"):
             return json.loads(doc["data"]["openclaw.json"])
-    raise SystemExit("openclaw-config-template not found in " + path)
+    raise SystemExit("no *config-template ConfigMap found in " + path)
 
 
 def check(cfg: dict) -> list[str]:
