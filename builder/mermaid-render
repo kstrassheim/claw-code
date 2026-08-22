@@ -158,18 +158,45 @@ esac
 BROWSER_HOME="$WORK/home"
 mkdir -p "$BROWSER_HOME"
 
-# --theme and --configFile fight: a named theme overrides the file. So the
-# measured theme file is the default, and naming a theme is the deliberate
-# escape hatch for someone who wants mermaid's own dark or forest.
-if [ -n "$THEME" ]; then
-  set -- --theme "$THEME"
-elif [ -r "$THEME_FILE" ]; then
-  set -- --configFile "$THEME_FILE"
-else
-  # An older image will not carry the theme file. Rendering in mermaid's
-  # default colours is a worse chart, not a failure.
-  set -- --theme default
-fi
+# ALWAYS a config file, never --theme. Two reasons, and the second is the one
+# that bites.
+#
+# 1. --theme and --configFile fight: a named theme overrides the file
+#    ENTIRELY, so asking for `--theme dark` used to discard every measured
+#    colour in mermaid-theme.json. Putting the theme inside the config keeps
+#    both.
+#
+# 2. htmlLabels MUST be off. Mermaid's default puts every label in a
+#    <foreignObject><span>, which a browser renders and almost nothing else
+#    does — librsvg, Inkscape, ImageMagick and the sanitiser GitHub runs over
+#    SVG all drop it. A measured render produced ZERO <text> elements: shapes
+#    and relationship lines with no words in them, anywhere outside a browser.
+#    PNG was never affected, because chromium rasterises the labels before
+#    anyone else sees them — which is exactly why this shipped unnoticed. The
+#    chart posted to an issue or a pull request renders SERVER-SIDE, so the
+#    broken format is the one that matters most here.
+#
+# Merged with node rather than jq: mmdc is a node application, so node is
+# guaranteed present here and jq is not.
+CONFIG="$WORK/mermaid-config.json"
+MERMAID_BASE_CONFIG="$THEME_FILE" MERMAID_WANT_THEME="$THEME" node -e '
+  const fs = require("fs");
+  const base = process.env.MERMAID_BASE_CONFIG;
+  let cfg = {};
+  if (base && fs.existsSync(base)) {
+    try { cfg = JSON.parse(fs.readFileSync(base, "utf8")); } catch (e) { cfg = {}; }
+  }
+  const theme = process.env.MERMAID_WANT_THEME;
+  if (theme) cfg.theme = theme;
+  else if (!cfg.theme) cfg.theme = "default";
+  // Both spellings: mermaid reads the per-diagram one for flowcharts and the
+  // top-level one elsewhere, and setting only one leaves the other rendering
+  // foreignObject labels.
+  cfg.htmlLabels = false;
+  cfg.flowchart = Object.assign({}, cfg.flowchart, { htmlLabels: false });
+  process.stdout.write(JSON.stringify(cfg));
+' > "$CONFIG"
+set -- --configFile "$CONFIG"
 
 if ! HOME="$BROWSER_HOME" \
      XDG_CONFIG_HOME="$BROWSER_HOME/.config" \
