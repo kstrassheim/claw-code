@@ -1,4 +1,4 @@
-name: Validate (Pull Request)
+name: Verify
 
 # Runs on every PR to main. Three independent validation jobs in parallel:
 #   - check-llm-secrets : fail the PR if neither LLM API key secret is set

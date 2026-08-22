@@ -103,6 +103,8 @@ jobs:
               echo "::error::timed out waiting for the Verify checks on ${SHA}"
               exit 1
             fi
+            sleep 20
+          done
 
   check-llm-secrets:
     # Same fail-fast as in validate.yml — refuse to deploy if neither
