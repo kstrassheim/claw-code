@@ -134,7 +134,16 @@ jobs:
   build-and-push-image:
     name: Build and Push Docker image to ACR
     needs: tofu-apply
-    runs-on: ubuntu-latest
+    # NATIVE ARM64, not QEMU. The image is linux/arm64 and this used to build
+    # it on an x86 runner through buildkit's emulator, which made every one of
+    # the 91 steps slower and eventually broke one outright: the mermaid smoke
+    # render launches Chromium, and under emulation it exceeded puppeteer's
+    # 30s timeout and failed the build.
+    #
+    # That was never a renderer fault — the same check passes natively. Running
+    # on an arm64 runner removes the emulator rather than raising a timeout to
+    # accommodate it, and speeds up the whole build rather than just that step.
+    runs-on: ubuntu-24.04-arm
     environment: dev
 
     steps:
