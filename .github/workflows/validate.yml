@@ -63,7 +63,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Read TOFU_VERSION from /VERSIONS
         id: tfver
@@ -121,7 +121,7 @@ jobs:
         run: tofu plan -out=tfplan
 
       - name: Upload OpenTofu Plan artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: tofu-plan
           path: tfplan
@@ -160,7 +160,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
@@ -197,7 +197,7 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.acr.outputs.present == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Ensure openclaw-base is mirrored from GHCR into ACR
         if: steps.acr.outputs.present == 'true'
@@ -260,7 +260,7 @@ jobs:
       - name: Build Docker image (no push)
         # Nothing to build FROM until the registry exists — see the login step.
         if: steps.acr.outputs.present == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./builder
           push: false
@@ -327,7 +327,7 @@ jobs:
           apt-get install -y -qq --no-install-recommends git ca-certificates >/dev/null
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Configure git identity
         # The checkout tests commit; git refuses to without an identity.
@@ -351,7 +351,7 @@ jobs:
     # silently. Closing gaps is deliberate work; letting them open is not.
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: Report
         run: python builder/tools/function-inventory.py
       - name: Fail on a new untested function
@@ -363,7 +363,7 @@ jobs:
     container: python:3.12-slim
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: Scan
         # py_compile accepts an undefined name — it is a runtime NameError. A
         # planner that references a variable which does not exist crashes on
@@ -381,7 +381,7 @@ jobs:
     # error, no log line, just a bot that is worse at its job.
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: Install PyYAML
         run: pip install --quiet pyyaml
       - name: Check
@@ -396,7 +396,7 @@ jobs:
     # truncated past the bootstrap cap.
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: Check
         run: python builder/tools/check-tools-docs.py
 
@@ -409,7 +409,7 @@ jobs:
     # in verify-build, because it needs the image to exist.
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: Check
         run: sh builder/verify-skills-locked.sh
 
