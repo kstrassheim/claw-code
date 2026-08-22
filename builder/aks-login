@@ -1,0 +1,135 @@
+#!/bin/bash
+# aks-login: give kubectl access to an AKS cluster belonging to one of the
+# projects the bot works on, authenticating as the bot's OWN ENTRA ACCOUNT.
+#
+# usage: aks-login <cluster-name> <resource-group> [subscription-id-or-name]
+#
+# Why this exists
+# ---------------
+# The pod already talks to the cluster it RUNS IN, through its in-cluster
+# ServiceAccount token. That identity is deliberately tiny (one ConfigMap) and
+# it is meaningless anywhere else. To reach the cluster of a project under
+# test — claw-code is not that cluster — the bot has to authenticate as the
+# Entra user it already signs in as for `az`, and the operator has to have put
+# that account in the cluster's admin group. Nothing here grants access: if the
+# account is not in the group, `az aks get-credentials` or the first kubectl
+# call fails, and that is a finding for a human, not something to work around.
+#
+# Two things make this awkward enough to deserve a script:
+#
+#  1. Every AKS cluster in these projects sets `azure_rbac_enabled`, so the
+#     kubeconfig `az aks get-credentials` writes uses an `exec` credential
+#     plugin — `kubelogin`. A kubeconfig that has NOT been converted still
+#     carries the legacy `azure` auth-provider, which modern kubectl removed;
+#     the call then dies with a useless "no Auth Provider found" error. So we
+#     always run `kubelogin convert-kubeconfig -l azurecli` afterwards, which
+#     rewires it to reuse the `az` token cache — no second login, no device
+#     code, no secret.
+#
+#  2. The file must NEVER be written to ~/.kube/config. kubectl only falls back
+#     to the in-cluster ServiceAccount when it finds no kubeconfig at all, so
+#     dropping one at the default path would silently take away the pod's
+#     access to its OWN cluster — which is what the `tester`/`reviewer` chat
+#     skills, cron-*-spawn and every `kubectl -n claw-code ...` depend on.
+#     Each cluster therefore gets its own file under ~/.openclaw/.kube/ and is
+#     selected per command with KUBECONFIG.
+#
+# Prints the kubeconfig path and the exact KUBECONFIG= line to use.
+set -uo pipefail
+
+CLUSTER="${1:?usage: aks-login <cluster-name> <resource-group> [subscription]}"
+RESOURCE_GROUP="${2:?usage: aks-login <cluster-name> <resource-group> [subscription]}"
+SUBSCRIPTION="${3:-}"
+
+STATE_ROOT="${HOME:-/home/node}/.openclaw"
+KUBE_DIR="$STATE_ROOT/.kube"
+KUBECONFIG_FILE="$KUBE_DIR/${RESOURCE_GROUP}__${CLUSTER}.yaml"
+
+mkdir -p "$KUBE_DIR"
+chmod 700 "$KUBE_DIR" 2>/dev/null || true
+
+# --- 1. must already be signed in ------------------------------------------
+# Deliberately does NOT trigger a login itself: az-login-bot needs the browser
+# plugin to complete the sign-in, which only the agent can drive.
+if ! /usr/bin/az account show --output none 2>/dev/null; then
+  cat >&2 <<'EOF'
+ERROR: not signed in to Azure.
+
+Run `az-login-bot` and complete the sign-in YOURSELF in the browser plugin
+(bot account from ~/.openclaw/.runtime-secrets.env; `entra-totp` for the MFA
+code — see the TOOLS-entra section). Then run aks-login again.
+EOF
+  exit 1
+fi
+
+AZ_ARGS=(aks get-credentials
+         --name "$CLUSTER"
+         --resource-group "$RESOURCE_GROUP"
+         --file "$KUBECONFIG_FILE"
+         --overwrite-existing
+         --only-show-errors)
+[ -n "$SUBSCRIPTION" ] && AZ_ARGS+=(--subscription "$SUBSCRIPTION")
+
+echo "[aks-login] fetching credentials for $CLUSTER (rg: $RESOURCE_GROUP)"
+if ! /usr/bin/az "${AZ_ARGS[@]}"; then
+  cat >&2 <<EOF
+
+ERROR: could not fetch credentials for cluster '$CLUSTER' in resource group
+'$RESOURCE_GROUP'.
+
+Read the error above literally. The usual causes, in order:
+  - the cluster or resource group name is wrong. Resolve BOTH from the
+    project's OWN Terraform (the aks resource + its resource group) — never
+    guess a name and never reuse one from another project;
+  - the subscription is not the one this project deploys to (pass it as the
+    third argument);
+  - the bot's Entra account holds no role on the cluster. That is a MISSING
+    ROLE — report it as a finding for a human. There is no key, connection
+    string or admin-credential fallback, and --admin is not one either.
+EOF
+  rm -f "$KUBECONFIG_FILE"
+  exit 1
+fi
+
+# --- 2. convert to the kubelogin exec plugin --------------------------------
+# `azurecli` mode reuses the token already in the shared ~/.azure cache (or
+# $AZURE_CONFIG_DIR when the caller isolated it, as the tester does per repo),
+# so there is no second interactive sign-in and no device code.
+echo "[aks-login] converting kubeconfig to the kubelogin azurecli credential plugin"
+if ! kubelogin convert-kubeconfig -l azurecli --kubeconfig "$KUBECONFIG_FILE"; then
+  echo "ERROR: kubelogin convert-kubeconfig failed — see the error above." >&2
+  exit 1
+fi
+
+# --- 3. prove it actually works ---------------------------------------------
+# A kubeconfig that authenticates but is authorised for nothing is a different
+# problem from one that cannot authenticate, and the agent must be able to tell
+# them apart. `auth whoami` answers the first, so run it before reporting
+# success.
+echo "[aks-login] verifying access"
+if ! KUBECONFIG="$KUBECONFIG_FILE" kubectl auth whoami 2>&1; then
+  cat >&2 <<EOF
+
+WARNING: credentials were written to $KUBECONFIG_FILE but the first call
+failed. If it says Forbidden, you ARE authenticated and are missing a
+Kubernetes RBAC role on this cluster — report that as a finding for a human.
+Do not retry with --admin and do not look for a key.
+EOF
+  exit 1
+fi
+
+cat <<EOF
+
+[aks-login] OK — cluster '$CLUSTER' is reachable as the bot's Entra account.
+
+Use it by pointing KUBECONFIG at this file, per command:
+
+    export KUBECONFIG=$KUBECONFIG_FILE
+    kubectl get pods -n <namespace>
+
+Or with the k8s MCP tools, by passing:  kubeconfig="$KUBECONFIG_FILE"
+
+Leave KUBECONFIG UNSET to go back to claw-code's own cluster (the pod's
+in-cluster ServiceAccount). Do not copy this file to ~/.kube/config — that
+would shadow the in-cluster identity the tester/reviewer cron jobs rely on.
+EOF

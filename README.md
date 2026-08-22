@@ -30,8 +30,8 @@ claw-code/
 │   ├── 050-issue-watcher.yaml         # Issue-watcher CronJob + RBAC + chat skill
 │   └── tools/                         # Per-tool TOOLS-*.md (assembled into openclaw-tools-md ConfigMap by deploy.yml)
 └── .github/workflows/
-    ├── validate.yml      # On PR to main: check secrets, terraform plan, docker build (no push)
-    ├── deploy.yml        # On push to main: terraform apply, build+push image, kubectl apply, rollout
+    ├── validate.yml      # On PR to main: check secrets, tofu plan, docker build (no push)
+    ├── deploy.yml        # On push to main: tofu apply, build+push image, kubectl apply, rollout
     ├── seal-secrets.yml  # Read GH secrets, kubectl apply the Secret directly to the cluster (filename is historical — no kubeseal involved any more)
     └── codeql.yml        # JS security scan
 ```
@@ -54,7 +54,7 @@ and applies a plain Kubernetes Secret straight to the cluster via
 
 2. **User-Assigned Managed Identity** for GitHub Actions OIDC:
    ```bash
-   az identity create --name github-claw-code --resource-group claw-code
+   az identity create --name deploy-claw-code --resource-group claw-code
    ```
    Note the `clientId` for `AZURE_CLIENT_ID`.
 
@@ -69,14 +69,38 @@ and applies a plain Kubernetes Secret straight to the cluster via
 
 4. **Role assignments** on the identity:
    ```bash
-   MI_PRINCIPAL_ID=$(az identity show --name github-claw-code --resource-group claw-code --query principalId -o tsv)
+   MI_PRINCIPAL_ID=$(az identity show --name deploy-claw-code --resource-group claw-code --query principalId -o tsv)
    RG_ID=$(az group show --name claw-code --query id -o tsv)
 
    az role assignment create --role "Contributor" --assignee-object-id $MI_PRINCIPAL_ID --scope $RG_ID
    az role assignment create --role "Storage Account Contributor" --assignee-object-id $MI_PRINCIPAL_ID --scope $RG_ID
    ```
 
-5. **Terraform state** already exists:
+5. **State storage access.** The state lives in the `mytofustates` account,
+   which is in a *different* resource group, so the grants above do not reach
+   it. Without this, `tofu init` fails with `AuthorizationPermissionMismatch`
+   while listing blobs:
+   ```bash
+   SA_ID=$(az storage account show --name mytofustates --query id -o tsv)
+   az role assignment create --role "Storage Blob Data Contributor" \
+     --assignee-object-id $MI_PRINCIPAL_ID --assignee-principal-type ServicePrincipal \
+     --scope "$SA_ID"
+   ```
+
+6. **Key Vault access for the state encryption key.** The state is encrypted
+   with the RSA key named `claw-code` in `kv-mytofustates`, and the deploy
+   identity authenticates to it as itself — so it needs crypto rights on that
+   key. The vault is RBAC-enabled and lives in a different resource group, so
+   the grants above do not reach it:
+   ```bash
+   KEY_ID=$(az keyvault key show --vault-name kv-mytofustates --name claw-code --query key.kid -o tsv)
+   KEY_SCOPE="/subscriptions/<sub>/resourceGroups/terraform/providers/Microsoft.KeyVault/vaults/kv-mytofustates/keys/claw-code"
+   az role assignment create --role "Key Vault Crypto User" \
+     --assignee-object-id $MI_PRINCIPAL_ID --assignee-principal-type ServicePrincipal \
+     --scope "$KEY_SCOPE"
+   ```
+
+7. **OpenTofu state** already exists:
    - Account: `mytofustates`
    - Container: `claw-code`
    - Key: `dev.tfstate`
@@ -139,7 +163,7 @@ matrix.
 
 ---
 
-## Stage 1: Terraform (Infrastructure)
+## Stage 1: OpenTofu (Infrastructure)
 
 ### What gets deployed
 
@@ -151,12 +175,12 @@ matrix.
 | Default-deny NetworkPolicies + DNS/HTTPS allow rules | Pure `kubernetes_network_policy_v1`, no controller required |
 | Role assignments: AcrPull on the deploy MI + AKS kubelet identity | Required so both CI and the cluster can read the registry |
 
-### Terraform workflow
+### OpenTofu workflow
 
-- **PR to `main`**: `validate.yml` runs `terraform init/validate/plan` and posts a summary; nothing is applied.
-- **Merge to `main`**: `deploy.yml` runs `terraform apply -auto-approve` as its first job, then builds + pushes the image, then `kubectl apply -f k8s/`, then rolls the openclaw deployment.
+- **PR to `main`**: `validate.yml` runs `tofu init/validate/plan` and posts a summary; nothing is applied.
+- **Merge to `main`**: `deploy.yml` runs `tofu apply -auto-approve` as its first job, then builds + pushes the image, then `kubectl apply -f k8s/`, then rolls the openclaw deployment.
 
-### Terraform variables
+### OpenTofu variables
 
 | Variable | Default | Description |
 |---|---|---|
@@ -171,6 +195,48 @@ matrix.
 | `unique_suffix` | `dev1` | Appended to globally-unique resource names (ACR, storage account) |
 
 ---
+
+### Why OpenTofu, and what that forbids
+
+This project is **OpenTofu only**. Two things in `backend.tf` are OpenTofu
+features that HashiCorp Terraform cannot parse at all:
+
+- `container_name = var.app_name` — a variable in the backend block, resolved
+  by early evaluation at `tofu init`, before state exists.
+- the `encryption` block, which wraps the state with the RSA key named
+  `claw-code` in the `kv-mytofustates` Key Vault.
+
+Running `terraform` here fails on the configuration, and even if it parsed it
+could not decrypt the state. Use `tofu`. CI does the same, via
+`opentofu/setup-opentofu` pinned to `TOFU_VERSION` in `/VERSIONS`.
+
+The one thing still spelled `terraform` is the **Azure resource group** that
+holds the state storage account. That is a resource name, not a tool.
+
+> **State is encrypted from the first apply.** There is no plaintext state to
+> migrate and no decryption fallback: a state that reverted to plaintext is
+> rejected rather than quietly accepted.
+
+## When the image is rebuilt — and when it is not
+
+The deploy publishes the image under `OPENCLAW_VERSION` from `/VERSIONS`, and
+skips the build entirely when that tag is already in ACR. Most merges change
+manifests, workflows or documentation and not the image; rebuilding ~1.8&nbsp;GB
+of toolchain to publish an identical layer set costs the better part of twenty
+minutes for nothing.
+
+That makes one rule, and it applies to any agent or person working here:
+
+| You changed | Bump `OPENCLAW_VERSION`? |
+| --- | --- |
+| anything under `builder/` that must reach the cluster | **Yes** |
+| a pin in `/VERSIONS` (a CLI, an MCP server, a scanner) | **Yes** |
+| `k8s/*.yaml` manifests | No — applied directly |
+| `.github/workflows/*` | No — read per run |
+| `README.md` or other documentation | No |
+
+Leave it alone and the deploy reuses what is already in ACR — correctly,
+because nothing said otherwise. Bump the trailing `.N` for an ordinary change.
 
 ## Stage 2: Custom Docker Image
 

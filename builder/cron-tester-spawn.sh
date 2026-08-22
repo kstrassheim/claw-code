@@ -3,40 +3,89 @@
 #
 # Calls the read-only tester-tick planner to produce a JSON plan,
 # then for each entry with toSpawn=true kubectl-exec's a tester-runner
-# subprocess into the claw-code pod. The runner does its own thing
+# subprocess into the openclaw pod. The runner does its own thing
 # (per-repo lock, last-head-changed gate, agent invocation, draft
 # processing, issue creation) and exits.
 #
-# Concurrency lives entirely in the claw-code container's filesystem:
+# Concurrency lives entirely in the openclaw container's filesystem:
 # per-repo lock dir under ~/.openclaw/.tester-locks/<owner>__<name>/.
 # This script does NOT decide whether to spawn — it only translates
 # the planner's output into kubectl invocations.
+#
+# The schedule (4-59/10) is deliberately offset from the issue-watcher
+# (*/5) and the pull-request reviewer (2-59/5) so no two planners fire
+# in the same minute and race each other for a model slot.
+#
+# REPORTING IS PART OF THE JOB. A tick that spawned nothing has to say
+# WHICH of the several reasons it was: held back behind the solver's or
+# the reviewer's queue, denied by the allowed-projects list, or unable
+# to read that list at all. The generic tail line alone
+# ("spawned=0, skipped=0") reads like a broken allowlist in every one of
+# those cases, and sends whoever is on call to look at the wrong thing.
 set -euo pipefail
 
 NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
 
-# Resolve the running main pod (Deployment.metadata.name == "claw-code"
-# and the pod selector is `app=claw-code`, not `app=openclaw` — that
-# label was renamed when the namespace was renamed).
 OPENCLAW_POD=$(kubectl -n "$NAMESPACE" get pod \
-    -l app=claw-code \
+    -l app=openclaw,component=server \
     -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
     | awk '{print $1}')
-test -n "$OPENCLAW_POD" || { echo "ERROR: no Running claw-code pod found in $NAMESPACE" >&2; exit 1; }
+if [ -z "$OPENCLAW_POD" ]; then
+  OPENCLAW_POD=$(kubectl -n "$NAMESPACE" get pod \
+      -l app=openclaw \
+      -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
+      | awk '{print $1}')
+fi
+test -n "$OPENCLAW_POD" || { echo "ERROR: no Running openclaw pod found in $NAMESPACE" >&2; exit 1; }
 export OPENCLAW_POD
-echo "claw-code pod: $OPENCLAW_POD"
+echo "openclaw pod: $OPENCLAW_POD"
 
-PLAN=$(/usr/local/bin/tester-tick)
+# WHY THESE ARE NOT ABSOLUTE PATHS.
+#
+# Everything under builder/ ships twice — baked into the image at
+# /usr/local/bin, and generated into ConfigMaps that mount at
+# /opt/claw-scripts, which comes FIRST on PATH so an edit reaches the cluster
+# without an image rebuild. That is the whole point of the ConfigMap.
+#
+# Naming the image path here defeated it silently. The mount was present, the
+# file in it was current, and nothing ever executed it: every runner and tick
+# was spawned as /usr/local/bin/<name>, so a script edit shipped by ConfigMap
+# sat there being correct and unread until the next version bump. Two fixes
+# landed that way, and the only symptom was that the bot kept doing the old
+# thing.
+#
+# Everything here is named WITHOUT a directory, so PATH decides — and PATH puts
+# the mount first in both the cron pods and the gateway (see 020-deployment and
+# 050-issue-watcher). A ConfigMap that fails to mount therefore degrades to the
+# image copy, which is stale but present, rather than to "command not found".
+#
+# A bare name is also the only form that survives this file: the spawn command
+# is built inside a double-quoted `python3 -c "..."`, where a `$VAR` would be
+# expanded by the shell before Python ever saw it and a `"` would end the
+# string outright.
+PLAN=$(tester-tick)
 echo "$PLAN" | python3 -c "
 import json, os, subprocess, sys, shlex
 plan = json.load(sys.stdin)
 
 OPENCLAW_POD = os.environ['OPENCLAW_POD']
-NAMESPACE = plan['namespace']
 
+# Error first: the earliest planner failures answer before they know the
+# namespace, so reading it up front would turn a clear message into a KeyError.
 if plan.get('error'):
     print(f\"planner error: {plan['error']}\", file=sys.stderr)
     sys.exit(1)
+NAMESPACE = plan['namespace']
+
+# Held back on purpose: the issue solver or the reviewer still has work, and
+# testing waits for both to drain ('first solve and merge, then test'). Say so
+# explicitly, WITH the queue detail — otherwise this tick is indistinguishable
+# from an empty allowlist, which is a completely different thing to fix.
+if plan.get('skipped'):
+    q = plan.get('queues') or {}
+    detail = ', '.join(f'{k}={v}' for k, v in sorted(q.items()))
+    print(f\"tester held back — {plan['skipped']}\" + (f' [{detail}]' if detail else ''))
+    sys.exit(0)
 
 spawned = 0
 skipped = 0
@@ -52,12 +101,11 @@ for r in plan.get('repos', []):
     runner_args = shlex.quote(repo)
     remote_cmd = (
         f'setsid bash -c '
-        + shlex.quote(f'nohup /usr/local/bin/tester-runner {runner_args} >/dev/null 2>&1 </dev/null &')
+        + shlex.quote(f'nohup tester-runner {runner_args} >/dev/null 2>&1 </dev/null &')
         + ' >/dev/null 2>&1 </dev/null &'
     )
-    # Container name inside the pod is 'claw-code' (not 'openclaw').
     proc = subprocess.run(
-        ['kubectl', '-n', NAMESPACE, 'exec', OPENCLAW_POD, '-c', 'claw-code',
+        ['kubectl', '-n', NAMESPACE, 'exec', OPENCLAW_POD, '-c', 'openclaw',
          '--', 'bash', '-c', remote_cmd],
         capture_output=True, text=True, timeout=30,
     )
@@ -69,5 +117,29 @@ for r in plan.get('repos', []):
         print(f'spawned tester for {repo}: {prior} -> {head}')
         spawned += 1
 
-print(f'tester tick done: spawned={spawned}, skipped={skipped}')
+# Allowlist denials, named. 'not-permitted' is an answer (the owner did not
+# grant this repository); 'allowlist-unavailable' means we could not ask, and
+# is a fault to fix rather than a decision to respect.
+denied = sorted({r['repo'] for r in plan.get('repos', [])
+                 if str(r.get('reason','')) == 'not-permitted'})
+if plan.get('allowlistAvailable') is False:
+    print('tester held back — could not read the allowed-projects list, so nothing '
+          'was tested. Check the openclaw pod and ~/.openclaw/projects-allowed.list',
+          file=sys.stderr)
+elif not plan.get('allowedProjects'):
+    print('tester held back — no repositories are permitted yet '
+          '(grant one from chat with: projects add <owner>/<repo>)')
+elif denied:
+    print(f'not permitted ({len(denied)}): ' + ', '.join(denied[:10]))
+
+unchanged = [r['repo'] for r in plan.get('repos', [])
+             if r.get('reason') == 'head-unchanged']
+locked = [r['repo'] for r in plan.get('repos', [])
+          if r.get('reason') == 'lock-held']
+if unchanged:
+    print(f'already tested at current HEAD ({len(unchanged)}): ' + ', '.join(unchanged[:10]))
+if locked:
+    print(f'tester already in flight ({len(locked)}): ' + ', '.join(locked[:10]))
+print(f'tester tick done: spawned={spawned}, skipped={skipped}, '
+      f'permitted={plan.get(\"allowedProjects\")}')
 "

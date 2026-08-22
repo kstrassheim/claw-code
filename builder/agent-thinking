@@ -1,0 +1,145 @@
+#!/bin/sh
+# agent-thinking: read and change how hard each subsystem thinks, at runtime.
+#
+# Backs the `thinking` commands of the developer / tester / reviewer chat
+# skills. Writes ~/.openclaw/agent-thinking.conf on the workspace PVC, read by
+# every runner at the start of a run — so a change applies to the NEXT spawned
+# run, with nothing restarted and nothing redeployed. dev and prod have
+# separate PVCs, so a change is confined to the environment it was made in.
+#
+# Usage:
+#   agent-thinking list
+#   agent-thinking get   <key>
+#   agent-thinking set   <key>|all <off|minimal|low|medium|high|default>
+#   agent-thinking reset <key>|all
+#
+# Keys: solver · planning · tester · reviewer
+#
+# `default` sends nothing and inherits `thinkingDefault` from the config,
+# which is what an untouched deployment does.
+#
+# WHAT THE LEVELS REALLY DO — they are NOT equivalent across providers:
+#   kimi/k3    five levels collapse onto three (minimal/low/medium all send
+#              "low"; high sends "high"; xhigh/max send "max")
+#   minimax/*  the anthropic path is effectively ON or OFF — the level does
+#              not currently change the token budget
+#   mistral/*  no reasoning declared; the flag does nothing at all
+#
+# Exit codes: 0 ok · 1 usage/unknown key · 2 unknown level · 3 write failed
+set -eu
+
+STATE_DIR="${HOME:-/home/node}/.openclaw"
+AGENT_THINKING_FILE="${AGENT_THINKING_FILE:-$STATE_DIR/agent-thinking.conf}"
+LIB="$(dirname "$0")/agent-thinking.sh"
+[ -r "$LIB" ] || LIB=/usr/local/bin/agent-thinking.sh
+# shellcheck source=/dev/null
+. "$LIB"
+
+KEYS='solver|the issue solver'"'"'s implementation turns
+planning|story-point estimation and sprint planning
+tester|the deployment tester'"'"'s run
+reviewer|the pull-request reviewer'"'"'s run'
+
+_known() { printf '%s\n' "$KEYS" | cut -d'|' -f1 | grep -qx "$1"; }
+
+_write() {
+  mkdir -p "$(dirname "$AGENT_THINKING_FILE")"
+  _tmp="$AGENT_THINKING_FILE.tmp.$$"
+  cat > "$_tmp" || return 3
+  mv -f "$_tmp" "$AGENT_THINKING_FILE" || { rm -f "$_tmp"; return 3; }
+}
+
+_header() {
+  cat <<'EOF'
+# How hard each subsystem thinks. Managed from chat — see the `thinking`
+# commands of the developer / tester / reviewer skills.
+#
+# Read at the START of every runner, so a change applies to the next spawned
+# run. An unknown level is ignored and the default inherited, rather than
+# passed through — openclaw rejects a bad level and the whole turn dies.
+EOF
+}
+
+_strip_key() {
+  { [ -r "$AGENT_THINKING_FILE" ] && sed 's/#.*//' "$AGENT_THINKING_FILE" | awk 'NF' \
+      | grep -vE "^[[:space:]]*$(printf '%s' "$1" | sed 's/\./\\./g')[[:space:]]*=" || true; }
+}
+
+_set_one() {
+  _strip_key "$1" > "/tmp/at.$$"
+  { _header; cat "/tmp/at.$$"; [ "$2" = "default" ] || echo "$1 = $2"; } | _write
+  rm -f "/tmp/at.$$"
+}
+
+cmd_list() {
+  printf '%-10s %-10s %s\n' KEY THINKING SELECTS
+  printf '%s\n' "$KEYS" | while IFS='|' read -r k desc; do
+    v="$(agent_thinking "$k" 2>/dev/null || true)"
+    if [ -n "$v" ]; then
+      printf '%-10s %-10s %s *\n' "$k" "$v" "$desc"
+    else
+      printf '%-10s %-10s %s\n' "$k" "(config)" "$desc"
+    fi
+  done
+  echo
+  echo "* = set explicitly. Everything else inherits thinkingDefault from the"
+  echo "  rendered config."
+  echo
+  echo "Levels are not equivalent across providers:"
+  echo "  kimi      minimal/low/medium all send \"low\"; high -> high; max -> max"
+  echo "  minimax   effectively ON or OFF — the level does not change the budget"
+  echo "  mistral   no reasoning declared; the flag does nothing"
+  echo "Store: $AGENT_THINKING_FILE"
+}
+
+cmd_get() {
+  [ $# -ge 1 ] || { echo "usage: agent-thinking get <key>" >&2; return 1; }
+  _known "$1" || { echo "unknown key: $1" >&2; return 1; }
+  v="$(agent_thinking "$1" 2>/dev/null || true)"
+  printf '%s\n' "${v:-default}"
+}
+
+cmd_set() {
+  [ $# -ge 2 ] || { echo "usage: agent-thinking set <key>|all <level>" >&2; return 1; }
+  key="$1"; val="$(printf '%s' "$2" | tr 'A-Z' 'a-z')"
+  [ "$key" = "all" ] || _known "$key" || { echo "unknown key: $key" >&2; return 1; }
+  case "$val" in
+    default|inherit|auto) val=default ;;
+    *) if ! _at_valid "$val"; then
+         echo "unknown level: $2 (use: $AGENT_THINKING_LEVELS, or default)" >&2
+         echo "  openclaw rejects anything else and the whole turn dies, so it" >&2
+         echo "  is refused here rather than written to the store." >&2
+         return 2
+       fi ;;
+  esac
+  if [ "$key" = "all" ]; then
+    for k in $(printf '%s\n' "$KEYS" | cut -d'|' -f1); do _set_one "$k" "$val"; done
+    echo "all subsystems -> $val"
+  else
+    _set_one "$key" "$val"
+    echo "$key -> $val"
+  fi
+  [ "$val" = "off" ] && echo "NOTE: 'off' disables reasoning entirely for that subsystem." || true
+  echo "Applies to the next run that starts; anything in flight keeps its level."
+}
+
+cmd_reset() {
+  [ $# -ge 1 ] || { echo "usage: agent-thinking reset <key>|all" >&2; return 1; }
+  if [ "$1" = "all" ]; then
+    _header | _write
+    echo "all subsystems back to the config default"
+    return 0
+  fi
+  _known "$1" || { echo "unknown key: $1" >&2; return 1; }
+  _set_one "$1" default
+  echo "$1 back to the config default"
+}
+
+case "${1:-list}" in
+  list)  shift 2>/dev/null || true; cmd_list ;;
+  get)   shift; cmd_get "$@" ;;
+  set)   shift; cmd_set "$@" ;;
+  reset) shift; cmd_reset "$@" ;;
+  -h|--help|help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "unknown command: $1" >&2; sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+esac

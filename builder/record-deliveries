@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Record a story as delivered wherever the merge actually happened.
+
+WHY THIS EXISTS
+The solver writes `mergedAt` on a story's planning document when IT merges the
+pull request. That covers the ordinary path and nothing else. A human who
+merges the work themselves — reviewing a branch and pressing the button, which
+is a completely normal thing to do — leaves the story open in the store
+forever. The work shipped; the sprint says it did not.
+
+That is not a cosmetic gap. It reads out as a sprint that missed its
+commitment, and the response to a missed commitment is to plan less next time.
+So a handful of human merges quietly ratchets the whole forecast down.
+
+This sweep runs on the ordinary five-minute tick, looks at pull requests
+merged recently, and fills in `mergedAt` for any story whose document does not
+have one yet.
+
+WHAT IT WILL NOT DO
+  - It only ever FILLS AN EMPTY FIELD. It never corrects or overwrites a value
+    that is already there. Correcting historical records is a separate,
+    deliberate, dry-run-first job; a sweep that runs every five minutes and
+    rewrites existing timestamps can do a great deal of damage very quickly
+    before anyone notices.
+  - It does not guess which pull request delivered an issue. That decision is
+    `delivering_pr.pick`, which requires the runner's own branch or a real
+    closing keyword, and takes the newest merge when several qualify.
+  - It never raises. It is one non-essential step inside a tick that also
+    spawns solvers; failing the tick to record a statistic would trade the
+    work for the bookkeeping about the work.
+
+WHY IT LOOKS AT PULL REQUESTS AND NOT AT ISSUES
+There is no endpoint that answers "which pull request closed this issue".
+Asking per-issue would mean a request for every open story on every tick, most
+of them answering "nothing changed". Recently-merged pull requests are the
+small set that can possibly have changed anything, so the sweep starts there
+and works back to the issue.
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import delivering_pr  # noqa: E402
+import planning_docs  # noqa: E402
+import planning_store  # noqa: E402
+
+GH_API = os.environ.get("GITHUB_API", "https://api.github.com")
+TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
+# The host segment of a story's document key. Must match what the runners pass
+# to `planning-record --host`, or this sweep looks up keys that nothing wrote
+# and silently fills in nothing at all.
+HOST = os.environ.get("PLANNING_HOST", "github")
+
+# How far back to sweep. Comfortably wider than the tick interval, because a
+# tick that fails or is skipped must not create a permanent hole: the next one
+# still sees the merge. Overlap is free — filling an already-filled field is a
+# no-op by construction.
+LOOKBACK_MINUTES = int(os.environ.get("DELIVERIES_LOOKBACK_MINUTES", "180"))
+MAX_PRS = int(os.environ.get("DELIVERIES_MAX_PRS", "50"))
+HTTP_TIMEOUT = int(os.environ.get("DELIVERIES_HTTP_TIMEOUT", "20"))
+
+
+def log(msg: str) -> None:
+    sys.stderr.write(f"[deliveries] {msg}\n")
+
+
+def api(path: str):
+    """One GET against the API. Returns parsed JSON, or None on any failure.
+
+    Shells out to curl rather than using urllib so it inherits the cluster's
+    proxy and CA configuration exactly like every other call the image makes,
+    and so `-f`'s non-zero exit cleanly separates "the server said no" from
+    "we never reached the server".
+    """
+    if not TOKEN:
+        return None
+    url = path if path.startswith("http") else f"{GH_API}{path}"
+    try:
+        out = subprocess.run(
+            ["curl", "-fsS", "--max-time", str(HTTP_TIMEOUT),
+             "-H", f"Authorization: Bearer {TOKEN}",
+             "-H", "Accept: application/vnd.github+json",
+             "-H", "X-GitHub-Api-Version: 2022-11-28",
+             url],
+            capture_output=True, text=True, timeout=HTTP_TIMEOUT + 10)
+    except Exception as exc:                      # noqa: BLE001
+        log(f"request failed: {exc}")
+        return None
+    if out.returncode != 0:
+        log(f"request rejected ({out.returncode}): {url}")
+        return None
+    try:
+        return json.loads(out.stdout)
+    except ValueError:
+        log(f"unparseable response from {url}")
+        return None
+
+
+def recently_merged_prs():
+    """Pull requests merged inside the lookback window, newest first."""
+    since = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(minutes=LOOKBACK_MINUTES))
+    query = f"is:pr is:merged merged:>={since.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    encoded = urllib.parse.quote(query)
+    data = api(f"/search/issues?q={encoded}&sort=updated&order=desc"
+               f"&per_page={min(MAX_PRS, 100)}")
+    if not isinstance(data, dict):
+        return []
+    return [i for i in data.get("items", []) if isinstance(i, dict)]
+
+
+def repo_of(item) -> str:
+    """`owner/name` for a search result, which carries only a repository URL."""
+    url = str(item.get("repository_url") or "")
+    parts = url.rstrip("/").split("/")
+    if len(parts) >= 2:
+        return f"{parts[-2]}/{parts[-1]}"
+    return ""
+
+
+def main() -> int:
+    if not TOKEN:
+        log("GITHUB_TOKEN is not set — nothing to do")
+        return 0
+    if not planning_store.enabled():
+        log("planning store is not configured — nothing to do")
+        return 0
+
+    filled = 0
+    examined = 0
+
+    for item in recently_merged_prs():
+        repo = repo_of(item)
+        number = item.get("number")
+        if not repo or not number:
+            continue
+
+        # The search result is an issue-shaped view of the pull request and
+        # carries no head ref or merge time, so fetch the pull request itself.
+        pull = api(f"/repos/{repo}/pulls/{number}")
+        if not isinstance(pull, dict):
+            continue
+        examined += 1
+
+        body = pull.get("body") or ""
+        head = pull.get("head") or {}
+        head_ref = head.get("ref") if isinstance(head, dict) else ""
+
+        # Which issues could this have delivered? Closing keywords in the
+        # body, plus the runner's own branch naming when it carries a number.
+        wanted = set(delivering_pr.closed_issues(body, repo=repo))
+        branch_issue = ""
+        for part in str(head_ref or "").split("-"):
+            if part.isdigit():
+                branch_issue = part
+                break
+        if branch_issue and str(head_ref).startswith(f"issue-{branch_issue}-"):
+            wanted.add(branch_issue)
+
+        for issue_number in sorted(wanted):
+            issue = api(f"/repos/{repo}/issues/{issue_number}")
+            if not isinstance(issue, dict):
+                continue
+
+            # Confirm against the full rule rather than trusting the scan
+            # above: the branch heuristic is a hint, `pick` is the decision.
+            chosen = delivering_pr.pick(
+                [pull], issue_number,
+                branch=f"issue-{issue_number}-fix",
+                not_before=issue.get("created_at") or "",
+                repo=repo)
+            if chosen is None:
+                continue
+
+            doc_id = planning_docs.story_pk(HOST, repo, issue_number)
+            existing = planning_store.query(
+                {"id": doc_id, "type": "story"}, limit=1)
+            if not existing:
+                # No story document: the bot never worked this issue, so
+                # there is no sprint commitment to reconcile. Recording one
+                # now would invent a story that was never planned.
+                continue
+            story = existing[0]
+            if story.get("mergedAt"):
+                continue
+
+            story["mergedAt"] = chosen.get("merged_at")
+            story["deliveredBy"] = f"{repo}#{chosen.get('number')}"
+            if planning_store.write(story):
+                filled += 1
+                log(f"recorded {repo}#{issue_number} delivered by "
+                    f"#{chosen.get('number')} at {story['mergedAt']}")
+
+    log(f"examined {examined} merged pull request(s), filled {filled} story "
+        f"delivery date(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception as exc:                      # noqa: BLE001
+        # Never fail the tick. This is bookkeeping about the work, and the
+        # tick's actual job is spawning the work.
+        log(f"sweep failed, continuing: {exc}")
+        raise SystemExit(0)

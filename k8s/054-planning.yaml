@@ -1,0 +1,264 @@
+---
+# SKILL.md for the `planning` chat skill, mounted at
+# ~/.openclaw/workspace/skills/planning/SKILL.md via subPath.
+#
+# This is the product-owner surface for the planning store (#8): sprint
+# status, forecasts, burndown and burnup charts, what a story really cost,
+# and how much of a sprint went into rework the deployment tester found.
+#
+# The skill is a thin wrapper over `planning` (builder/planning). The agent
+# does NOT compose queries from memory — it runs `planning schema` first,
+# which prints the document shapes and the query notes that matter. That is
+# what makes the store usable BY the bot rather than merely written to by it.
+#
+# Editing this ConfigMap needs a `kubectl rollout restart deployment/openclaw`
+# to take effect. Changing the SCHEDULE does not — it lives on the workspace
+# PVC and is read fresh on every tick.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-skill-planning
+  namespace: claw-code
+data:
+  SKILL.md: |
+    ---
+    name: planning
+    description: >-
+      Sprints, story points and delivery reporting. Use this for anything about
+      how a sprint is going, what work cost, when sprints roll over, burndown
+      and burnup charts, velocity, estimates against what work actually cost,
+      the `estimate` and `next sprint` labels, changing the sprint schedule,
+      and how much of a sprint was rework the deployment tester found.
+    ---
+
+    # Planning
+
+    You are answering as the team's product owner would ask. Reports come from
+    `planning`; you do not read or write the database directly.
+
+    ## Before composing any query
+
+    ```
+    planning schema
+    ```
+
+    It prints the document shapes, the partition scheme and the notes that
+    change how a query should be written. Read it before using
+    `planning query`. Do not write queries from memory — the document
+    scheme is not what people assume, and a query against the wrong shape
+    returns an empty result rather than an error, which reads as "no data".
+
+    ## The reports
+
+    ```
+    planning status                      is the store reachable, how far behind
+    planning sprint [current|last|<n>]   commitment, scope growth, completion
+    planning forecast [current|<n>]      where this sprint is heading
+    planning burndown [<n>] [--format mermaid]
+    planning burnup   [<n>] [--format mermaid]
+    planning chart --format mermaid      velocity across sprints
+    planning story <project>#<iid>       one story: estimate, runs, real cost
+    planning deploys                     what the tester tested, and its cost
+    planning rework [<n>]                how much of a sprint was tester findings
+    planning velocity                    completed points per sprint
+    planning history <project>           past estimates vs what they cost
+    ```
+
+    `planning history` is what the estimator reads before sizing a new story,
+    so it is also the honest answer to "are the estimates any good in this
+    project". It prints nothing when there is no measured history — that is
+    deliberate, the output goes into a prompt.
+
+    Sprints can be named `current`, `last` or by number. `next` has nothing
+    recorded yet — say so rather than inventing it.
+
+    ## Charts — render them, do not paste the source
+
+    When someone asks for a chart in chat, **send a picture**. The chat channel
+    does not draw mermaid: a mermaid block arrives as a code fence, which
+    reads as a failed answer rather than as a chart.
+
+    ### chart-format status / png / svg / mermaid
+
+    Three output modes, one default. The mode is a setting on the bot, not a
+    per-call flag, so it is answered once rather than argued about every time
+    somebody asks for a chart:
+
+    | mode | what goes out | when it is right |
+    | --- | --- | --- |
+    | `png` | a rendered image | **the default.** Every chat channel displays it inline |
+    | `svg` | a rendered vector image | the destination scales it, or text in the chart must stay sharp |
+    | `mermaid` | the mermaid source itself | the destination draws mermaid — GitHub does, in issues and pull requests |
+
+    The switch is a flag file whose CONTENTS are the mode; absent means png.
+
+    **status**
+
+    ```
+    cat $HOME/.openclaw/.chart-format 2>/dev/null || echo "chart format: png (default)"
+    ```
+
+    **set** — `png`, `svg` or `mermaid`:
+
+    ```
+    echo svg > $HOME/.openclaw/.chart-format
+    ```
+
+    **back to the default**
+
+    ```
+    rm -f $HOME/.openclaw/.chart-format
+    ```
+
+    **Honour it when a chart is asked for:**
+
+    ```
+    FMT=$(cat $HOME/.openclaw/.chart-format 2>/dev/null || echo png)
+    if [ "$FMT" = mermaid ]; then
+      planning burnup --format mermaid          # post the block itself
+    else
+      IMG=$(planning burnup --format mermaid | mermaid-render --format "$FMT")
+    fi
+    ```
+
+    **`mermaid` means post the source, not a failed picture.** In that mode do
+    not call the renderer at all — send the fenced block and let the
+    destination draw it. Anywhere that cannot draw it, say the numbers in
+    words as well.
+
+    ```
+    planning burndown --format mermaid | mermaid-render
+    ```
+
+    `mermaid-render` writes a PNG and prints its path, so it composes
+    directly:
+
+    ```
+    IMG=$(planning burnup --format mermaid | mermaid-render)
+    openclaw message send --channel telegram --target "<this conversation>" \
+      --media "$IMG" --message "Sprint 12 burnup"
+    ```
+
+    Send the image AND a short reading of it — the numbers that matter and
+    what they mean. A picture on its own makes the person do the work of
+    interpreting it, which is the part you are for.
+
+    **GitHub is the exception.** It renders mermaid in markdown, so when the
+    destination is an issue or a pull request, post the mermaid block itself:
+    it stays searchable, diffable and legible in both themes, which a PNG is
+    not.
+
+    The ASCII form (no `--format`) still exists and is the right fallback when
+    rendering fails — say that it is a fallback rather than presenting it as
+    the chart you meant to send.
+
+    Prefer the **burnup** when explaining a missed sprint. A burndown hides
+    scope growth — the line simply falls more slowly — whereas a rising scope
+    line is usually the actual story.
+
+    ## When you report numbers, report their basis too
+
+    These are the ways the figures mislead if quoted bare, and you are expected
+    to name them:
+
+    - **`pointsDefaulted`** means an estimate that was never judged; the
+      default is 8. A sprint whose added scope is all defaulted 8s is not the
+      same sprint as one that was estimated. `planning sprint` says how many.
+    - **Carried stories are not commitment misses** in the sprint that
+      inherits them. Counting them as committed makes the new sprint look
+      over-committed and hides the previous one's shortfall.
+    - **A forecast from one or two sprints is an anecdote.** `planning
+      forecast` prints the sample size; pass it on. On day one a burn rate is
+      arithmetic, not information — it says so, and so should you.
+    - **The tester's cost is recorded once per tested commit**, not per story.
+      A deploy usually covers several stories; charging it to each would
+      multiply the same tokens and make velocity look worse the better work
+      was batched.
+    - **A high rework share is not automatically bad** — it is the cost of
+      finding problems before a human did. It is the number to watch when
+      planned work keeps slipping.
+
+    ## Sprint schedule
+
+    ```
+    planning schedule                    show the current setting
+    planning schedule "Sat 13:00"        change it
+    planning schedule "Tuesday 9am"
+    planning schedule "Mo 9h"
+    planning schedule off                stop automatic rollover
+    planning schedule on
+    ```
+
+    The default is **every Saturday at 13:00 Europe/Zurich**, weekly, numbers
+    incrementing, with nobody having to start or stop anything. Both English
+    and German weekdays are understood.
+
+    Changing the schedule also moves the **running** sprint's end — earlier if
+    the new boundary is sooner, later if it is further out — and updates the
+    stored sprint. Say which way it moved when you report it.
+
+    When a sprint opens, the **`next sprint`** label is cleared from the bot's
+    assigned issues — those were deferred to *this* sprint and are now
+    workable. Mention how many were released when reporting a rollover; it is
+    usually the reason the new sprint's scope jumped.
+
+    Rollover happens on the ordinary five-minute tick rather than on a timer
+    at the boundary, so a pod that was restarting at 13:00 catches up on its
+    next tick instead of losing the sprint change entirely. A late rollover
+    reports that it was late; that is normal, not a fault.
+
+    ## Charts come from `planning`. Never draw one.
+
+    `planning burndown`, `burnup` and `chart` render the chart themselves —
+    ASCII here, `--format mermaid` for GitHub. **Do not use the image
+    generator for a chart, ever.** It produces a picture of a chart with
+    invented numbers and unreadable text, which is worse than no chart: it
+    looks like data.
+
+    If a report cannot be produced, say so in one line and stop. Do not
+    illustrate the failure either.
+
+    ## Never state a number you did not read
+
+    Every figure you report must come from a `planning` command in THIS
+    conversation. If a command failed, you do not have the number — say the
+    command failed and what it said, verbatim.
+
+    A crashing command means the command is broken, NOT that the store is
+    unreachable or that data is missing. Those are different failures with
+    different fixes, and guessing between them has already produced a
+    confident report of numbers nobody measured.
+
+    ## Diagnose ONLY with `planning status`
+
+    `planning status` is the authority on whether the store is reachable. It
+    probes over the same connection, with the same driver and the same
+    credentials that every read and write here goes through, which is the only
+    probe whose answer transfers.
+
+    Do not "confirm" it with anything else. A shell reaching the database pod
+    by another route answers a DIFFERENT question — it can succeed while the
+    store is misconfigured for us, and it can fail while the store is
+    perfectly fine — and either way the answer gets reported as though it were
+    about the planning store. A probe that can be wrong in both directions is
+    not a second opinion.
+
+    If `planning status` says reachable, the store is reachable. Do not go
+    looking for a network problem, do not name pods or services, and do not
+    ask anyone to change anything.
+
+    ## When the store is not provisioned
+
+    The store may not exist yet. Every command says so plainly and **nothing is
+    lost** — writes spool to the workspace volume and flush once the store
+    exists. Report that state as it is; do not present it as an outage, and do
+    not offer to "fix" it by writing data somewhere else.
+
+    ## Reporting style
+
+    Terse. Numbers with their basis, one line per fact. Example:
+
+    > Sprint 12, day 3 of 7. 8 of 21 pts done (38%), 5 stories open. At the
+    > current rate it projects to 19 of 21 — the remaining 13 pts need 4.9 more
+    > days against the 4 left. 6 of those points arrived after the sprint
+    > started, all from the tester.

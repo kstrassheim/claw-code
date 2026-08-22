@@ -1,33 +1,21 @@
-terraform {
-  required_version = ">= 1.3"
-
-  required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.0"
-    }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.30"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 3.0"
-    }
-    azuread = {
-      source  = "hashicorp/azuread"
-      version = "~> 3.0"
-    }
-  }
-
-  backend "azurerm" {
-    resource_group_name  = "terraform"
-    storage_account_name = "mytofustates"
-    container_name       = "claw-code"
-    key                  = "dev.tfstate"
-    use_azuread_auth = true
-  }
-}
+# SCOPE: AZURE RESOURCES ONLY.
+#
+# Everything inside the cluster — the namespace, the network policies, the
+# workloads — is owned by the manifests in k8s/ and applied with kubectl by the
+# deploy. They used to be declared HERE as well, which was two owners for one
+# object, and it also dragged the kubernetes provider into this configuration.
+#
+# That provider was configured from the cluster's own attributes:
+#
+#     host = azurerm_kubernetes_cluster.aks.kube_admin_config[0].host
+#
+# Providers are configured BEFORE the graph is walked, so on a bootstrap that
+# value is unknown, the provider falls back to its default host, and `tofu
+# plan` dies against localhost:80 before it can plan anything — making the
+# first plan impossible and forcing a two-phase apply.
+#
+# With the in-cluster resources gone there is no kubernetes provider, nothing
+# unknown to configure, and the plan works from nothing.
 
 provider "azurerm" {
   features {}
@@ -35,27 +23,15 @@ provider "azurerm" {
 
 provider "azuread" {}
 
-provider "kubernetes" {
-  # For CI: set env vars ARM_USE_OIDC=true, ARM_USE_AZUREAD_AUTH=true, then run
-  # `kubelogin convert-kubeconfig -l azurecli` to use Entra auth (requires kubelogin binary).
-  # For local dev without AAD: use the admin kubeconfig directly.
-  # We use the admin kubeconfig here so Terraform can run locally without kubelogin.
-  config_path = "/tmp/kubeconfig_clawcode"
-}
 
-provider "helm" {
-  kubernetes = {
-    config_path = "/tmp/kubeconfig_clawcode"
-  }
-}
 
 locals {
-  resource_group_name    = "claw-code"
-  cluster_name           = var.cluster_name
-  location               = var.location
-  storage_account_name   = var.storage_account_name
-  namespace              = var.namespace
-  aks_version            = "1.35.3"
+  resource_group_name  = "claw-code"
+  cluster_name         = var.cluster_name
+  location             = var.location
+  storage_account_name = var.storage_account_name
+  namespace            = var.namespace
+  aks_version          = "1.35.3"
 }
 
 # Lookup the AKS admin group by display name. The object ID changes per
@@ -70,20 +46,6 @@ data "azurerm_resource_group" "rg" {
   name = local.resource_group_name
 }
 
-# Create the claw-code namespace (needed for NetworkPolicies and later K8s resources)
-resource "kubernetes_namespace" "claw-code" {
-  metadata {
-    name = var.namespace
-    labels = {
-      "environment" = var.env
-      "project"     = "claw-code"
-    }
-  }
-  # Namespace was pre-created manually — don't fail if it already exists
-  lifecycle {
-    ignore_changes = [metadata]
-  }
-}
 
 # Get the deploy managed identity (deploy-claw-code)
 data "azurerm_user_assigned_identity" "deploy_identity" {
@@ -97,12 +59,12 @@ data "azurerm_user_assigned_identity" "deploy_identity" {
 # auth. Terraform manages only the share (azurerm_storage_share) below.
 # =============================================================================
 resource "azurerm_storage_account" "pv" {
-  name                                             = local.storage_account_name
-  resource_group_name                              = data.azurerm_resource_group.rg.name
-  location                                         = data.azurerm_resource_group.rg.location
-  account_tier                                     = "Standard"
-  account_replication_type                         = "LRS"
-  min_tls_version                                  = "TLS1_2"
+  name                       = local.storage_account_name
+  resource_group_name        = data.azurerm_resource_group.rg.name
+  location                   = data.azurerm_resource_group.rg.location
+  account_tier               = "Standard"
+  account_replication_type   = "LRS"
+  min_tls_version            = "TLS1_2"
   https_traffic_only_enabled = true
 
   tags = {
@@ -113,22 +75,22 @@ resource "azurerm_storage_account" "pv" {
 
 # Create a file share in the storage account (for K8s PV)
 resource "azurerm_storage_share" "claw_code" {
-  name             = "claw-code"
+  name               = "claw-code"
   storage_account_id = azurerm_storage_account.pv.id
-  quota             = 50  # 50 GiB
+  quota              = 50 # 50 GiB
 }
 
 # =============================================================================
 # Azure Container Registry — for the custom claw-code image
 # =============================================================================
 resource "azurerm_container_registry" "acr" {
-  name                   = "clwcodecodev${var.unique_suffix}"  # clwcodecodev + suffix, max 50 chars
-  resource_group_name    = data.azurerm_resource_group.rg.name
-  location               = data.azurerm_resource_group.rg.location
-  sku                    = "Basic"
-  admin_enabled          = false  # Entra-only auth, no admin user
+  name                = "clwcodecodev${var.unique_suffix}" # clwcodecodev + suffix, max 50 chars
+  resource_group_name = data.azurerm_resource_group.rg.name
+  location            = data.azurerm_resource_group.rg.location
+  sku                 = "Basic"
+  admin_enabled       = false # Entra-only auth, no admin user
 
-  public_network_access_enabled = true  # AKS must be able to pull; restrict via NSG rules if needed
+  public_network_access_enabled = true # AKS must be able to pull; restrict via NSG rules if needed
 
   tags = {
     environment = var.env
@@ -170,13 +132,21 @@ resource "azurerm_kubernetes_cluster" "aks" {
   kubernetes_version  = local.aks_version
   sku_tier            = "Free"
 
+  # Workload identity. Both flags are required for a pod to exchange its
+  # ServiceAccount token for an Azure AD token: the OIDC issuer publishes the
+  # keys Azure validates the token against, and the mutating webhook projects
+  # the token into the pod. Without them the federated credential in
+  # cosmosdb.tf has no issuer to trust and every Cosmos call is unauthorised.
+  oidc_issuer_enabled       = true
+  workload_identity_enabled = true
+
   default_node_pool {
-    name              = "default"
-    vm_size           = var.node_size
-    node_count        = var.node_count
-    os_disk_size_gb   = 30
-    os_disk_type      = "Managed"
-    type              = "VirtualMachineScaleSets"
+    name            = "default"
+    vm_size         = var.node_size
+    node_count      = var.node_count
+    os_disk_size_gb = 30
+    os_disk_type    = "Managed"
+    type            = "VirtualMachineScaleSets"
     # Required by the azurerm provider when changing vm_size (or any
     # other field that forces a pool rotation): AKS creates a temp pool
     # under this name, migrates workloads, deletes the old pool, then
@@ -199,9 +169,9 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 
   network_profile {
-    network_plugin     = "azure"
-    load_balancer_sku  = "standard"
-    outbound_type      = "loadBalancer"
+    network_plugin    = "azure"
+    load_balancer_sku = "standard"
+    outbound_type     = "loadBalancer"
   }
 
   tags = {
@@ -224,67 +194,8 @@ resource "azurerm_role_assignment" "aks_admin" {
 # granted manually by an Owner, or via a separate privileged identity.
 # Skipped here — requires Owner-level permissions.
 
-# =============================================================================
-# Default-deny-all NetworkPolicy — blocks ALL ingress/egress by default.
-# Add explicit allow policies for each required access pattern.
-# =============================================================================
-resource "kubernetes_network_policy_v1" "default_deny_all" {
-  metadata {
-    name      = "default-deny-all"
-    namespace = local.namespace
-  }
-  spec {
-    pod_selector {}
-    policy_types = ["Ingress", "Egress"]
-  }
-}
 
-# Allow DNS egress (required for cluster DNS resolution)
-resource "kubernetes_network_policy_v1" "allow_dns" {
-  metadata {
-    name      = "allow-dns"
-    namespace = local.namespace
-  }
-  spec {
-    pod_selector {}
-    egress {
-      to {
-        namespace_selector {
-          match_labels = {
-            "kubernetes.io/metadata.name" = "kube-system"
-          }
-        }
-      }
-      ports {
-        protocol = "UDP"
-        port     = "53"
-      }
-      ports {
-        protocol = "TCP"
-        port     = "53"
-      }
-    }
-    policy_types = ["Egress"]
-  }
-}
 
-# Allow HTTPS/443 egress (needed for cloud API calls, OIDC, image pulls, etc.)
-resource "kubernetes_network_policy_v1" "allow_https" {
-  metadata {
-    name      = "allow-https"
-    namespace = local.namespace
-  }
-  spec {
-    pod_selector {}
-    egress {
-      ports {
-        protocol = "TCP"
-        port     = "443"
-      }
-    }
-    policy_types = ["Egress"]
-  }
-}
 
 # =============================================================================
 # Terraform Output
@@ -316,6 +227,6 @@ output "kubeconfig" {
 }
 
 output "deploy_identity_client_id" {
-  description = "Client ID of the github-claw-code MI (used for Entra app registration OIDC clientID)"
+  description = "Client ID of the deploy-claw-code MI (used for Entra app registration OIDC clientID)"
   value       = data.azurerm_user_assigned_identity.deploy_identity.client_id
 }

@@ -1,0 +1,27 @@
+# Concatenation order for TOOLS.md, one filename per line.
+#
+# This used to live only inside the ArgoCD pre-sync hook, which meant the
+# order was a property of the deployment rather than of the documents. It is
+# read now by the image build AND by render-config at pod start, so both
+# assemble the same document from the same list.
+#
+# Lines starting with # are ignored. A file here that does not exist, or a
+# file present but not listed, fails check-tools-docs.py.
+TOOLS.md
+TOOLS-gitflow.md
+TOOLS-github.md
+TOOLS-gitlab.md
+TOOLS-gmail.md
+TOOLS-entra.md
+TOOLS-aws.md
+TOOLS-gcp.md
+TOOLS-alicloud.md
+TOOLS-k8s.md
+TOOLS-argocd.md
+TOOLS-terraform.md
+TOOLS-opentofu.md
+TOOLS-vscode.md
+TOOLS-debug.md
+TOOLS-security.md
+TOOLS-pentest.md
+TOOLS-powershell.md

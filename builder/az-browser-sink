@@ -1,0 +1,6 @@
+#!/bin/sh
+# az-browser-sink: $BROWSER target for az/MSAL interactive login. Instead of
+# launching a browser (headless pod), capture the authorize URL to a file the
+# agent reads and opens in its browser plugin. python webbrowser invokes
+# "$BROWSER <url>".
+echo "$1" > "$HOME/.openclaw/.az-login-url"

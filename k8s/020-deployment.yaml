@@ -6,6 +6,11 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: claw-code
+  annotations:
+    # Set by the deploy from the `pod_identity_client_id` OpenTofu output.
+    # Without it the projected token has no identity to exchange for and every
+    # Cosmos call is unauthorised.
+    azure.workload.identity/client-id: "PLACEHOLDER_POD_CLIENT_ID"
   namespace: claw-code
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -59,6 +64,10 @@ spec:
     metadata:
       labels:
         app: claw-code
+        # Opts this pod into the workload-identity webhook, which projects the
+        # ServiceAccount token the Cosmos client exchanges for an AD token.
+        # The annotation on the ServiceAccount alone does nothing without it.
+        azure.workload.identity/use: "true"
       # No `checksum/tools-md` annotation: the deploy workflow does an
       # unconditional `kubectl rollout restart deployment/openclaw` after
       # rebuilding the claw-code-tools-md ConfigMap from k8s/tools/, so the
@@ -121,6 +130,17 @@ spec:
           imagePullPolicy: Always
           command: ["/bin/sh", "/scripts/render-config.sh"]
           env:
+            # The planning store picks its backend from the environment. This
+            # deployment provides Cosmos, so no MongoDB is deployed alongside
+            # it. Substituted by the deploy from the `planning_cosmos_endpoint`
+            # OpenTofu output; the store falls back to spooling on disk while
+            # it is unset, rather than failing a run.
+            - name: PLANNING_COSMOS_ENDPOINT
+              value: "PLACEHOLDER_COSMOS_ENDPOINT"
+            - name: PLANNING_COSMOS_DATABASE
+              value: "planning"
+            - name: PLANNING_COSMOS_CONTAINER
+              value: "planning"
             - name: MISTRAL_API_KEY
               valueFrom:
                 secretKeyRef:
