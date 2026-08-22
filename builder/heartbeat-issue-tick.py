@@ -552,7 +552,14 @@ def human_has_answered(repo: str, issue: dict, bot: str) -> bool:
 def k8s_find_openclaw_pod(namespace: str) -> str:
     token = _read(f"{K8S_SA_DIR}/token")
     ctx = ssl.create_default_context(cafile=f"{K8S_SA_DIR}/ca.crt")
-    url = f"{K8S_API}/api/v1/namespaces/{namespace}/pods?labelSelector=app%3Dopenclaw"
+    # Same label the shell spawners resolve by, and the same default. Hardcoded
+    # here it meant the planner could only find the pod in a deployment whose
+    # Deployment happened to be called openclaw — the spawner would find the
+    # pod, exec fine, and then this exited 3 with "no Running openclaw pod
+    # found" a few lines later.
+    app_label = os.environ.get("OPENCLAW_APP_LABEL", "claw-code")
+    url = (f"{K8S_API}/api/v1/namespaces/{namespace}/pods"
+           f"?labelSelector=app%3D{urllib.parse.quote(app_label)}")
     req = urllib.request.Request(
         url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}
     )
@@ -561,12 +568,13 @@ def k8s_find_openclaw_pod(namespace: str) -> str:
     for item in body.get("items", []):
         if item.get("status", {}).get("phase") == "Running":
             return item["metadata"]["name"]
-    raise RuntimeError("no Running openclaw pod found")
+    raise RuntimeError(f"no Running pod with app={app_label} found")
 
 
 def kubectl_exec_capture(namespace: str, pod: str, *cmd: str, timeout: int = 15) -> tuple[int, str, str]:
     """Run a command inside the openclaw pod, capture stdout/stderr."""
-    full = ["kubectl", "-n", namespace, "exec", pod, "-c", "openclaw", "--", *cmd]
+    container = os.environ.get("OPENCLAW_CONTAINER", "claw-code")
+    full = ["kubectl", "-n", namespace, "exec", pod, "-c", container, "--", *cmd]
     proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
     return proc.returncode, proc.stdout, proc.stderr
 

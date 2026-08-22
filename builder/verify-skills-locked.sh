@@ -130,7 +130,12 @@ fi
 # This exact check passed on a workflow that had been changed back to its own
 # search, because the comment explaining why it should not still named the
 # script.
-WORKFLOW_CODE="$(cat .github/workflows/*.yml 2>/dev/null | sed 's/#.*//' | awk 'NF')"
+# Whichever CI defines the build: GitHub Actions workflows here, a GitLab
+# pipeline file in the sibling deployment. The invariant is "some CI re-checks
+# the finished image", not "GitHub Actions does" — reading only one of them
+# failed this check in a repo that ran the checks perfectly well, just from
+# .gitlab-ci.yml.
+WORKFLOW_CODE="$(cat .github/workflows/*.yml .gitlab-ci.yml 2>/dev/null | sed 's/#.*//' | awk 'NF')"
 if printf '%s\n' "$WORKFLOW_CODE" | grep -q 'list-loadable-skills'; then
   ok "the image re-check uses the image's own skill lister"
 elif printf '%s\n' "$WORKFLOW_CODE" | grep -q 'name SKILL.md'; then
@@ -302,7 +307,7 @@ fi
 
 # The functional test has to actually be wired in, or the only thing behind
 # this whole section is the grepping above.
-if grep -rq 'verify-lockdown-effective' .github/workflows/ 2>/dev/null; then
+if grep -rq 'verify-lockdown-effective' .github/workflows/ .gitlab-ci.yml 2>/dev/null; then
   ok "the image build attacks the lockdown in the built image (functional test)"
 else
   fail "verify-lockdown-effective.sh is not run by any workflow in

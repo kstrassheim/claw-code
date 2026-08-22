@@ -152,8 +152,9 @@ def k8s_namespace() -> str:
 
 def find_openclaw_pod(namespace: str) -> str:
     """Same labelSelector logic as the fixer and tester planners. Some
-    deployments have only `app=openclaw`; others add `component=server`."""
-    for selector in ("app=openclaw,component=server", "app=openclaw"):
+    deployments have only `app=<label>`; others add `component=server`."""
+    app_label = os.environ.get("OPENCLAW_APP_LABEL", "claw-code")
+    for selector in (f"app={app_label},component=server", f"app={app_label}"):
         try:
             ctx = ssl.create_default_context(cafile=f"{K8S_SA_DIR}/ca.crt")
             url = (
@@ -179,7 +180,8 @@ def find_openclaw_pod(namespace: str) -> str:
 
 def pod_exec(namespace: str, pod: str, script: str, timeout: int = 20):
     return subprocess.run(
-        ["kubectl", "-n", namespace, "exec", pod, "-c", "openclaw", "--",
+        ["kubectl", "-n", namespace, "exec", pod, "-c",
+         os.environ.get("OPENCLAW_CONTAINER", "claw-code"), "--",
          "bash", "-c", script],
         capture_output=True, text=True, timeout=timeout,
     )
