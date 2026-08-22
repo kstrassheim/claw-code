@@ -8,6 +8,7 @@
     "start": "node gcp-mcp.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "yaml": "^2.6.1"
   }
 }

@@ -116,7 +116,22 @@ spec:
               mkdir -p /home/node/.openclaw/workspace/skills/tester
               chown -R 1000:1000 /home/node/.openclaw
               chmod -R u+rwX,g+rwX /home/node/.openclaw
+              # Then take the skill directories back to read-only. openclaw
+              # loads ANY skill directory it finds, and these sit on a writable
+              # PVC — so without this the bot could gain a capability that
+              # never went through a pull request.
+              #
+              # Fails CLOSED: a missing binary means the image is not the one
+              # we think it is, and starting anyway would leave the directories
+              # writable with nothing reporting it.
+              if [ ! -x /usr/local/bin/lock-skill-dirs ]; then
+                echo "FATAL: lock-skill-dirs missing from the image — refusing to start" >&2
+                exit 1
+              fi
+              /usr/local/bin/lock-skill-dirs
           volumeMounts:
+            - name: claw-scripts
+              mountPath: /opt/claw-scripts
             - name: workspace
               mountPath: /home/node/.openclaw
         # Reads the canonical template from /template, decides whether
@@ -130,6 +145,15 @@ spec:
           imagePullPolicy: Always
           command: ["/bin/sh", "/scripts/render-config.sh"]
           env:
+            # THE MOUNT COMES FIRST, and that ordering is the whole mechanism:
+            # the same scripts exist in the image under /usr/local/bin, so
+            # whichever directory PATH names first is the one that runs. A
+            # ConfigMap that fails to mount therefore degrades to the image's
+            # copy — stale, but never missing.
+            - name: PATH
+              value: "/opt/claw-scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            - name: PYTHONPATH
+              value: "/opt/claw-scripts"
             # The planning store picks its backend from the environment. This
             # deployment provides Cosmos, so no MongoDB is deployed alongside
             # it. Substituted by the deploy from the `planning_cosmos_endpoint`
@@ -180,6 +204,17 @@ spec:
         - name: claw-code
           image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
           imagePullPolicy: Always
+          env:
+            # THE MOUNT COMES FIRST, and that ordering is the mechanism: the
+            # same scripts exist in the image under /usr/local/bin, so
+            # whichever directory PATH names first is what runs. A ConfigMap
+            # that fails to mount degrades to the image's copy — stale, never
+            # missing. PYTHONPATH keeps the image on the path for the same
+            # reason: a module the ConfigMap does not carry still resolves.
+            - name: PATH
+              value: "/opt/claw-scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            - name: PYTHONPATH
+              value: "/opt/claw-scripts:/usr/local/bin"
           ports:
             - containerPort: 18789
               name: web
@@ -193,6 +228,8 @@ spec:
             - secretRef:
                 name: claw-code-secrets
           volumeMounts:
+            - name: claw-scripts
+              mountPath: /opt/claw-scripts
             # Mount the PVC at the WHOLE openclaw state directory, not just
             # the `workspace/` subdir. Previously openclaw.json, identity/,
             # tasks/, plugin-skills/, logs/ all lived on the container's
@@ -222,6 +259,21 @@ spec:
             - name: skill-tester
               mountPath: /home/node/.openclaw/workspace/skills/tester/SKILL.md
               subPath: SKILL.md
+            # Defined in 052-reviewer.yaml. Without the mount the ConfigMap exists and the
+            # skill is never loaded — the bot silently lacks the capability.
+            - name: skill-reviewer
+              mountPath: /home/node/.openclaw/workspace/skills/reviewer/SKILL.md
+              subPath: SKILL.md
+            # Defined in 053-projects.yaml. Without the mount the ConfigMap exists and the
+            # skill is never loaded — the bot silently lacks the capability.
+            - name: skill-projects
+              mountPath: /home/node/.openclaw/workspace/skills/projects/SKILL.md
+              subPath: SKILL.md
+            # Defined in 054-planning.yaml. Without the mount the ConfigMap exists and the
+            # skill is never loaded — the bot silently lacks the capability.
+            - name: skill-planning
+              mountPath: /home/node/.openclaw/workspace/skills/planning/SKILL.md
+              subPath: SKILL.md
           resources:
             # Node is Standard_D2s_v3 (2 vCPU, 8 Gi). AKS reservations
             # leave ~1.85 vCPU and ~6 Gi allocatable to user pods.
@@ -249,6 +301,16 @@ spec:
               exec:
                 command: ["/bin/sh", "-c", "sleep 5"]
       volumes:
+        # Both halves land in ONE directory, so nothing has to know which
+        # ConfigMap a given script came from.
+        - name: claw-scripts
+          projected:
+            defaultMode: 0755
+            sources:
+              - configMap:
+                  name: claw-scripts-planner
+              - configMap:
+                  name: claw-scripts-runner
         - name: workspace
           persistentVolumeClaim:
             claimName: claw-code-workspace
@@ -257,10 +319,19 @@ spec:
             name: claw-code-tools-md
         - name: skill-developer
           configMap:
-            name: claw-code-skill-developer
+            name: openclaw-skill-developer
         - name: skill-tester
           configMap:
-            name: claw-code-skill-tester
+            name: openclaw-skill-tester
+        - name: skill-reviewer
+          configMap:
+            name: openclaw-skill-reviewer
+        - name: skill-projects
+          configMap:
+            name: openclaw-skill-projects
+        - name: skill-planning
+          configMap:
+            name: openclaw-skill-planning
         - name: config-template
           configMap:
             name: claw-code-config-template

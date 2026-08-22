@@ -227,13 +227,35 @@ minutes for nothing.
 
 That makes one rule, and it applies to any agent or person working here:
 
-| You changed | Bump `OPENCLAW_VERSION`? |
-| --- | --- |
-| anything under `builder/` that must reach the cluster | **Yes** |
-| a pin in `/VERSIONS` (a CLI, an MCP server, a scanner) | **Yes** |
-| `k8s/*.yaml` manifests | No — applied directly |
-| `.github/workflows/*` | No — read per run |
-| `README.md` or other documentation | No |
+| You changed | Bump `OPENCLAW_VERSION`? | How it reaches the cluster |
+| --- | --- | --- |
+| a script under `builder/` (`*.py`, `*.sh`, `forge-cli`…) | **No** | ConfigMap → next tick |
+| `builder/Dockerfile` | **Yes** | nothing else rebuilds the image |
+| a pin in `/VERSIONS` (a CLI, an MCP server, a scanner) | **Yes** | same |
+| a **new** file under `builder/` | **Yes**, unless you also add it to `builder/kustomization.yaml` | see below |
+| `k8s/*.yaml` manifests | No | applied directly by the deploy |
+| `.github/workflows/*` | No | read per run |
+| `README.md` or other documentation | No | — |
+
+### Why script edits need no bump
+
+Everything under `builder/` ships **twice**: baked into the image, and
+generated into ConfigMaps that the deploy applies. Both halves are projected
+into one directory at `/opt/claw-scripts`, and `PATH` and `PYTHONPATH` name
+that directory **first** — ahead of `/usr/local/bin`, where the image's copies
+live.
+
+That ordering is the whole mechanism, and it decides the failure mode too:
+
+- **Edit → live without a rebuild.** The next tick runs the new code.
+- **A failed mount degrades to stale, never to missing.** The image's copy is
+  still there, so the pod cannot end up without a script.
+- **A ConfigMap can add a file the image does not have** — useful for a brand
+  new script; the image catches up at the next bump.
+
+> **The trap.** Adding a file does not put it in a ConfigMap automatically. Add
+> the `COPY` to the Dockerfile *and* the entry to `builder/kustomization.yaml`,
+> or it ships only in the image and every later edit to it needs a bump.
 
 Leave it alone and the deploy reuses what is already in ACR — correctly,
 because nothing said otherwise. Bump the trailing `.N` for an ordinary change.

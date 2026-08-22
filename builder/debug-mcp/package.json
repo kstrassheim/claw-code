@@ -8,6 +8,7 @@
     "start": "node debug-mcp.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "chrome-remote-interface": "^0.33.2"
   }
 }

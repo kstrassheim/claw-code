@@ -12,7 +12,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: claw-code-skill-developer
+  name: openclaw-skill-developer
   namespace: claw-code
 data:
   SKILL.md: |
@@ -238,12 +238,31 @@ spec:
             app: issue-watcher
         spec:
           serviceAccountName: issue-watcher
+          volumes:
+            - name: claw-scripts
+              configMap:
+                name: claw-scripts-planner
+                defaultMode: 0755
           restartPolicy: Never
           containers:
             - name: watcher
               image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
               imagePullPolicy: Always
-              command: ["/usr/local/bin/cron-issue-spawn"]
+              # Named WITHOUT a directory so PATH decides — the mount at
+              # /opt/claw-scripts comes first, ahead of the image copy.
+              command: ["cron-issue-spawn"]
+              env:
+                # The mounted scripts win over the image's copies; the image
+                # keeps a fallback set, so a failed mount degrades to stale.
+                - name: PATH
+                  value: "/opt/claw-scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                - name: PYTHONPATH
+                  value: "/opt/claw-scripts:/usr/local/bin"
+              volumeMounts:
+                # Planner half ONLY: these pods never execute a runner, they
+                # find the openclaw pod and exec into it.
+                - name: claw-scripts
+                  mountPath: /opt/claw-scripts
               envFrom:
                 # GITHUB_TOKEN is the only secret the watcher needs
                 # (for the GitHub API calls). Model API keys and
