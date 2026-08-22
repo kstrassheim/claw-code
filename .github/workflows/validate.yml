@@ -145,6 +145,14 @@ jobs:
           rm -rf ~/.azure 2>/dev/null || true
 
   docker-build:
+    # PULL REQUESTS ONLY. On a push to main the deploy builds this image for
+    # real and pushes it; building it again here to throw away would cost the
+    # same ~17 minutes to learn nothing the deploy is not about to establish.
+    #
+    # Every other validator still runs on push — they read the repository and
+    # are cheap. This one is the exception because it duplicates work already
+    # happening downstream, not because it matters less.
+    if: github.event_name == 'pull_request'
     name: Docker Build (no push)
     # NATIVE ARM64, not QEMU. The image is linux/arm64 and this used to build
     # it on an x86 runner through buildkit's emulator, which made every one of
