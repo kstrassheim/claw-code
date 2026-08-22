@@ -23,12 +23,12 @@ data:
       "agents": {
         "defaults": {
           "model": {
-            "primary": "mistral/mistral-large-latest",
-            "fallbacks": ["kimi/k3", "minimax/MiniMax-M3"]
+            "primary": "mistral/magistral-medium-latest",
+            "fallbacks": ["mistral/devstral-medium-latest", "kimi/k3", "minimax/MiniMax-M3"]
           },
           "imageModel": {
             "primary": "minimax/MiniMax-M3",
-            "fallbacks": ["mistral/mistral-large-3-25-12", "mistral/mistral-medium-3-5-26-04"]
+            "fallbacks": ["mistral/magistral-medium-latest", "mistral/mistral-medium-latest"]
           },
           "compaction": {
             "mode": "safeguard"
@@ -40,12 +40,21 @@ data:
             "minimax/MiniMax-M3": {},
             "minimax/MiniMax-M2.7": {},
             "minimax/MiniMax-M2.7-highspeed": {},
-            "mistral/mistral-large-latest": {},
-            "mistral/mistral-small-latest": {},
-            "mistral/magistral-medium-latest": {},
             "mistral/codestral-latest": {},
-            "mistral/mistral-large-3-25-12": {},
-            "mistral/mistral-medium-3-5-26-04": {}
+            "mistral/devstral-latest": {},
+            "mistral/devstral-medium-latest": {},
+            "mistral/magistral-medium-latest": {},
+            "mistral/magistral-small-latest": {},
+            "mistral/ministral-14b-latest": {},
+            "mistral/ministral-3b-latest": {},
+            "mistral/ministral-8b-latest": {},
+            "mistral/mistral-code-agent-latest": {},
+            "mistral/mistral-code-fim-latest": {},
+            "mistral/mistral-code-latest": {},
+            "mistral/mistral-large-latest": {},
+            "mistral/mistral-medium-latest": {},
+            "mistral/mistral-small-latest": {},
+            "mistral/mistral-vibe-cli-latest": {}
           },
           "bootstrapMaxChars": 250000,
           "bootstrapTotalMaxChars": 300000
@@ -75,12 +84,21 @@ data:
             "apiKey": "${MISTRAL_API_KEY}",
             "api": "openai-completions",
             "models": [
-              {"id": "mistral-large-latest", "name": "Mistral Large", "contextWindow": 131072},
-              {"id": "mistral-small-latest", "name": "Mistral Small", "contextWindow": 131072},
-              {"id": "magistral-medium-latest", "name": "Magistral Medium", "contextWindow": 131072},
-              {"id": "codestral-latest", "name": "Codestral", "contextWindow": 81920},
-              {"id": "mistral-large-3-25-12", "name": "Mistral Large 3 (Vision)", "contextWindow": 131072},
-              {"id": "mistral-medium-3-5-26-04", "name": "Mistral Medium 3.5 (Vision)", "contextWindow": 131072}
+              {"id": "codestral-latest", "name": "Codestral (code/FIM)", "input": ["text"], "contextWindow": 256000},
+              {"id": "devstral-latest", "name": "Devstral (coding)", "input": ["text"], "contextWindow": 262144},
+              {"id": "devstral-medium-latest", "name": "Devstral Medium (coding)", "input": ["text"], "contextWindow": 262144},
+              {"id": "magistral-medium-latest", "name": "Magistral Medium (reasoning)", "input": ["text", "image"], "reasoning": true, "contextWindow": 262144},
+              {"id": "magistral-small-latest", "name": "Magistral Small (reasoning)", "input": ["text", "image"], "reasoning": true, "contextWindow": 262144},
+              {"id": "ministral-14b-latest", "name": "Ministral 14B", "input": ["text", "image"], "contextWindow": 262144},
+              {"id": "ministral-3b-latest", "name": "Ministral 3B", "input": ["text", "image"], "contextWindow": 131072},
+              {"id": "ministral-8b-latest", "name": "Ministral 8B", "input": ["text", "image"], "contextWindow": 262144},
+              {"id": "mistral-code-agent-latest", "name": "Mistral Code Agent", "input": ["text"], "contextWindow": 262144},
+              {"id": "mistral-code-fim-latest", "name": "Mistral Code FIM", "input": ["text"], "contextWindow": 256000},
+              {"id": "mistral-code-latest", "name": "Mistral Code", "input": ["text"], "contextWindow": 256000},
+              {"id": "mistral-large-latest", "name": "Mistral Large", "input": ["text", "image"], "contextWindow": 262144},
+              {"id": "mistral-medium-latest", "name": "Mistral Medium (reasoning)", "input": ["text", "image"], "reasoning": true, "contextWindow": 262144},
+              {"id": "mistral-small-latest", "name": "Mistral Small (reasoning)", "input": ["text", "image"], "reasoning": true, "contextWindow": 262144},
+              {"id": "mistral-vibe-cli-latest", "name": "Mistral Vibe CLI (reasoning)", "input": ["text", "image"], "reasoning": true, "contextWindow": 262144}
             ]
           },
           "minimax": {
