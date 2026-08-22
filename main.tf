@@ -1,38 +1,29 @@
+# SCOPE: AZURE RESOURCES ONLY.
+#
+# Everything inside the cluster — the namespace, the network policies, the
+# workloads — is owned by the manifests in k8s/ and applied with kubectl by the
+# deploy. They used to be declared HERE as well, which was two owners for one
+# object, and it also dragged the kubernetes provider into this configuration.
+#
+# That provider was configured from the cluster's own attributes:
+#
+#     host = azurerm_kubernetes_cluster.aks.kube_admin_config[0].host
+#
+# Providers are configured BEFORE the graph is walked, so on a bootstrap that
+# value is unknown, the provider falls back to its default host, and `tofu
+# plan` dies against localhost:80 before it can plan anything — making the
+# first plan impossible and forcing a two-phase apply.
+#
+# With the in-cluster resources gone there is no kubernetes provider, nothing
+# unknown to configure, and the plan works from nothing.
+
 provider "azurerm" {
   features {}
 }
 
 provider "azuread" {}
 
-# Kubernetes/Helm credentials are read straight off the AKS resource rather
-# than from a kubeconfig file on disk.
-#
-# `config_path = "/tmp/kubeconfig_clawcode"` could not work on the run that
-# CREATES the cluster: the file is written by an `az aks get-credentials` step
-# in the deploy, so on a first apply it does not exist and both providers fall
-# back to their default host — every kubernetes_* resource then fails with
-# "dial tcp [::1]:80: connect: connection refused" against localhost:80.
-#
-# Sourcing from the cluster resource makes the credentials an attribute, so
-# they resolve after the cluster is created and the whole thing converges in a
-# single apply. kube_admin_config is the cert-based local admin credential (no
-# kubelogin needed); it is populated because local_account_disabled is not set.
-# Entra RBAC still governs normal user access via azure_rbac_enabled.
-provider "kubernetes" {
-  host                   = azurerm_kubernetes_cluster.aks.kube_admin_config[0].host
-  client_certificate     = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].client_certificate)
-  client_key             = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].client_key)
-  cluster_ca_certificate = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].cluster_ca_certificate)
-}
 
-provider "helm" {
-  kubernetes = {
-    host                   = azurerm_kubernetes_cluster.aks.kube_admin_config[0].host
-    client_certificate     = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].client_certificate)
-    client_key             = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].client_key)
-    cluster_ca_certificate = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].cluster_ca_certificate)
-  }
-}
 
 locals {
   resource_group_name  = "claw-code"
@@ -55,20 +46,6 @@ data "azurerm_resource_group" "rg" {
   name = local.resource_group_name
 }
 
-# Create the claw-code namespace (needed for NetworkPolicies and later K8s resources)
-resource "kubernetes_namespace" "claw-code" {
-  metadata {
-    name = var.namespace
-    labels = {
-      "environment" = var.env
-      "project"     = "claw-code"
-    }
-  }
-  # Namespace was pre-created manually — don't fail if it already exists
-  lifecycle {
-    ignore_changes = [metadata]
-  }
-}
 
 # Get the deploy managed identity (deploy-claw-code)
 data "azurerm_user_assigned_identity" "deploy_identity" {
@@ -217,67 +194,8 @@ resource "azurerm_role_assignment" "aks_admin" {
 # granted manually by an Owner, or via a separate privileged identity.
 # Skipped here — requires Owner-level permissions.
 
-# =============================================================================
-# Default-deny-all NetworkPolicy — blocks ALL ingress/egress by default.
-# Add explicit allow policies for each required access pattern.
-# =============================================================================
-resource "kubernetes_network_policy_v1" "default_deny_all" {
-  metadata {
-    name      = "default-deny-all"
-    namespace = local.namespace
-  }
-  spec {
-    pod_selector {}
-    policy_types = ["Ingress", "Egress"]
-  }
-}
 
-# Allow DNS egress (required for cluster DNS resolution)
-resource "kubernetes_network_policy_v1" "allow_dns" {
-  metadata {
-    name      = "allow-dns"
-    namespace = local.namespace
-  }
-  spec {
-    pod_selector {}
-    egress {
-      to {
-        namespace_selector {
-          match_labels = {
-            "kubernetes.io/metadata.name" = "kube-system"
-          }
-        }
-      }
-      ports {
-        protocol = "UDP"
-        port     = "53"
-      }
-      ports {
-        protocol = "TCP"
-        port     = "53"
-      }
-    }
-    policy_types = ["Egress"]
-  }
-}
 
-# Allow HTTPS/443 egress (needed for cloud API calls, OIDC, image pulls, etc.)
-resource "kubernetes_network_policy_v1" "allow_https" {
-  metadata {
-    name      = "allow-https"
-    namespace = local.namespace
-  }
-  spec {
-    pod_selector {}
-    egress {
-      ports {
-        protocol = "TCP"
-        port     = "443"
-      }
-    }
-    policy_types = ["Egress"]
-  }
-}
 
 # =============================================================================
 # Terraform Output

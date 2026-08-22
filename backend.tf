@@ -19,14 +19,6 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.30"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 3.0"
-    }
     azuread = {
       source  = "hashicorp/azuread"
       version = "~> 3.0"
