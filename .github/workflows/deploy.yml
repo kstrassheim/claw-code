@@ -328,6 +328,30 @@ jobs:
           chmod +x "$HOME/.local/bin/kubectl"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Download the OpenTofu outputs
+        # Produced by the apply job. The deploy needs two values out of it and
+        # cannot recompute them: they describe infrastructure, not the repo.
+        uses: actions/download-artifact@v4
+        with:
+          name: tofu-output
+
+      - name: Substitute the OpenTofu outputs the manifests need
+        run: |
+          set -euo pipefail
+          # The pod reaches Cosmos with workload identity, so two values have
+          # to come from the apply that created them: the identity to exchange
+          # its token for, and the endpoint to talk to. Both are placeholders
+          # in git because neither exists until the infrastructure does.
+          CLIENT_ID=$(jq -r '.pod_identity_client_id.value // empty' tofu_output.json)
+          ENDPOINT=$(jq -r '.planning_cosmos_endpoint.value // empty' tofu_output.json)
+          if [ -z "$CLIENT_ID" ] || [ -z "$ENDPOINT" ]; then
+            echo "::error::pod_identity_client_id or planning_cosmos_endpoint missing from the OpenTofu outputs"
+            exit 1
+          fi
+          sed -i "s|PLACEHOLDER_POD_CLIENT_ID|${CLIENT_ID}|g" k8s/020-deployment.yaml
+          sed -i "s|PLACEHOLDER_COSMOS_ENDPOINT|${ENDPOINT}|g" k8s/020-deployment.yaml
+          echo ">> workload identity ${CLIENT_ID}, planning store ${ENDPOINT}"
+
       - name: Apply k8s/ manifests
         # `-f k8s/` is non-recursive: the per-tool markdown files under
         # k8s/tools/ are skipped here (they're not YAML manifests). The

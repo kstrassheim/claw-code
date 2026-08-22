@@ -139,6 +139,14 @@ resource "azurerm_kubernetes_cluster" "aks" {
   kubernetes_version  = local.aks_version
   sku_tier            = "Free"
 
+  # Workload identity. Both flags are required for a pod to exchange its
+  # ServiceAccount token for an Azure AD token: the OIDC issuer publishes the
+  # keys Azure validates the token against, and the mutating webhook projects
+  # the token into the pod. Without them the federated credential in
+  # cosmosdb.tf has no issuer to trust and every Cosmos call is unauthorised.
+  oidc_issuer_enabled       = true
+  workload_identity_enabled = true
+
   default_node_pool {
     name            = "default"
     vm_size         = var.node_size

@@ -31,6 +31,12 @@ terraform {
       source  = "hashicorp/azuread"
       version = "~> 3.0"
     }
+    # For the Cosmos data-plane role assignment names, which must be GUIDs and
+    # must stay stable across applies.
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 
   backend "azurerm" {

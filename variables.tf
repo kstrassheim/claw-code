@@ -1,3 +1,16 @@
+variable "cosmos_account_name" {
+  description = <<-EOT
+    Cosmos account name for the planning store.
+
+    Must be globally unique across Azure, 3-44 characters, lowercase letters,
+    digits and hyphens only — the account name is part of the endpoint
+    hostname, so a clash with somebody else's account fails at apply time
+    rather than at plan time.
+  EOT
+  type        = string
+  default     = "clawcode-planning-dev"
+}
+
 variable "app_name" {
   description = <<-EOT
     Canonical project name, and the single source of truth for two things that
