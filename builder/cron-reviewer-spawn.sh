@@ -19,17 +19,25 @@ set -euo pipefail
 
 NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
 
+# Which app label the gateway pod carries. Defaults to `openclaw`, which is what
+# this chart has always used; a deployment that names its Deployment something
+# else sets OPENCLAW_APP_LABEL in the CronJob env. Hardcoding it meant the
+# spawner could only find a pod in a namespace where the Deployment happened to
+# be called openclaw — anywhere else every tick died on "no Running openclaw pod
+# found" before doing any work.
+APP_LABEL="${OPENCLAW_APP_LABEL:-claw-code}"
+
 OPENCLAW_POD=$(kubectl -n "$NAMESPACE" get pod \
-    -l app=openclaw,component=server \
+    -l "app=$APP_LABEL,component=server" \
     -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
     | awk '{print $1}')
 if [ -z "$OPENCLAW_POD" ]; then
   OPENCLAW_POD=$(kubectl -n "$NAMESPACE" get pod \
-      -l app=openclaw \
+      -l "app=$APP_LABEL" \
       -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
       | awk '{print $1}')
 fi
-test -n "$OPENCLAW_POD" || { echo "ERROR: no Running openclaw pod found in $NAMESPACE" >&2; exit 1; }
+test -n "$OPENCLAW_POD" || { echo "ERROR: no Running pod with app=$APP_LABEL found in $NAMESPACE" >&2; exit 1; }
 export OPENCLAW_POD
 echo "openclaw pod: $OPENCLAW_POD"
 

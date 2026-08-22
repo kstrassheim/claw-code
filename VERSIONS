@@ -10,7 +10,7 @@ OPENCLAW_UPSTREAM=v2026.7.1-2
 # skips on. Bump the trailing .N for any change to builder/ that must reach the
 # cluster; leave it alone and the deploy reuses the image already in ACR
 # instead of rebuilding it.
-OPENCLAW_VERSION=v2026.7.1-2.2
+OPENCLAW_VERSION=v2026.7.1-2.3
 
 # Tools baked into the openclaw image.
 GH_CLI_VERSION=2.98.0
