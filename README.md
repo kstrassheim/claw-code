@@ -289,9 +289,17 @@ job builds and pushes on every merge to `main`:
 3. Push `:latest` and `:<short_sha>` to
    `clwcodecodevdev2.azurecr.io/openclaw/claw-code`.
 
-The Deployment references `:latest` with `imagePullPolicy: Always`, so
-the post-push `kubectl rollout restart` step is what actually picks up
-new code.
+The Deployment references the **immutable** `:<OPENCLAW_VERSION>` tag with
+`imagePullPolicy: IfNotPresent`, substituted into the manifest at deploy time.
+Bumping `OPENCLAW_VERSION` changes the pod template, so `kubectl apply` rolls
+the pod on its own; leaving it alone means the node reuses the image it already
+has instead of re-pulling ~1.8 GB.
+
+There is deliberately no `kubectl rollout restart` in the deploy. The pod also
+carries `checksum/scripts` and `checksum/tools-md` annotations covering the
+ConfigMaps it mounts, so a deploy re-rolls exactly when the image, the shipped
+scripts, or `TOOLS.md` changed — and does nothing, in seconds, when none of
+them did.
 
 To build locally for testing (arm64 host or buildx multi-platform):
 

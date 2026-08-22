@@ -68,13 +68,25 @@ spec:
         # ServiceAccount token the Cosmos client exchanges for an AD token.
         # The annotation on the ServiceAccount alone does nothing without it.
         azure.workload.identity/use: "true"
-      # No `checksum/tools-md` annotation: the deploy workflow does an
-      # unconditional `kubectl rollout restart deployment/openclaw` after
-      # rebuilding the claw-code-tools-md ConfigMap from k8s/tools/, so the
-      # new TOOLS.md content is always picked up on the next deploy. If you
-      # apply these manifests manually (outside the workflow) and want the
-      # pod to re-roll on a ConfigMap change, run the same `rollout restart`
-      # yourself.
+      annotations:
+        # These two carry the CONTENT of the ConfigMaps the pod mounts, so a
+        # change to the shipped scripts or to TOOLS.md changes the pod template
+        # and `kubectl apply` re-rolls on its own.
+        #
+        # This replaced an unconditional `kubectl rollout restart` on every
+        # deploy. That restart existed because the image was `:latest` — the
+        # manifest never changed, so an apply alone was a no-op and the pod had
+        # to be forced. Now that the image is pinned to an immutable tag, the
+        # tag itself changes the template whenever the version moves, and these
+        # cover the ConfigMaps, which mount as volumes and would otherwise go
+        # unnoticed. A deploy that changes nothing now rolls nothing, instead of
+        # spending five minutes replacing a pod with an identical one.
+        #
+        # Substituted by the deploy workflow; a manual apply leaves the
+        # placeholders in place, which is inert (any literal value works — it
+        # only has to differ when the content differs).
+        checksum/scripts: PLACEHOLDER_SCRIPTS_SUM
+        checksum/tools-md: PLACEHOLDER_TOOLS_SUM
     spec:
       serviceAccountName: claw-code
       # PVC mounts default to root:root. The openclaw container runs as

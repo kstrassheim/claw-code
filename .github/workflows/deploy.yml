@@ -5,7 +5,7 @@ name: Deploy (Push to main)
 #   1. check-llm-secrets      — fail-fast if neither LLM API key is set
 #   2. tofu-apply        — provision/update Azure infra (AKS, ACR, etc.)
 #   3. build-and-push-image   — build the openclaw image, push :latest+:sha to ACR
-#   4. deploy-to-aks          — kubectl apply -f k8s/, then rollout restart
+#   4. deploy-to-aks          — ship ConfigMaps, kubectl apply -f k8s/, await rollout
 #
 # Each job depends on the previous one succeeding (`needs:`), so a broken
 # step short-circuits the rest before it can do damage.
@@ -506,13 +506,63 @@ jobs:
           echo ">> images pinned to ${TAG}"
           echo ">> workload identity ${CLIENT_ID}, planning store ${ENDPOINT}"
 
-      - name: Apply k8s/ manifests
-        # `-f k8s/` is non-recursive: the per-tool markdown files under
-        # k8s/tools/ are skipped here (they're not YAML manifests). The
-        # next step assembles them into a ConfigMap via `kubectl create
-        # --from-file`, which is the right tool for binary-ish multi-file
-        # payloads we don't want to hand-inline into YAML.
-        run: kubectl apply -f k8s/
+      - name: Assemble TOOLS.md and stamp content checksums into the pod template
+        # Why this runs BEFORE the apply: the checksums have to be in the
+        # manifest that gets applied, otherwise the pod template does not change
+        # and nothing re-rolls.
+        #
+        # TOOLS.md is assembled HERE rather than in its own step further down so
+        # that the hash covers the exact bytes that ship. Hashing the source
+        # files instead would miss a reordering of the concatenation, which
+        # changes the file the pod reads while leaving every input identical.
+        #
+        # The script list is resolved from builder/kustomization.yaml by the
+        # same awk the ConfigMap step uses — one source, so the two cannot
+        # disagree about which files are shipped.
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/tools-md
+          cat \
+            k8s/tools/TOOLS.md \
+            k8s/tools/TOOLS-gitflow.md \
+            k8s/tools/TOOLS-github.md \
+            k8s/tools/TOOLS-gitlab.md \
+            k8s/tools/TOOLS-entra.md \
+            k8s/tools/TOOLS-aws.md \
+            k8s/tools/TOOLS-gcp.md \
+            k8s/tools/TOOLS-alicloud.md \
+            k8s/tools/TOOLS-k8s.md \
+            k8s/tools/TOOLS-terraform.md \
+            k8s/tools/TOOLS-vscode.md \
+            k8s/tools/TOOLS-debug.md \
+            > /tmp/tools-md/TOOLS.md
+          echo "Assembled TOOLS.md is $(wc -c < /tmp/tools-md/TOOLS.md) bytes ($(wc -l < /tmp/tools-md/TOOLS.md) lines)."
+
+          mapfile -t files < <(
+            for cm in claw-scripts-planner claw-scripts-runner; do
+              awk -v cm="$cm" '
+                $0 ~ "name: " cm "$" { inblk = 1; next }
+                inblk && /^  - name:/ { inblk = 0 }
+                inblk && /^ *- [^ ]+=[^ ]+$/ {
+                  gsub(/^ *- /, "");
+                  split($0, kv, "=");
+                  print "builder/" kv[2]
+                }
+              ' builder/kustomization.yaml
+            done | sort -u
+          )
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::no script files resolved from builder/kustomization.yaml"; exit 1; }
+
+          # Hash names as well as contents, so a rename re-rolls too.
+          SCRIPTS_SUM="$(sha256sum "${files[@]}" | sha256sum | cut -c1-16)"
+          TOOLS_SUM="$(sha256sum /tmp/tools-md/TOOLS.md | cut -c1-16)"
+          echo "scripts checksum: $SCRIPTS_SUM (${#files[@]} files)"
+          echo "tools-md checksum: $TOOLS_SUM"
+
+          sed -i "s|PLACEHOLDER_SCRIPTS_SUM|${SCRIPTS_SUM}|g" k8s/*.yaml
+          sed -i "s|PLACEHOLDER_TOOLS_SUM|${TOOLS_SUM}|g" k8s/*.yaml
+          grep -q PLACEHOLDER_ k8s/*.yaml && { echo "::error::a PLACEHOLDER_ survived substitution"; exit 1; } || true
 
       - name: Ship builder/ scripts as ConfigMaps
         # THE POINT: a change to a script reaches the cluster on the next tick,
@@ -573,32 +623,47 @@ jobs:
         # docs. Keep this list in sync with k8s/tools/.
         run: |
           set -euo pipefail
-          mkdir -p /tmp/tools-md
-          cat \
-            k8s/tools/TOOLS.md \
-            k8s/tools/TOOLS-gitflow.md \
-            k8s/tools/TOOLS-github.md \
-            k8s/tools/TOOLS-gitlab.md \
-            k8s/tools/TOOLS-entra.md \
-            k8s/tools/TOOLS-aws.md \
-            k8s/tools/TOOLS-gcp.md \
-            k8s/tools/TOOLS-alicloud.md \
-            k8s/tools/TOOLS-k8s.md \
-            k8s/tools/TOOLS-terraform.md \
-            k8s/tools/TOOLS-vscode.md \
-            k8s/tools/TOOLS-debug.md \
-            > /tmp/tools-md/TOOLS.md
-          echo "Assembled TOOLS.md is $(wc -c < /tmp/tools-md/TOOLS.md) bytes ($(wc -l < /tmp/tools-md/TOOLS.md) lines)."
+          # Assembled by the checksum step above, so the bytes hashed into the
+          # pod annotation and the bytes shipped here are the same bytes.
+          test -s /tmp/tools-md/TOOLS.md
           kubectl create configmap claw-code-tools-md \
             --namespace claw-code \
             --from-file=TOOLS.md=/tmp/tools-md/TOOLS.md \
             --dry-run=client -o yaml \
           | kubectl apply -f -
 
-      - name: Roll out claw-code deployment to pick up new :latest image
+      # ORDER MATTERS: the ConfigMaps go on BEFORE the Deployment.
+      #
+      # The Deployment now carries a checksum of this content in its pod
+      # template, so applying it re-rolls the pod. If the ConfigMaps were
+      # applied afterwards (as they were), that new pod would come up mounting
+      # the PREVIOUS content — and subPath mounts, which TOOLS.md uses, never
+      # refresh in place, so it would keep serving the stale file for the whole
+      # life of the pod. Applying them first means the pod that the checksum
+      # change rolls is the pod that mounts the content the checksum describes.
+      - name: Apply k8s/ manifests
+        # `-f k8s/` is non-recursive: the per-tool markdown files under
+        # k8s/tools/ are skipped here (they're not YAML manifests). They were
+        # already assembled into a ConfigMap above via `kubectl create
+        # --from-file`, which is the right tool for binary-ish multi-file
+        # payloads we don't want to hand-inline into YAML.
+        run: kubectl apply -f k8s/
+
+      - name: Wait for the claw-code rollout to settle
+        # NO `kubectl rollout restart` here, deliberately.
+        #
+        # It used to run unconditionally, because the image was `:latest`: the
+        # manifest was byte-identical every deploy, so an apply changed nothing
+        # and the pod had to be forced to re-pull. That forced a full pod
+        # replacement on EVERY deploy — ~5 minutes on a 2-vCPU node with a
+        # Recreate strategy, even when the deploy changed nothing at all.
+        #
+        # The image is now pinned to an immutable tag and the ConfigMap content
+        # is hashed into the pod template, so `apply` re-rolls exactly when
+        # something the pod actually runs has changed. When nothing changed,
+        # this returns immediately against the already-Available deployment.
         run: |
-          kubectl rollout restart deployment/claw-code -n claw-code
-          kubectl rollout status   deployment/claw-code -n claw-code --timeout=15m
+          kubectl rollout status deployment/claw-code -n claw-code --timeout=15m
 
       - name: Azure logout
         if: always()
