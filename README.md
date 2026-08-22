@@ -556,6 +556,134 @@ stop`, `tester list`, `tester logs <repo>`, `tester last <repo>`.
 
 ---
 
+## The permission boundary
+
+All three autonomous subsystems discover their own work from account-wide
+queries — issues assigned to the bot, pull requests it is asked to review,
+repositories it collaborates on. Without a second gate, **anyone who can
+assign the bot an issue can put it to work on any repository it can see**.
+
+`~/.openclaw/projects-allowed.list` on the workspace volume is that gate.
+Being assigned something is how a person *asks*; this list is where the owner
+*answers*. Every planner and every runner re-checks it, and it is read fresh
+on each tick, so a revoke takes effect within one tick without a redeploy.
+
+Manage it from chat (the `projects` skill) or with the CLI:
+
+```
+project-allow list
+project-allow add https://github.com/owner/repo --actor you
+project-allow revoke owner/repo --actor you
+project-allow check owner/repo          # exit 2 = not permitted
+```
+
+It **fails closed**: an unreadable or missing list permits nothing. `check`
+and `bootstrap` make no network call at all, so a GitHub outage can never
+become a permission decision, and the init container that seeds the list on
+first boot never overwrites an existing one — otherwise a revoke would last
+only until the next deploy.
+
+## Issue status on a platform with two states
+
+The solver needs five answers to "what is happening to this issue?", because
+each leads somewhere different on the next tick. GitHub issues have `open` and
+`closed`. The mapping:
+
+| Status | How it is stored |
+|---|---|
+| To do | open, no status label (the default) |
+| In progress | open, `status::in-progress` |
+| Done | closed, `state_reason=completed` |
+| Won't do | closed, `state_reason=not_planned` + `status::wont-do` |
+| Duplicate | closed, `state_reason=not_planned` + `status::duplicate` |
+
+The terminal pair uses GitHub's native close reason rather than a third label
+because it records the operator's intent at the moment of closing: a delivered
+issue and a revoked one stay distinguishable afterwards, instead of having to
+be re-derived from merge history. Nothing on GitHub enforces one value per
+label prefix, so the bot clears the previous status itself on every
+transition, and writes nothing at all when the status has not changed — the
+tick runs every five minutes and a no-op label write still appends a timeline
+event.
+
+## Autonomous pull-request reviewer
+
+A third planner/runner pair (`k8s/052-reviewer.yaml`, CronJob `pr-reviewer`).
+It lists open pull requests where the bot is a requested reviewer, and spawns
+only when the head commit's checks are green and that exact head has not
+already been reviewed. It reviews in its **own** checkout tree, and never
+edits code, pushes, files issues or merges.
+
+The verdict is one comment whose first line is
+`🔎 REVIEW RESULT: APPROVED (sha <sha>)` or `CHANGES REQUIRED (sha <sha>)`,
+followed by a real GitHub review. Three rules matter:
+
+- **Green is read from both check-runs and commit statuses**, and "no checks
+  at all" is kept distinct from "pending" — an empty combined status reports
+  itself as pending, and believing it would strand every repository without
+  CI forever.
+- **The already-reviewed key is the head SHA plus a fingerprint of the title
+  and body**, not the SHA alone, so a verdict about the *description* can be
+  cleared by editing the description instead of pushing an empty commit.
+- **A run that does not complete posts nothing** and retries next tick. A
+  provider outage must not wedge a pull request as "changes required".
+
+Security findings come from the code-scanning alerts for the pull request's
+own head, thresholded by `security-level` (default `high`). An unreadable
+threshold falls back to the default, never to `off`.
+
+Suspending the reviewer CronJob is supported: the solver then merges green
+pull requests directly, which is its pre-reviewer behaviour. The chat skill
+says so on every `stop`.
+
+## Planning, sprints and story points
+
+`k8s/006-mongodb.yaml` runs a small MongoDB with its own pod and volume, and
+`builder/planning_store.py` writes to it. Every write lands in an append-only
+spool on the workspace volume **first** and flushes opportunistically, and
+nothing in the store raises — a planning store that can kill a solver run
+costs more than it will ever be worth. Document ids are deterministic and
+every write is an upsert, so a document flushed twice is a no-op.
+
+An unconfigured or unreachable store is a supported state: work continues and
+spools. Query it through the `planning` CLI or the `planning` chat skill —
+never directly.
+
+Story size lives in an `SP::<n>` label and nowhere else. Sizing runs on the
+cheap planning model one tick before implementation, so the solver can route
+small stories to a cheaper model; a story at the split ceiling is parked
+rather than started.
+
+## What a pull request must pass
+
+`.github/workflows/validate.yml` runs on every pull request and every push to
+main:
+
+| Job | What it fails on |
+|---|---|
+| `unit-tests` | any test in `builder/tests/` |
+| `function-coverage` | a NEW untested function appearing |
+| `check-python-names` | a name loaded but never bound |
+| `check-model-config` | a silent regression in the model ConfigMap |
+| `check-tools-docs` | a tools document not assembled, or truncated past the bootstrap cap |
+| `check-llm-secrets` | no model provider configured |
+| `verify-skills-locked` | the agent could gain an unreviewed capability |
+| `verify-build` | the image not building, an unlisted bundled skill, or the runtime lockdown not holding. **Skipped when `OPENCLAW_VERSION` is unchanged** — the tag already exists, so there is no new image to verify |
+
+The cheap checks run on hosted runners and the image build depends on all of
+them, so a failing test costs about a minute rather than an arm64 image build.
+On a push to main, Deploy waits for those same checks before building
+anything: a commit whose tests fail produces no image, no push and no tag
+on the single self-hosted scale set.
+
+The test suite is standard-library `unittest` — no pytest and no pip
+packages — because a suite that only runs where someone remembered to install
+a framework is a suite that stops being run. Run it with:
+
+```
+cd builder/tests && python3 -m unittest discover -s . -p 'test_*.py'
+```
+
 ## Network Policies
 
 Two pre-configured NetworkPolicies in `k8s/040-networkpolicy.yaml`:
