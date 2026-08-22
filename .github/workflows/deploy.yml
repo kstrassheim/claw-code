@@ -78,14 +78,6 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Get AKS credentials for kubernetes/helm providers
-        run: |
-          az aks get-credentials \
-            --resource-group claw-code \
-            --name claw-code-aks \
-            --file /tmp/kubeconfig_clawcode \
-            --admin
-
       - name: Set OpenTofu environment variables
         run: |
           echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
