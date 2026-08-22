@@ -4,17 +4,33 @@ provider "azurerm" {
 
 provider "azuread" {}
 
+# Kubernetes/Helm credentials are read straight off the AKS resource rather
+# than from a kubeconfig file on disk.
+#
+# `config_path = "/tmp/kubeconfig_clawcode"` could not work on the run that
+# CREATES the cluster: the file is written by an `az aks get-credentials` step
+# in the deploy, so on a first apply it does not exist and both providers fall
+# back to their default host — every kubernetes_* resource then fails with
+# "dial tcp [::1]:80: connect: connection refused" against localhost:80.
+#
+# Sourcing from the cluster resource makes the credentials an attribute, so
+# they resolve after the cluster is created and the whole thing converges in a
+# single apply. kube_admin_config is the cert-based local admin credential (no
+# kubelogin needed); it is populated because local_account_disabled is not set.
+# Entra RBAC still governs normal user access via azure_rbac_enabled.
 provider "kubernetes" {
-  # For CI: set env vars ARM_USE_OIDC=true, ARM_USE_AZUREAD_AUTH=true, then run
-  # `kubelogin convert-kubeconfig -l azurecli` to use Entra auth (requires kubelogin binary).
-  # For local dev without AAD: use the admin kubeconfig directly.
-  # We use the admin kubeconfig here so Terraform can run locally without kubelogin.
-  config_path = "/tmp/kubeconfig_clawcode"
+  host                   = azurerm_kubernetes_cluster.aks.kube_admin_config[0].host
+  client_certificate     = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].client_certificate)
+  client_key             = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].client_key)
+  cluster_ca_certificate = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].cluster_ca_certificate)
 }
 
 provider "helm" {
   kubernetes = {
-    config_path = "/tmp/kubeconfig_clawcode"
+    host                   = azurerm_kubernetes_cluster.aks.kube_admin_config[0].host
+    client_certificate     = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].client_certificate)
+    client_key             = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].client_key)
+    cluster_ca_certificate = base64decode(azurerm_kubernetes_cluster.aks.kube_admin_config[0].cluster_ca_certificate)
   }
 }
 

@@ -77,20 +77,12 @@ terraform {
       keys = key_provider.azure_vault.state
     }
 
+    # No fallback. There is no plaintext state to migrate — this project is
+    # encrypted from its first apply — and a fallback would mean a state that
+    # reverted to plaintext was still accepted, making the encryption a comment
+    # rather than a guarantee.
     state {
       method = method.aes_gcm.state
-
-      # MIGRATION ONLY — REMOVE AFTER THE FIRST SUCCESSFUL APPLY.
-      #
-      # This project's existing state is PLAINTEXT. An empty fallback tells
-      # OpenTofu to read unencrypted state when it cannot decrypt, so the first
-      # run can read what is there and write it back encrypted. Without it the
-      # first `tofu plan` fails outright and the migration cannot start.
-      #
-      # It must not stay. While it is here, a state that silently reverted to
-      # plaintext would still be accepted, and the encryption would be a
-      # comment rather than a guarantee.
-      fallback {}
     }
 
     plan {

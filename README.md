@@ -189,11 +189,9 @@ could not decrypt the state. Use `tofu`. CI does the same, via
 The one thing still spelled `terraform` is the **Azure resource group** that
 holds the state storage account. That is a resource name, not a tool.
 
-> **Migrating state.** The first apply after this change reads the existing
-> plaintext state through the `fallback {}` block in `backend.tf` and writes it
-> back encrypted. **Remove that block once the first apply succeeds** — while
-> it is there, a state that reverted to plaintext would still be accepted, and
-> the encryption would be a comment rather than a guarantee.
+> **State is encrypted from the first apply.** There is no plaintext state to
+> migrate and no decryption fallback: a state that reverted to plaintext is
+> rejected rather than quietly accepted.
 
 ## When the image is rebuilt — and when it is not
 
