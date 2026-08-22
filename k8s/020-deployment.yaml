@@ -117,6 +117,8 @@ spec:
               chown -R 1000:1000 /home/node/.openclaw
               chmod -R u+rwX,g+rwX /home/node/.openclaw
           volumeMounts:
+            - name: claw-scripts
+              mountPath: /opt/claw-scripts
             - name: workspace
               mountPath: /home/node/.openclaw
         # Reads the canonical template from /template, decides whether
@@ -130,6 +132,15 @@ spec:
           imagePullPolicy: Always
           command: ["/bin/sh", "/scripts/render-config.sh"]
           env:
+            # THE MOUNT COMES FIRST, and that ordering is the whole mechanism:
+            # the same scripts exist in the image under /usr/local/bin, so
+            # whichever directory PATH names first is the one that runs. A
+            # ConfigMap that fails to mount therefore degrades to the image's
+            # copy — stale, but never missing.
+            - name: PATH
+              value: "/opt/claw-scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            - name: PYTHONPATH
+              value: "/opt/claw-scripts"
             # The planning store picks its backend from the environment. This
             # deployment provides Cosmos, so no MongoDB is deployed alongside
             # it. Substituted by the deploy from the `planning_cosmos_endpoint`
@@ -249,6 +260,16 @@ spec:
               exec:
                 command: ["/bin/sh", "-c", "sleep 5"]
       volumes:
+        # Both halves land in ONE directory, so nothing has to know which
+        # ConfigMap a given script came from.
+        - name: claw-scripts
+          projected:
+            defaultMode: 0755
+            sources:
+              - configMap:
+                  name: claw-scripts-planner
+              - configMap:
+                  name: claw-scripts-runner
         - name: workspace
           persistentVolumeClaim:
             claimName: claw-code-workspace
