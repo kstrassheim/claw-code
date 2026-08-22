@@ -1,6 +1,7 @@
 name: Deploy (Push to main)
 
-# Runs on every merge to main. Four sequential jobs:
+# Runs on every merge to main. Sequential jobs, each needing the last:
+#   0. wait-for-verify        — WAIT for Verify to pass on this commit
 #   1. check-llm-secrets      — fail-fast if neither LLM API key is set
 #   2. tofu-apply        — provision/update Azure infra (AKS, ACR, etc.)
 #   3. build-and-push-image   — build the openclaw image, push :latest+:sha to ACR
@@ -30,6 +31,79 @@ permissions:
   contents: read
 
 jobs:
+  wait-for-verify:
+    name: Wait For Verify
+    runs-on: ubuntu-latest
+    # WHY THE BUILD WAITS.
+    #
+    # Verify and Deploy both trigger on the same push, so they used to race:
+    # on 2026-08-21 a commit whose unit tests failed still built and pushed an
+    # image, because nothing connected the two workflows. The image was fine
+    # that time — the failure was in a test's own calling convention — but the
+    # pipeline had no opinion either way, which is the actual problem.
+    #
+    # A `workflow_run` trigger is the other way to do this. It is not used
+    # because it runs in the context of the DEFAULT BRANCH and hands you the
+    # triggering commit only as an input, so every checkout in this file would
+    # have to thread that SHA through correctly or silently deploy the wrong
+    # tree. Polling keeps `github.sha` meaning what it says.
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for the Verify checks on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          # Verify builds an image of its own to prove the Dockerfile still
+          # builds. Waiting for it here would mean building the same image
+          # twice in series before anything ships — this job builds its own
+          # a few steps later regardless. The CHECKS are what must pass.
+          SKIP_JOB: Docker Build (no push)
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 1800 ))
+          while :; do
+            run_id="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/validate.yml/runs?head_sha=${SHA}&per_page=1" \
+              --jq '.workflow_runs[0].id // empty' 2>/dev/null || echo "")"
+
+            if [ -n "$run_id" ]; then
+              # Every check except the image build, as "name<TAB>status<TAB>conclusion".
+              jobs="$(gh api --paginate \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs" \
+                --jq ".jobs[] | select(.name != \"${SKIP_JOB}\") | [.name, .status, .conclusion] | @tsv" \
+                2>/dev/null || echo "")"
+
+              if [ -n "$jobs" ]; then
+                # Fail as soon as one does, rather than after the slowest.
+                bad="$(printf '%s\n' "$jobs" | awk -F'\t' '$2=="completed" && $3!="success" && $3!="skipped" {print $1" ("$3")"}')"
+                if [ -n "$bad" ]; then
+                  echo "::error::Verify checks failed on ${SHA}: ${bad}"
+                  exit 1
+                fi
+                pending="$(printf '%s\n' "$jobs" | awk -F'\t' '$2!="completed" {print $1}')"
+                if [ -z "$pending" ]; then
+                  echo "All Verify checks passed on ${SHA}:"
+                  printf '%s\n' "$jobs" | awk -F'\t' '{print "  "$1": "$3}'
+                  exit 0
+                fi
+                echo "waiting on: $(printf '%s' "$pending" | tr '\n' ' ')"
+              else
+                echo "Verify run ${run_id} has no jobs yet, waiting..."
+              fi
+            else
+              # A push always starts one, so this is scheduling delay rather
+              # than absence — but do not wait forever for something that may
+              # never appear.
+              echo "no Verify run for ${SHA} yet, waiting..."
+            fi
+
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::timed out waiting for the Verify checks on ${SHA}"
+              exit 1
+            fi
+
   check-llm-secrets:
     # Same fail-fast as in validate.yml — refuse to deploy if neither
     # LLM API key is configured. The pod's render-config init container
@@ -52,7 +126,7 @@ jobs:
 
   tofu-apply:
     name: OpenTofu Apply
-    needs: check-llm-secrets
+    needs: [check-llm-secrets, wait-for-verify]
     runs-on: ubuntu-latest
     environment: dev
 
