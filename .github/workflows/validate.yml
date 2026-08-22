@@ -79,6 +79,13 @@ jobs:
           echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
           echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
           echo "ARM_USE_AZUREAD_AUTH=true" >> $GITHUB_ENV
+          # The BACKEND and the azurerm provider read this from the
+          # environment. Without it they fall through to AzureCLICredential,
+          # which runs `az account get-access-token` with both --subscription
+          # and --tenant and fails with "Please specify only one of
+          # subscription and tenant, not both" — an error that names neither
+          # OIDC nor the backend and reads like a broken az install.
+          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
           echo "TF_VAR_env=dev" >> $GITHUB_ENV
           # The state-encryption key provider does NOT read ARM_* from the
           # environment the way the backend and the azurerm provider do — it
