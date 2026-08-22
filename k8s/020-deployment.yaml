@@ -87,6 +87,14 @@ spec:
         # only has to differ when the content differs).
         checksum/scripts: PLACEHOLDER_SCRIPTS_SUM
         checksum/tools-md: PLACEHOLDER_TOOLS_SUM
+        # And every OTHER ConfigMap this pod mounts — the config template, the
+        # five skills, the render scripts. The first two annotations cover only
+        # the ConfigMaps the workflow builds from files; these come from the
+        # k8s/ manifests, and leaving them out meant a model or gateway change
+        # was applied to the cluster and then never read, because no pod
+        # restarted. Computed from the volume list below, so a ConfigMap added
+        # to this Deployment is covered without touching the workflow.
+        checksum/config: PLACEHOLDER_CONFIG_SUM
     spec:
       serviceAccountName: claw-code
       # PVC mounts default to root:root. The openclaw container runs as

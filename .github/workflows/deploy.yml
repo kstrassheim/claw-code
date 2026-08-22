@@ -21,6 +21,7 @@ on:
       - '**.tf'
       - '**.tfvars'
       - '.github/workflows/deploy.yml'
+      - '.github/scripts/**'
       # Verify gates this workflow now, so a change to what Verify DOES is a
       # change to what may deploy. Without this, edits to the gate itself
       # triggered nothing and the deploy sat on an older commit — which is
@@ -640,11 +641,16 @@ jobs:
           # Hash names as well as contents, so a rename re-rolls too.
           SCRIPTS_SUM="$(sha256sum "${files[@]}" | sha256sum | cut -c1-16)"
           TOOLS_SUM="$(sha256sum /tmp/tools-md/TOOLS.md | cut -c1-16)"
+          # The other seven ConfigMaps the pod mounts — config template, five
+          # skills, render scripts — which the two sums above do NOT cover.
+          CONFIG_SUM="$(python3 .github/scripts/config-checksum.py)"
           echo "scripts checksum: $SCRIPTS_SUM (${#files[@]} files)"
           echo "tools-md checksum: $TOOLS_SUM"
+          echo "config checksum:  $CONFIG_SUM"
 
           sed -i "s|PLACEHOLDER_SCRIPTS_SUM|${SCRIPTS_SUM}|g" k8s/*.yaml
           sed -i "s|PLACEHOLDER_TOOLS_SUM|${TOOLS_SUM}|g" k8s/*.yaml
+          sed -i "s|PLACEHOLDER_CONFIG_SUM|${CONFIG_SUM}|g" k8s/*.yaml
           grep -q PLACEHOLDER_ k8s/*.yaml && { echo "::error::a PLACEHOLDER_ survived substitution"; exit 1; } || true
 
       - name: Ship builder/ scripts as ConfigMaps
