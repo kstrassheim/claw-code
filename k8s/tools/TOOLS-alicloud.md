@@ -14,7 +14,7 @@ The image ships **`aliyun`** (Alibaba Cloud CLI, pinned via
 **`mcp.servers.alicloud`** wrapper. **No credentials are sealed
 into the pod in this revision** — every `aliyun ...` call will fail
 with `InvalidAccessKeyId.NotFound` / `NoActiveProfile` until a human
-seals real RAM-user AccessKeys into `openclaw-secrets`.
+seals real RAM-user AccessKeys into `claw-code-secrets`.
 
 When that happens, the chart will mount:
 

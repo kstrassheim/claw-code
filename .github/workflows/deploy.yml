@@ -623,8 +623,17 @@ jobs:
             echo "::error::pod_identity_client_id or planning_cosmos_endpoint missing from the OpenTofu outputs"
             exit 1
           fi
+          # The database and container names come from the same apply that
+          # created them, rather than being repeated here. They default to
+          # "planning" only so a store that has not been provisioned yet still
+          # renders — the store spools to disk in that case.
+          DB=$(jq -r '.planning_cosmos_database.value // "planning"' tofu_output.json)
+          CONTAINER=$(jq -r '.planning_cosmos_container.value // "planning"' tofu_output.json)
+          echo "planning store: ${ENDPOINT} db=${DB} container=${CONTAINER}"
           sed -i "s|PLACEHOLDER_POD_CLIENT_ID|${CLIENT_ID}|g" k8s/020-deployment.yaml
           sed -i "s|PLACEHOLDER_COSMOS_ENDPOINT|${ENDPOINT}|g" k8s/020-deployment.yaml
+          sed -i "s|PLACEHOLDER_COSMOS_DB|${DB}|g" k8s/020-deployment.yaml
+          sed -i "s|PLACEHOLDER_COSMOS_CONTAINER|${CONTAINER}|g" k8s/020-deployment.yaml
           # The image tag, so the manifests name an IMMUTABLE version rather
           # than :latest. Without this the placeholder would reach the cluster
           # literally and no pod could pull.

@@ -4,7 +4,7 @@
   az CLI, and the workflow for logging into self-hosted
   Entra-protected web apps. None of these are auto-wired in claw-code
   by default — the operator must seal the $ENTRA_* envs into
-  openclaw-secrets to activate them.
+  claw-code-secrets to activate them.
 -->
 
 ---
@@ -241,7 +241,7 @@ list` output (or whatever the original task was).
 |------------------------------------------------------|-----------------------------------------------------------------------------------|
 | `AADSTS500011: resource principal not found`        | bot user has no role on any subscription — ask the user to grant RBAC             |
 | `AADSTS50079: user required to use MFA`             | you skipped or fumbled the TOTP step — repeat the device-code dance               |
-| `entra-totp` prints "ENTRA_TOTP_SEED env not set"   | the operator hasn't sealed the seed into `openclaw-secrets` yet — surface to user |
+| `entra-totp` prints "ENTRA_TOTP_SEED env not set"   | the operator hasn't sealed the seed into `claw-code-secrets` yet — surface to user |
 | Microsoft rejects the password repeatedly           | screenshot the page, surface the exact error to user — password may have rotated  |
 | Browser plugin can't find a form selector           | Microsoft occasionally redesigns the login UI. Take a screenshot, describe what you see to the user, ask for selector hints |
 | You're tempted to ask the user to enter the code    | Stop. Go back to rule 2 of "Quick rule reference". Use the browser plugin.        |

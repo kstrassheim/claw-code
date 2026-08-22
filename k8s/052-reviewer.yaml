@@ -309,7 +309,7 @@ spec:
                 # and are inherited by the spawned reviewer-runner
                 # subprocesses.
                 - secretRef:
-                    name: openclaw-secrets
+                    name: claw-code-secrets
               resources:
                 requests:
                   cpu: 50m
