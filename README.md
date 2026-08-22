@@ -1,6 +1,10 @@
+<img src="logo-app/claw-code-192.png" alt="" align="left" width="84" height="84" hspace="14">
+
 # claw-code
 
 Autonomous coding agent powered by OpenClaw, deployed on AKS.
+
+<br clear="left">
 
 ## Architecture
 
