@@ -216,6 +216,7 @@ jobs:
           for key in OPENCLAW_UPSTREAM OPENCLAW_VERSION \
                      ALIYUN_CLI_VERSION \
                      AWS_CLI_VERSION \
+                     AZDO_MCP_VERSION \
                      AZ_ACCOUNTS_VERSION \
                      AZ_AUTOMATION_VERSION \
                      AZ_DATAFACTORY_VERSION \
@@ -225,9 +226,12 @@ jobs:
                      DOTNET_SDK_VERSION \
                      GCLOUD_VERSION \
                      GH_CLI_VERSION \
+                     GITEA_MCP_VERSION \
                      GITHUB_MCP_SERVER_VERSION \
+                     GITLAB_MCP_VERSION \
                      GITLEAKS_VERSION \
                      GIT_LFS_VERSION \
+                     GLAB_VERSION \
                      KUBELOGIN_VERSION \
                      MERMAID_CLI_VERSION \
                      NUCLEI_TEMPLATES_VERSION \
@@ -242,6 +246,7 @@ jobs:
                      SEMGREP_MCP_VERSION \
                      SEMGREP_VERSION \
                      SQLPACKAGE_VERSION \
+                     TEA_VERSION \
                      TERRAFORM_MCP_VERSION \
                      TERRAFORM_VERSION \
                      TESTSSL_VERSION; do
@@ -262,6 +267,7 @@ jobs:
             BASE_IMAGE=${{ env.REGISTRY }}/openclaw/openclaw-base:${{ steps.version.outputs.OPENCLAW_UPSTREAM }}
             ALIYUN_CLI_VERSION=${{ steps.version.outputs.ALIYUN_CLI_VERSION }}
             AWS_CLI_VERSION=${{ steps.version.outputs.AWS_CLI_VERSION }}
+            AZDO_MCP_VERSION=${{ steps.version.outputs.AZDO_MCP_VERSION }}
             AZ_ACCOUNTS_VERSION=${{ steps.version.outputs.AZ_ACCOUNTS_VERSION }}
             AZ_AUTOMATION_VERSION=${{ steps.version.outputs.AZ_AUTOMATION_VERSION }}
             AZ_DATAFACTORY_VERSION=${{ steps.version.outputs.AZ_DATAFACTORY_VERSION }}
@@ -271,9 +277,12 @@ jobs:
             DOTNET_SDK_VERSION=${{ steps.version.outputs.DOTNET_SDK_VERSION }}
             GCLOUD_VERSION=${{ steps.version.outputs.GCLOUD_VERSION }}
             GH_CLI_VERSION=${{ steps.version.outputs.GH_CLI_VERSION }}
+            GITEA_MCP_VERSION=${{ steps.version.outputs.GITEA_MCP_VERSION }}
             GITHUB_MCP_SERVER_VERSION=${{ steps.version.outputs.GITHUB_MCP_SERVER_VERSION }}
+            GITLAB_MCP_VERSION=${{ steps.version.outputs.GITLAB_MCP_VERSION }}
             GITLEAKS_VERSION=${{ steps.version.outputs.GITLEAKS_VERSION }}
             GIT_LFS_VERSION=${{ steps.version.outputs.GIT_LFS_VERSION }}
+            GLAB_VERSION=${{ steps.version.outputs.GLAB_VERSION }}
             KUBELOGIN_VERSION=${{ steps.version.outputs.KUBELOGIN_VERSION }}
             MERMAID_CLI_VERSION=${{ steps.version.outputs.MERMAID_CLI_VERSION }}
             NUCLEI_TEMPLATES_VERSION=${{ steps.version.outputs.NUCLEI_TEMPLATES_VERSION }}
@@ -288,6 +297,7 @@ jobs:
             SEMGREP_MCP_VERSION=${{ steps.version.outputs.SEMGREP_MCP_VERSION }}
             SEMGREP_VERSION=${{ steps.version.outputs.SEMGREP_VERSION }}
             SQLPACKAGE_VERSION=${{ steps.version.outputs.SQLPACKAGE_VERSION }}
+            TEA_VERSION=${{ steps.version.outputs.TEA_VERSION }}
             TERRAFORM_MCP_VERSION=${{ steps.version.outputs.TERRAFORM_MCP_VERSION }}
             TERRAFORM_VERSION=${{ steps.version.outputs.TERRAFORM_VERSION }}
             TESTSSL_VERSION=${{ steps.version.outputs.TESTSSL_VERSION }}

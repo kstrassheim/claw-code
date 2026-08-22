@@ -10,7 +10,7 @@ OPENCLAW_UPSTREAM=v2026.7.1-2
 # skips on. Bump the trailing .N for any change to builder/ that must reach the
 # cluster; leave it alone and the deploy reuses the image already in ACR
 # instead of rebuilding it.
-OPENCLAW_VERSION=v2026.7.1-2.0
+OPENCLAW_VERSION=v2026.7.1-2.1
 
 # Tools baked into the openclaw image.
 GH_CLI_VERSION=2.98.0
@@ -62,3 +62,7 @@ TESTSSL_VERSION=3.2.4
 TEA_VERSION=0.15.1
 GITEA_MCP_VERSION=1.6.0
 AZDO_MCP_VERSION=2.9.0
+
+# GitLab: the CLI and the MCP server TOOLS-gitlab.md names.
+GLAB_VERSION=1.97.0
+GITLAB_MCP_VERSION=0.7.0

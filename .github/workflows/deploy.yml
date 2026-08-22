@@ -179,6 +179,7 @@ jobs:
           for key in OPENCLAW_UPSTREAM OPENCLAW_VERSION \
                      ALIYUN_CLI_VERSION \
                      AWS_CLI_VERSION \
+                     AZDO_MCP_VERSION \
                      AZ_ACCOUNTS_VERSION \
                      AZ_AUTOMATION_VERSION \
                      AZ_DATAFACTORY_VERSION \
@@ -188,9 +189,12 @@ jobs:
                      DOTNET_SDK_VERSION \
                      GCLOUD_VERSION \
                      GH_CLI_VERSION \
+                     GITEA_MCP_VERSION \
                      GITHUB_MCP_SERVER_VERSION \
+                     GITLAB_MCP_VERSION \
                      GITLEAKS_VERSION \
                      GIT_LFS_VERSION \
+                     GLAB_VERSION \
                      KUBELOGIN_VERSION \
                      MERMAID_CLI_VERSION \
                      NUCLEI_TEMPLATES_VERSION \
@@ -205,6 +209,7 @@ jobs:
                      SEMGREP_MCP_VERSION \
                      SEMGREP_VERSION \
                      SQLPACKAGE_VERSION \
+                     TEA_VERSION \
                      TERRAFORM_MCP_VERSION \
                      TERRAFORM_VERSION \
                      TESTSSL_VERSION; do
@@ -237,6 +242,42 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Skip the cron build if this version is already in ACR
+        id: builtcron
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.OPENCLAW_VERSION }}"
+          if az acr repository show \
+               --name clwcodecodevdev2 \
+               --image "openclaw/claw-code-cron:${TAG}" >/dev/null 2>&1; then
+            echo ">> openclaw/claw-code-cron:${TAG} already in ACR — skipping"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push the cron image
+        # A SEPARATE, TINY IMAGE for the CronJobs. They do not run agents —
+        # they find the openclaw pod and `kubectl exec` into it — so the whole
+        # agent toolchain is weight they never touch. The full image is ~1.8GB
+        # and these fire every few minutes; on python:3.12-alpine plus kubectl
+        # the same work is a fraction of the pull.
+        #
+        # Same OPENCLAW_VERSION and the same skip: one tag, one decision about
+        # whether either image needs rebuilding.
+        if: steps.builtcron.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./builder
+          file: ./builder/cron/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/openclaw/claw-code-cron:latest
+            ${{ env.REGISTRY }}/openclaw/claw-code-cron:${{ steps.version.outputs.OPENCLAW_VERSION }}
+          platforms: linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Build and push Docker image
         if: steps.built.outputs.skip != 'true'
         uses: docker/build-push-action@v6
@@ -251,6 +292,7 @@ jobs:
             BASE_IMAGE=${{ env.REGISTRY }}/openclaw/openclaw-base:${{ steps.version.outputs.OPENCLAW_UPSTREAM }}
             ALIYUN_CLI_VERSION=${{ steps.version.outputs.ALIYUN_CLI_VERSION }}
             AWS_CLI_VERSION=${{ steps.version.outputs.AWS_CLI_VERSION }}
+            AZDO_MCP_VERSION=${{ steps.version.outputs.AZDO_MCP_VERSION }}
             AZ_ACCOUNTS_VERSION=${{ steps.version.outputs.AZ_ACCOUNTS_VERSION }}
             AZ_AUTOMATION_VERSION=${{ steps.version.outputs.AZ_AUTOMATION_VERSION }}
             AZ_DATAFACTORY_VERSION=${{ steps.version.outputs.AZ_DATAFACTORY_VERSION }}
@@ -260,9 +302,12 @@ jobs:
             DOTNET_SDK_VERSION=${{ steps.version.outputs.DOTNET_SDK_VERSION }}
             GCLOUD_VERSION=${{ steps.version.outputs.GCLOUD_VERSION }}
             GH_CLI_VERSION=${{ steps.version.outputs.GH_CLI_VERSION }}
+            GITEA_MCP_VERSION=${{ steps.version.outputs.GITEA_MCP_VERSION }}
             GITHUB_MCP_SERVER_VERSION=${{ steps.version.outputs.GITHUB_MCP_SERVER_VERSION }}
+            GITLAB_MCP_VERSION=${{ steps.version.outputs.GITLAB_MCP_VERSION }}
             GITLEAKS_VERSION=${{ steps.version.outputs.GITLEAKS_VERSION }}
             GIT_LFS_VERSION=${{ steps.version.outputs.GIT_LFS_VERSION }}
+            GLAB_VERSION=${{ steps.version.outputs.GLAB_VERSION }}
             KUBELOGIN_VERSION=${{ steps.version.outputs.KUBELOGIN_VERSION }}
             MERMAID_CLI_VERSION=${{ steps.version.outputs.MERMAID_CLI_VERSION }}
             NUCLEI_TEMPLATES_VERSION=${{ steps.version.outputs.NUCLEI_TEMPLATES_VERSION }}
@@ -277,6 +322,7 @@ jobs:
             SEMGREP_MCP_VERSION=${{ steps.version.outputs.SEMGREP_MCP_VERSION }}
             SEMGREP_VERSION=${{ steps.version.outputs.SEMGREP_VERSION }}
             SQLPACKAGE_VERSION=${{ steps.version.outputs.SQLPACKAGE_VERSION }}
+            TEA_VERSION=${{ steps.version.outputs.TEA_VERSION }}
             TERRAFORM_MCP_VERSION=${{ steps.version.outputs.TERRAFORM_MCP_VERSION }}
             TERRAFORM_VERSION=${{ steps.version.outputs.TERRAFORM_VERSION }}
             TESTSSL_VERSION=${{ steps.version.outputs.TESTSSL_VERSION }}

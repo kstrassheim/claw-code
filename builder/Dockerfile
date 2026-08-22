@@ -146,6 +146,34 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && /usr/local/bin/tea --version
 
+# GitLab: the `glab` CLI and the MCP server the tools doc names.
+#
+# TOOLS-gitlab.md documented both as ABSENT — "neither the glab CLI nor the
+# MCP is installed" — while the forge layer already spoke GitLab and the pins
+# already existed in /VERSIONS. So the bot could reason about GitLab and then
+# reach for a binary that was not there.
+#
+# `glab` publishes from GitLab rather than GitHub, and its archive nests the
+# binary under bin/. The MCP is npm and is vendored at build time rather than
+# resolved by npx at run time, for the same reason as the Azure DevOps one: a
+# pod that cannot reach the registry must still start.
+ARG GLAB_VERSION
+ARG GITLAB_MCP_VERSION
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && curl -fsSL -o /tmp/glab.tar.gz \
+      "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_arm64.tar.gz" \
+ && tar -xzf /tmp/glab.tar.gz -C /tmp \
+ && mv /tmp/bin/glab /usr/local/bin/glab \
+ && chmod 0755 /usr/local/bin/glab \
+ && rm -rf /tmp/glab.tar.gz /tmp/bin \
+ && apt-get purge -y --auto-remove curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && /usr/local/bin/glab --version
+RUN npm install -g "@yoda.digital/gitlab-mcp-server@${GITLAB_MCP_VERSION}" \
+ && npm cache clean --force
+
 # Azure DevOps: the `az devops` CLI extension and the official MCP server.
 # The extension rides on the azure-cli installed below rather than being its
 # own binary, so it has no version pin of its own. The MCP is npm and is
