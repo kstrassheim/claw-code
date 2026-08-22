@@ -76,7 +76,18 @@ and applies a plain Kubernetes Secret straight to the cluster via
    az role assignment create --role "Storage Account Contributor" --assignee-object-id $MI_PRINCIPAL_ID --scope $RG_ID
    ```
 
-5. **Key Vault access for the state encryption key.** The state is encrypted
+5. **State storage access.** The state lives in the `mytofustates` account,
+   which is in a *different* resource group, so the grants above do not reach
+   it. Without this, `tofu init` fails with `AuthorizationPermissionMismatch`
+   while listing blobs:
+   ```bash
+   SA_ID=$(az storage account show --name mytofustates --query id -o tsv)
+   az role assignment create --role "Storage Blob Data Contributor" \
+     --assignee-object-id $MI_PRINCIPAL_ID --assignee-principal-type ServicePrincipal \
+     --scope "$SA_ID"
+   ```
+
+6. **Key Vault access for the state encryption key.** The state is encrypted
    with the RSA key named `claw-code` in `kv-mytofustates`, and the deploy
    identity authenticates to it as itself — so it needs crypto rights on that
    key. The vault is RBAC-enabled and lives in a different resource group, so
@@ -89,7 +100,7 @@ and applies a plain Kubernetes Secret straight to the cluster via
      --scope "$KEY_SCOPE"
    ```
 
-6. **OpenTofu state** already exists:
+7. **OpenTofu state** already exists:
    - Account: `mytofustates`
    - Container: `claw-code`
    - Key: `dev.tfstate`
