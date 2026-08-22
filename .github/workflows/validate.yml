@@ -265,9 +265,34 @@ jobs:
             echo "${key}=$(grep "^${key}=" VERSIONS | cut -d= -f2)" >> $GITHUB_OUTPUT
           done
 
+      - name: Skip the build if this version is already in ACR
+        id: skip
+        if: steps.acr.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.OPENCLAW_VERSION }}"
+          # SAME RULE AS THE DEPLOY. The image is published under
+          # OPENCLAW_VERSION, so "is that tag in ACR" is the question "has this
+          # image been built" — and if it has, this pull request cannot have
+          # changed it. Rebuilding to throw the result away would cost ~17
+          # minutes to re-establish what the tag already records.
+          #
+          # The consequence is the rule the README states: a change under
+          # builder/ that must reach the cluster requires bumping
+          # OPENCLAW_VERSION. Leave it alone and neither this check nor the
+          # deploy rebuilds — correctly, because nothing said the image changed.
+          if az acr repository show \
+               --name clwcodecodevdev2 \
+               --image "openclaw/claw-code:${TAG}" >/dev/null 2>&1; then
+            echo ">> openclaw/claw-code:${TAG} already built — skipping"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build Docker image (no push)
         # Nothing to build FROM until the registry exists — see the login step.
-        if: steps.acr.outputs.present == 'true'
+        if: steps.acr.outputs.present == 'true' && steps.skip.outputs.skip != 'true'
         uses: docker/build-push-action@v7
         with:
           context: ./builder
@@ -422,8 +447,10 @@ jobs:
         run: sh builder/verify-skills-locked.sh
 
       - name: No unlisted bundled skills in the image
-        # Only meaningful when an image was built — see the ACR login step.
-        if: steps.acr.outputs.present == 'true'
+        # Only meaningful when an image was built here: nothing to inspect when
+        # the build was skipped, and the tag that already exists passed these
+        # when it was built.
+        if: steps.acr.outputs.present == 'true' && steps.skip.outputs.skip != 'true'
         # An upstream skill that survives the strip is a capability the agent
         # can load at runtime, outside the static MCP allowlist. The strip
         # cannot be trusted to have worked — `rm -rf` on a path that moved in
@@ -446,8 +473,10 @@ jobs:
           echo "OK - no unlisted bundled skills in the image."
 
       - name: The lockdown must actually hold
-        # Only meaningful when an image was built — see the ACR login step.
-        if: steps.acr.outputs.present == 'true'
+        # Only meaningful when an image was built here: nothing to inspect when
+        # the build was skipped, and the tag that already exists passed these
+        # when it was built.
+        if: steps.acr.outputs.present == 'true' && steps.skip.outputs.skip != 'true'
         # The static check says the manifests are right; this one tries to
         # DEFEAT the real lockdown as uid 1000 inside the real image, and also
         # checks it did not go too far — the agent must still be able to write
