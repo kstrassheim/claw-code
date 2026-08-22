@@ -28,6 +28,15 @@ NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
 # found" before doing any work.
 APP_LABEL="${OPENCLAW_APP_LABEL:-claw-code}"
 
+# The container inside that pod. Same story as APP_LABEL: it was hardcoded to
+# `openclaw`, so once the pod was FOUND the exec still failed —
+#
+#     error: container openclaw is not valid for pod claw-code-...
+#     out of: claw-code, fix-perms (init), render-config (init)
+#
+# Both deployments now name the container claw-code, so that is the default.
+CONTAINER="${OPENCLAW_CONTAINER:-claw-code}"
+
 # Resolve the running openclaw pod once per tick.
 OPENCLAW_POD=$(kubectl -n "$NAMESPACE" get pod \
     -l "app=$APP_LABEL,component=server" \
@@ -58,7 +67,7 @@ echo "openclaw pod: $OPENCLAW_POD"
 
 # Quota / rate-limit watch. Reads the runners' own logs, which is why it runs
 # in the pod that has them.
-kubectl -n "$NAMESPACE" exec "$OPENCLAW_POD" -c openclaw -- \
+kubectl -n "$NAMESPACE" exec "$OPENCLAW_POD" -c "$CONTAINER" -- \
     llm-quota --check >/dev/null 2>&1 || true
 
 # Roll the sprint over if a scheduled boundary has passed.
@@ -71,7 +80,7 @@ kubectl -n "$NAMESPACE" exec "$OPENCLAW_POD" -c openclaw -- \
 # rollover normal and self-healing. Idempotent: it rolls only when the running
 # sprint started before the most recent boundary, so a hundred ticks in a row
 # do nothing.
-kubectl -n "$NAMESPACE" exec "$OPENCLAW_POD" -c openclaw -- \
+kubectl -n "$NAMESPACE" exec "$OPENCLAW_POD" -c "$CONTAINER" -- \
     planning sprint-tick 2>&1 | grep -v '^$' || true
 
 # Record stories whose pull request has been merged, WHOEVER merged it.
@@ -80,7 +89,7 @@ kubectl -n "$NAMESPACE" exec "$OPENCLAW_POD" -c openclaw -- \
 # run happens after the merge — so a merge performed by a person is invisible
 # to every report built on that field. This sweep fills the gap; it only ever
 # fills an EMPTY field and never corrects one.
-kubectl -n "$NAMESPACE" exec "$OPENCLAW_POD" -c openclaw -- \
+kubectl -n "$NAMESPACE" exec "$OPENCLAW_POD" -c "$CONTAINER" -- \
     record-deliveries 2>&1 | grep -v '^$' || true
 
 # WHY THESE ARE NOT ABSOLUTE PATHS.
