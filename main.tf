@@ -124,6 +124,15 @@ output "container_registry_login_server" {
 # =============================================================================
 # AKS Cluster
 # =============================================================================
+# CHANGING THE REGION REPLACES THIS CLUSTER, and the replacement is not free:
+# the same cluster name cannot exist in two regions at once, so a create fired
+# before the old delete finishes fails with
+#
+#     409 InvalidResourceLocation
+#
+# That is a race, not a configuration error — the retry succeeds once the
+# delete completes. It cost two runs to recognise, so it is written down here
+# rather than rediscovered.
 resource "azurerm_kubernetes_cluster" "aks" {
   name                = local.cluster_name
   resource_group_name = data.azurerm_resource_group.rg.name
