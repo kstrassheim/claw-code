@@ -50,6 +50,13 @@ jobs:
           echo "OK — at least one LLM API key is configured."
 
   tofu-plan:
+    # PULL REQUESTS ONLY. The deploy applies the same state on push, and both
+    # take the state lock — running them together made the deploy fail with
+    # "state blob is already locked" on the very merge that was meant to
+    # provision everything. The plan is a pre-merge gate; after the merge the
+    # apply is the authority, and a plan alongside it is redundant as well as
+    # racy.
+    if: github.event_name == 'pull_request'
     name: OpenTofu Plan
     runs-on: ubuntu-latest
     environment: dev

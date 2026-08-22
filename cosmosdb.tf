@@ -26,8 +26,9 @@ resource "azurerm_user_assigned_identity" "pod" {
 # match the pod's ServiceAccount exactly — namespace and name — or the token
 # exchange fails with a mismatch that reads like a permissions error.
 resource "azurerm_federated_identity_credential" "pod" {
-  name                      = "${var.app_name}-workload"
-  resource_group_name       = data.azurerm_resource_group.rg.name
+  name = "${var.app_name}-workload"
+  # resource_group_name is deprecated on this resource and goes away in the
+  # next major provider version; the identity id already scopes it.
   user_assigned_identity_id = azurerm_user_assigned_identity.pod.id
   audience                  = ["api://AzureADTokenExchange"]
   issuer                    = azurerm_kubernetes_cluster.aks.oidc_issuer_url
