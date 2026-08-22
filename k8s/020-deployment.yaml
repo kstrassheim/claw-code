@@ -376,22 +376,22 @@ spec:
             name: claw-code-tools-md
         - name: skill-developer
           configMap:
-            name: openclaw-skill-developer
+            name: claw-code-skill-developer
         - name: skill-tester
           configMap:
-            name: openclaw-skill-tester
+            name: claw-code-skill-tester
         - name: skill-reviewer
           configMap:
-            name: openclaw-skill-reviewer
+            name: claw-code-skill-reviewer
         - name: skill-projects
           configMap:
-            name: openclaw-skill-projects
+            name: claw-code-skill-projects
         - name: skill-planning
           configMap:
-            name: openclaw-skill-planning
+            name: claw-code-skill-planning
         - name: config-template
           configMap:
-            name: openclaw-config-template
+            name: claw-code-config-template
         - name: render-scripts
           configMap:
             name: claw-code-render-scripts

@@ -17,7 +17,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: openclaw-skill-planning
+  name: claw-code-skill-planning
   namespace: claw-code
 data:
   SKILL.md: |

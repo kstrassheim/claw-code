@@ -60,9 +60,9 @@ def load_template(path: str) -> dict:
     for doc in docs:
         if not doc:
             continue
-        if (doc.get("metadata") or {}).get("name") == "openclaw-config-template":
+        if (doc.get("metadata") or {}).get("name") == "claw-code-config-template":
             return json.loads(doc["data"]["openclaw.json"])
-    raise SystemExit("openclaw-config-template not found in " + path)
+    raise SystemExit("claw-code-config-template not found in " + path)
 
 
 def check(cfg: dict) -> list[str]:

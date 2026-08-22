@@ -181,10 +181,10 @@ echo "== 3. the loadable skills are exactly the ones this repo defines =="
 # skills are built this way and MUST be there; nothing else may be.
 MOUNTED="$(grep -oE 'workspace/skills/[a-z0-9-]+/SKILL\.md' "$DEPLOYMENT" \
            | sed 's|workspace/skills/||; s|/SKILL\.md||' | sort -u)"
-VOLUMES="$(grep -oE 'name: openclaw-skill-[a-z0-9-]+' "$DEPLOYMENT" \
-           | sed 's|name: openclaw-skill-||' | sort -u)"
-DEFINED="$(grep -rhoE '^  name: openclaw-skill-[a-z0-9-]+' k8s/*.yaml \
-           | sed 's|^  name: openclaw-skill-||' | sort -u)"
+VOLUMES="$(grep -oE 'name: claw-code-skill-[a-z0-9-]+' "$DEPLOYMENT" \
+           | sed 's|name: claw-code-skill-||' | sort -u)"
+DEFINED="$(grep -rhoE '^  name: claw-code-skill-[a-z0-9-]+' k8s/*.yaml \
+           | sed 's|^  name: claw-code-skill-||' | sort -u)"
 
 if [ -z "$MOUNTED" ]; then
   fail "no skill mounts found in $DEPLOYMENT — the grep above has gone stale"
@@ -198,11 +198,11 @@ fi
 # written and then silently never loaded.
 for name in $MOUNTED; do
   if ! echo "$VOLUMES" | grep -qx "$name"; then
-    fail "skill '$name' is mounted but has no openclaw-skill-$name volume"
+    fail "skill '$name' is mounted but has no claw-code-skill-$name volume"
   elif echo "$DEFINED" | grep -qx "$name"; then
-    ok "$name ← ConfigMap openclaw-skill-$name, defined in k8s/"
+    ok "$name ← ConfigMap claw-code-skill-$name, defined in k8s/"
   else
-    fail "skill '$name' mounts ConfigMap openclaw-skill-$name, which no
+    fail "skill '$name' mounts ConfigMap claw-code-skill-$name, which no
         manifest in k8s/ defines — it would resolve to whatever else in the
         cluster claims that name"
   fi
@@ -210,7 +210,7 @@ done
 
 for name in $DEFINED; do
   if echo "$MOUNTED" | grep -qx "$name"; then continue; fi
-  fail "k8s/ defines the skill ConfigMap openclaw-skill-$name but
+  fail "k8s/ defines the skill ConfigMap claw-code-skill-$name but
         $DEPLOYMENT never mounts it — one of the bot's own skills would not
         be loaded at all"
 done

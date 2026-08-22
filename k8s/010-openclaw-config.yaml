@@ -15,7 +15,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: openclaw-config-template
+  name: claw-code-config-template
   namespace: claw-code
 data:
   openclaw.json: |

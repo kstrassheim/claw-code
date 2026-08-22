@@ -5,7 +5,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: openclaw-skill-reviewer
+  name: claw-code-skill-reviewer
   namespace: claw-code
 data:
   SKILL.md: |
@@ -220,7 +220,7 @@ metadata:
   namespace: claw-code
 subjects:
   - kind: ServiceAccount
-    name: openclaw
+    name: claw-code
     namespace: claw-code
 roleRef:
   apiGroup: rbac.authorization.k8s.io

@@ -12,7 +12,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: openclaw-skill-developer
+  name: claw-code-skill-developer
   namespace: claw-code
 data:
   SKILL.md: |
