@@ -23,8 +23,8 @@ data:
       "agents": {
         "defaults": {
           "model": {
-            "primary": "kimi/k3",
-            "fallbacks": ["minimax/MiniMax-M3", "mistral/mistral-large-latest"]
+            "primary": "mistral/mistral-large-latest",
+            "fallbacks": ["kimi/k3", "minimax/MiniMax-M3"]
           },
           "imageModel": {
             "primary": "minimax/MiniMax-M3",
@@ -214,7 +214,16 @@ data:
       if (!process.env.MISTRAL_OK) {
         console.log("MISTRAL_API_KEY not set — stripping Mistral");
         delete c.models?.providers?.mistral;
-        if (c.agents?.defaults?.model) c.agents.defaults.model.fallbacks = drop(c.agents.defaults.model.fallbacks, "mistral/");
+        if (c.agents?.defaults?.model) {
+          c.agents.defaults.model.fallbacks = drop(c.agents.defaults.model.fallbacks, "mistral/");
+          // Mistral is the default primary, so without this the pod would boot
+          // pointing at a provider that was just deleted.
+          if ((c.agents.defaults.model.primary || "").startsWith("mistral/")) {
+            c.agents.defaults.model.primary = process.env.MOONSHOT_OK
+              ? "kimi/k3"
+              : "minimax/MiniMax-M3";
+          }
+        }
         if (c.agents?.defaults?.imageModel) {
           c.agents.defaults.imageModel.fallbacks = drop(c.agents.defaults.imageModel.fallbacks, "mistral/");
           if ((c.agents.defaults.imageModel.primary || "").startsWith("mistral/")) {
@@ -295,6 +304,36 @@ data:
       echo "WARN: node unavailable for runtime-state carry-over — pairings will reset"
     else
       echo "No existing openclaw.json on the PVC — writing rendered config as-is"
+    fi
+
+    # Ensure the gateway has an auth token BEFORE the config is persisted.
+    #
+    # gateway.auth is runtime state: the block above carries it forward from an
+    # existing PVC file, and openclaw generates it on first run. Neither happens
+    # on a fresh PVC — the carry-forward has nothing to read, and openclaw exits
+    # before generating anything:
+    #
+    #     Refusing to bind gateway to lan without auth.  (exit 78)
+    #
+    # So the pod crashlooped on every new cluster. Generating it here closes the
+    # bootstrap gap; once written it is carried forward like any other runtime
+    # state, so it stays stable across restarts and redeploys.
+    if command -v node >/dev/null 2>&1; then
+      node -e '
+        const fs = require("fs"), crypto = require("crypto");
+        const f = process.argv[1];
+        const c = JSON.parse(fs.readFileSync(f, "utf8"));
+        c.gateway = c.gateway || {};
+        if (c.gateway.auth && c.gateway.auth.token) {
+          console.log("gateway.auth.token already present — keeping it");
+        } else {
+          c.gateway.auth = {...(c.gateway.auth || {}), mode: "token", token: crypto.randomBytes(32).toString("hex")};
+          console.log("Generated a gateway.auth.token (none on the PVC yet)");
+          fs.writeFileSync(f, JSON.stringify(c, null, 2));
+        }
+      ' /tmp/openclaw.json
+    else
+      echo "WARN: node unavailable — cannot ensure gateway.auth.token; gateway may refuse to bind"
     fi
 
     cp /tmp/openclaw.json "$PERSISTENT_FILE"
