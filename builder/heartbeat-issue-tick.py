@@ -54,6 +54,7 @@ deployment with one behaves exactly as it always did.
 Env:
   GITHUB_TOKEN              — bot's credentials on GitHub
   GITLAB_URL / GITLAB_API_TOKEN
+  GITEA_URL / GITEA_API_TOKEN
                             — bot's credentials on GitLab; unset means the
                               host is skipped, which is the normal state
   HEARTBEAT_MAX_PER_REPO    (default 1)
@@ -676,7 +677,8 @@ def list_wait_markers(namespace: str, pod: str) -> tuple[set, set]:
 def main() -> int:
     if not FORGES:
         json.dump({"error": "no code host is configured (set GITHUB_TOKEN, "
-                            "or GITLAB_URL and GITLAB_API_TOKEN)"}, sys.stdout)
+                            "GITLAB_URL and GITLAB_API_TOKEN, or "
+                            "GITEA_URL and GITEA_API_TOKEN)"}, sys.stdout)
         return 1
     try:
         namespace = _read(f"{K8S_SA_DIR}/namespace")

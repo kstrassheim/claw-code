@@ -49,6 +49,10 @@ COPY --chmod=0755 reviewer-tick.py        /usr/local/bin/reviewer-tick
 
 # Modules they import. 0644 like the agent image — imported, never executed.
 COPY --chmod=0644 forge.py               /usr/local/bin/forge.py
+COPY --chmod=0644 forge_github.py        /usr/local/bin/forge_github.py
+COPY --chmod=0644 forge_gitlab.py        /usr/local/bin/forge_gitlab.py
+COPY --chmod=0644 forge_gitea.py         /usr/local/bin/forge_gitea.py
+COPY --chmod=0644 forge_azdo.py          /usr/local/bin/forge_azdo.py
 COPY --chmod=0644 issue_priority.py      /usr/local/bin/issue_priority.py
 COPY --chmod=0644 issue_status.py        /usr/local/bin/issue_status.py
 COPY --chmod=0644 approval_release.py    /usr/local/bin/approval_release.py

@@ -48,7 +48,13 @@ PATHS = re.compile(
 
 # Files that legitimately hold transport: the implementations themselves, and
 # the tests that pin them.
-IMPLEMENTATIONS = {"forge.py", "forge-cli"}
+#
+# The seam and the transport stayed in `forge.py`; one module per host sits
+# flat beside it. Listed by name rather than matched by a `forge_*` glob on
+# purpose — a new file that speaks REST should be a deliberate entry here,
+# which is the guarantee the single filename used to give.
+IMPLEMENTATIONS = {"forge.py", "forge_github.py", "forge_gitlab.py",
+                   "forge_gitea.py", "forge_azdo.py", "forge-cli"}
 
 # ---------------------------------------------------------------------------
 # NOT CONVERTED YET. Delete an entry when its file stops speaking REST — the

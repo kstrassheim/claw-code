@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# mermaid-render: turn mermaid source into a PNG and print the path.
+#
+# WHY THIS EXISTS
+# The chat channel does not draw mermaid. Posting a mermaid block there shows
+# the source as a code block, which is worse than useless as a chart — it
+# looks like the answer failed. The code forge DOES render it in markdown, so
+# the mermaid form stays the right thing to put in an issue or a pull request;
+# this is for the chat.
+#
+# WHAT IT IS NOT
+# Not a general renderer for anything a user pastes. The input this is built
+# for is a chart the bot generated from its own store (`planning burndown
+# --format mermaid` and friends). It runs chromium without a sandbox, which is
+# acceptable for that and would not be for arbitrary input.
+#
+# Usage — a file path or stdin, both work:
+#   planning burndown --format mermaid | mermaid-render
+#   mermaid-render /tmp/burndown.mmd
+#   mermaid-render --out /tmp/sprint.png < chart.mmd
+#   mermaid-render --theme dark --width 1400 chart.mmd
+#   mermaid-render --format svg chart.mmd
+#
+# FORMAT: png by default, svg on request. The bot-wide setting lives in
+# ~/.openclaw/.chart-format and --format overrides it for one call. The
+# planning skill also accepts `mermaid` there, meaning "post the source and do
+# not render" — that never reaches this script, and if it does it falls back
+# to png rather than writing a file nothing can open.
+#
+# Prints the PNG path on stdout and nothing else, so it composes:
+#   openclaw message send --channel telegram --target "$T" \
+#     --media "$(planning burndown --format mermaid | mermaid-render)"
+set -uo pipefail
+
+OUT=""
+# The chart theme lives in a file rather than in flags: the colours are a
+# measured choice (see mermaid-theme.json), not something to retype per call.
+THEME_FILE="${MERMAID_THEME_FILE:-/usr/local/share/mermaid-theme.json}"
+THEME="${MERMAID_THEME:-}"
+WIDTH="${MERMAID_WIDTH:-1200}"
+# The output format, lowest precedence first: the built-in default, the bot's
+# chart-format setting, then --format on this call. `mermaid` is a valid
+# setting for the SKILL — it means "post the source, do not render" — so it
+# never reaches here; if it somehow does, treat it as the default rather than
+# writing a file called chart.mermaid that nothing can display.
+FORMAT="${MERMAID_FORMAT:-$(cat "${HOME:-/home/node}/.openclaw/.chart-format" 2>/dev/null || echo png)}"
+BG="${MERMAID_BACKGROUND:-#fcfcfb}"
+
+IN_FILE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)        OUT="${2:-}"; shift 2 ;;
+    # png (default) or svg. mmdc picks the renderer from the OUTPUT FILE
+    # EXTENSION, so this only has to decide the extension — passing an
+    # explicit format flag as well would be a second place to keep in step.
+    --format)     FORMAT="${2:-png}"; shift 2 ;;
+    --theme)      THEME="${2:-default}"; shift 2 ;;
+    --width)      WIDTH="${2:-1200}"; shift 2 ;;
+    --background) BG="${2:-white}"; shift 2 ;;
+    -h|--help)    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --)           shift; IN_FILE="${1:-}"; shift ;;
+    -*)           echo "unknown option: $1" >&2; exit 2 ;;
+    # A bare argument is the input file. Writing the chart to a file and
+    # passing its path is the obvious way to call this, and refusing it was a
+    # real failure: the bot wrote /tmp/burndown.mmd, called
+    # `mermaid-render /tmp/burndown.mmd`, and got "unknown option" — which
+    # reads as the tool being broken rather than as the wrong calling
+    # convention. Accepting stdin only made the pipe the single supported form
+    # without ever saying so.
+    *)            IN_FILE="$1"; shift ;;
+  esac
+done
+
+command -v mmdc >/dev/null 2>&1 || {
+  echo "mermaid-render: mmdc is not installed in this image" >&2
+  exit 3
+}
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+SRC="$WORK/chart.mmd"
+if [ -n "$IN_FILE" ]; then
+  # Named but absent is a mistake worth naming. Falling through to stdin here
+  # would block on a terminal, or silently render nothing.
+  [ -r "$IN_FILE" ] || {
+    echo "mermaid-render: cannot read $IN_FILE" >&2
+    exit 4
+  }
+  cat "$IN_FILE" > "$SRC"
+else
+  cat > "$SRC"
+fi
+
+# An empty input is a caller bug, not a chart. Rendering it produces a blank
+# image that looks like a chart with no data — the one outcome that must not
+# be posted into a chat as if it were an answer.
+if [ ! -s "$SRC" ]; then
+  echo "mermaid-render: empty input, nothing to draw" >&2
+  exit 4
+fi
+
+# Extract the fenced block, discarding ANYTHING outside it.
+#
+# Removing the first line and a trailing fence was not enough. A report that
+# prints an explanatory sentence after its chart leaves the closing fence in
+# the middle of the input, and mermaid stops at it:
+#
+#     Lexical error on line 7. Unrecognized text.  ..., 0, 0]```  74 points
+#
+# That is a real failure, not a hypothetical: the first render in the pod died
+# exactly there. Prose around a diagram is normal — an agent composing one
+# will introduce it — so take what is between the fences and drop the rest.
+if grep -q '^[[:space:]]*```' "$SRC"; then
+  awk '
+    /^[[:space:]]*```/ { fence++; next }
+    fence == 1         { print }
+  ' "$SRC" > "$SRC.stripped"
+  # Only accept the extraction if it found something. A lone opening fence
+  # with no closing one would otherwise silently empty the input.
+  if [ -s "$SRC.stripped" ]; then
+    mv -f "$SRC.stripped" "$SRC"
+  else
+    rm -f "$SRC.stripped"
+    echo "mermaid-render: found a fence but no diagram inside it" >&2
+    exit 4
+  fi
+fi
+
+case "$FORMAT" in
+  svg|png) ;;
+  *)       FORMAT=png ;;
+esac
+[ -n "$OUT" ] || OUT="${TMPDIR:-/tmp}/mermaid-$(date +%s)-$$.${FORMAT}"
+
+# A WRITABLE HOME FOR THE BROWSER, and it is not optional.
+#
+# Chromium spawns chrome_crashpad_handler before anything else, and that
+# handler derives its crash database from the home/config directory. Without a
+# writable one it exits with
+#
+#     chrome_crashpad_handler: --database is required
+#
+# which puppeteer surfaces as "Failed to launch the browser process: Code:
+# null". Nothing in that mentions a filesystem, so it reads like a broken
+# chromium or a missing flag. It is neither.
+#
+# Found by claw-mock (f1416fb1), whose pod runs readOnlyRootFilesystem and hit
+# it on the first real render while every offline test passed. $HOME happens to
+# be writable in THIS pod, so we do not have that bug today — but the caller's
+# environment is not something to depend on: the chat agent already runs with a
+# sanitised one (AZURE_CLIENT_ID arrives empty there), and a renderer that
+# works from a pod shell and fails from the agent would be invisible in exactly
+# the same way.
+#
+# The directory lives inside $WORK, so the EXIT trap removes it: one browser
+# profile per render, nothing accumulating in /tmp.
+BROWSER_HOME="$WORK/home"
+mkdir -p "$BROWSER_HOME"
+
+# --theme and --configFile fight: a named theme overrides the file. So the
+# measured theme file is the default, and naming a theme is the deliberate
+# escape hatch for someone who wants mermaid's own dark or forest.
+if [ -n "$THEME" ]; then
+  set -- --theme "$THEME"
+elif [ -r "$THEME_FILE" ]; then
+  set -- --configFile "$THEME_FILE"
+else
+  # An older image will not carry the theme file. Rendering in mermaid's
+  # default colours is a worse chart, not a failure.
+  set -- --theme default
+fi
+
+if ! HOME="$BROWSER_HOME" \
+     XDG_CONFIG_HOME="$BROWSER_HOME/.config" \
+     XDG_CACHE_HOME="$BROWSER_HOME/.cache" \
+     mmdc --input "$SRC" --output "$OUT" \
+        --backgroundColor "$BG" --width "$WIDTH" "$@" \
+        --puppeteerConfigFile /etc/puppeteer-no-sandbox.json \
+        >"$WORK/mmdc.log" 2>&1; then
+  echo "mermaid-render: rendering failed" >&2
+  # 20 lines, not 5. mmdc ends every failure with the same three frames of
+  # puppeteer stack, so a short tail shows the caller nothing but
+  #
+  #     at ChildProcess.onClose (.../launch.js:343:24)
+  #
+  # while the line that says WHY sits a dozen lines higher. claw-mock hit this
+  # on 2026-08-05: the bot ran into the crashpad failure five times in a row,
+  # each time read an error that named no cause, and reasonably concluded its
+  # own diagram was at fault — simplifying a chart that was never the problem.
+  # An error report that omits the reason costs far more than the lines it
+  # saves.
+  tail -20 "$WORK/mmdc.log" >&2
+  exit 5
+fi
+
+[ -s "$OUT" ] || { echo "mermaid-render: produced an empty file" >&2; exit 5; }
+printf '%s\n' "$OUT"

@@ -43,6 +43,13 @@ configMapGenerator:
       - approval_release.py=approval_release.py
       - forge-cli=forge-cli
       - forge.py=forge.py
+      # One host per file. Flat, not a package: a ConfigMap key cannot
+      # contain a slash, and this ConfigMap is how builder code reaches a
+      # pod without an image rebuild.
+      - forge_github.py=forge_github.py
+      - forge_gitlab.py=forge_gitlab.py
+      - forge_gitea.py=forge_gitea.py
+      - forge_azdo.py=forge_azdo.py
       - issue_priority.py=issue_priority.py
       - issue_status.py=issue_status.py
       - lexical_guard.py=lexical_guard.py
@@ -94,10 +101,12 @@ configMapGenerator:
       - tools-md/ORDER
       - tools-md/TOOLS-alicloud.md
       - tools-md/TOOLS-argocd.md
+      - tools-md/TOOLS-azuredevops.md
       - tools-md/TOOLS-aws.md
       - tools-md/TOOLS-debug.md
       - tools-md/TOOLS-entra.md
       - tools-md/TOOLS-gcp.md
+      - tools-md/TOOLS-gitea.md
       - tools-md/TOOLS-gitflow.md
       - tools-md/TOOLS-github.md
       - tools-md/TOOLS-gitlab.md

@@ -65,10 +65,18 @@ def closure():
         with open(os.path.join(BUILDER, entry), encoding="utf-8") as fh:
             scan(fh.read())
 
+    # Visited is tracked by the NAME that was queued, not by the filename that
+    # was found. They are different strings — `forge` resolves to `forge.py` —
+    # so guarding on `found` never matched and nothing was ever marked seen.
+    # That was survivable only while the import graph had no cycles: the forge
+    # imports its host modules and each host imports the ABC back, and a walk
+    # with no visited set follows that pair forever.
+    seen: set[str] = set()
     while queue:
         name = queue.pop()
-        if name in STDLIB or name in found:
+        if name in STDLIB or name in seen:
             continue
+        seen.add(name)
         for candidate in (name + ".py", name):
             path = os.path.join(BUILDER, candidate)
             if os.path.isfile(path):

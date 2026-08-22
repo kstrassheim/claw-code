@@ -1,0 +1,95 @@
+#!/bin/sh
+# security-level: the minimum severity the pull-request reviewer reports
+# from GitHub code scanning, changeable at runtime.
+#
+# Backs the `security` commands of the `reviewer` chat skill. Writes
+# ~/.openclaw/security-level.conf on the workspace PVC, read at the start of
+# every review — so a change applies to the next review, with nothing
+# restarted and nothing redeployed. dev and prod have separate PVCs.
+#
+# Usage:
+#   security-level            # show the current threshold
+#   security-level set <critical|high|medium|low|off>
+#   security-level reset
+#
+# Findings BELOW the threshold are dropped before the reviewing agent sees
+# them, not shown-and-marked: handed 200 low findings it will write about
+# them, and the threshold exists to keep the review about what matters.
+#
+# `off` disables security reporting entirely. Nothing else does — a
+# threshold of `critical` still reports criticals.
+#
+# When nothing qualifies, the review says nothing at all about security. The
+# checks are already green at that point, and a "no findings" paragraph in
+# every single review teaches the reader to skip the section that will one
+# day matter.
+#
+# Exit codes: 0 ok · 1 usage · 2 unknown level · 3 write failed
+set -eu
+
+STATE_DIR="${HOME:-/home/node}/.openclaw"
+LEVEL_FILE="${SECURITY_LEVEL_FILE:-$STATE_DIR/security-level.conf}"
+DEFAULT_LEVEL=high
+LEVELS="critical high medium low off"
+
+_current() {
+  [ -r "$LEVEL_FILE" ] || { printf '%s\n' "$DEFAULT_LEVEL"; return 0; }
+  v="$(sed 's/#.*//' "$LEVEL_FILE" 2>/dev/null | tr -d '[:space:]' | tr 'A-Z' 'a-z' | grep -v '^$' | tail -1)"
+  for l in $LEVELS info unknown; do
+    [ "$v" = "$l" ] && { printf '%s\n' "$v"; return 0; }
+  done
+  # An unreadable setting must not silently disable security reporting —
+  # quiet is the worst failure mode here, so fall back to the default.
+  printf '%s\n' "$DEFAULT_LEVEL"
+}
+
+cmd_show() {
+  cur="$(_current)"
+  echo "Reviewer security threshold: $cur"
+  if [ "$cur" = off ]; then
+    echo "  Security findings are NOT reported in reviews."
+  else
+    echo "  Findings at $cur or above are raised in the review; anything below"
+    echo "  is dropped. A review with nothing qualifying says nothing about"
+    echo "  security at all."
+  fi
+  [ -r "$LEVEL_FILE" ] && echo "  Set explicitly. Store: $LEVEL_FILE" \
+                       || echo "  Built-in default ($DEFAULT_LEVEL). Nothing set."
+}
+
+cmd_set() {
+  [ $# -ge 1 ] || { echo "usage: security-level set <critical|high|medium|low|off>" >&2; return 1; }
+  want="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+  ok=""
+  for l in $LEVELS; do [ "$want" = "$l" ] && ok=1; done
+  [ -n "$ok" ] || { echo "unknown level: $1 (use: $LEVELS)" >&2; return 2; }
+  mkdir -p "$STATE_DIR"
+  tmp="$LEVEL_FILE.tmp.$$"
+  {
+    echo "# Minimum severity the pull-request reviewer reports from GitHub"
+    echo "# code scanning. Managed from chat — see the reviewer skill, or run"
+    echo "# security-level. Applies to the next review that starts."
+    echo "$want"
+  } > "$tmp" || return 3
+  mv -f "$tmp" "$LEVEL_FILE" || { rm -f "$tmp"; return 3; }
+  if [ "$want" = off ]; then
+    echo "security reporting OFF — reviews will not mention scanner findings"
+  else
+    echo "security threshold -> $want (findings below this are not reported)"
+  fi
+  echo "Applies to the next review that starts; one in flight keeps its threshold."
+}
+
+cmd_reset() {
+  rm -f "$LEVEL_FILE"
+  echo "security threshold back to the default ($DEFAULT_LEVEL)"
+}
+
+case "${1:-show}" in
+  show|status|get) cmd_show ;;
+  set)   shift; cmd_set "$@" ;;
+  reset) cmd_reset ;;
+  off)   cmd_set off ;;
+  -h|--help|help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "unknown command: $1" >&2; sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+esac

@@ -46,6 +46,80 @@ class Configuration(unittest.TestCase):
         self.assertEqual(
             forge.configured({"GITLAB_API_TOKEN": "t"}).kinds(), [])
 
+    def test_a_deployment_with_only_gitea_builds_only_gitea(self):
+        forges = forge.configured({"GITEA_URL": "https://t.invalid",
+                                   "GITEA_API_TOKEN": "t"})
+        self.assertEqual(forges.kinds(), [forge.GITEA])
+
+    def test_half_a_set_of_gitea_credentials_is_not_a_host(self):
+        self.assertEqual(
+            forge.configured({"GITEA_URL": "https://t.invalid"}).kinds(), [])
+        self.assertEqual(
+            forge.configured({"GITEA_API_TOKEN": "t"}).kinds(), [])
+
+    def test_all_three_sets_of_credentials_build_all_three(self):
+        forges = forge.configured({"GITHUB_TOKEN": "t",
+                                   "GITLAB_URL": "https://g.invalid",
+                                   "GITLAB_API_TOKEN": "t",
+                                   "GITEA_URL": "https://t.invalid",
+                                   "GITEA_API_TOKEN": "t"})
+        self.assertEqual(forges.kinds(),
+                         [forge.GITHUB, forge.GITLAB, forge.GITEA])
+
+    def test_adding_gitea_does_not_disturb_a_deployment_without_it(self):
+        # The whole promise of the seam: a deployment that has never heard of
+        # this host constructs exactly what it constructed before, and a
+        # missing set of credentials is not a fault to report.
+        for env in ({"GITHUB_TOKEN": "t"},
+                    {"GITLAB_URL": "https://g.invalid",
+                     "GITLAB_API_TOKEN": "t"}):
+            with self.subTest(env=sorted(env)):
+                self.assertNotIn(forge.GITEA, forge.configured(env).kinds())
+
+    def test_a_gitea_base_keeps_its_own_api_root(self):
+        forges = forge.configured({"GITEA_URL": "https://t.invalid/",
+                                   "GITEA_API_TOKEN": "t"})
+        self.assertEqual(forges.by_kind(forge.GITEA).api,
+                         "https://t.invalid/api/v1")
+
+    def test_a_deployment_with_only_azure_devops_builds_only_azure_devops(self):
+        forges = forge.configured({"AZDO_ORG_URL": "https://dev.azure.com/acme",
+                                   "AZDO_API_TOKEN": "t"})
+        self.assertEqual(forges.kinds(), [forge.AZDO])
+
+    def test_the_bare_organisation_name_is_enough(self):
+        # AZDO_ORG is what the CLI and the MCP server take, so a deployment
+        # sets one value rather than a name and a URL that must agree.
+        forges = forge.configured({"AZDO_ORG": "acme", "AZDO_API_TOKEN": "t"})
+        self.assertEqual(forges.kinds(), [forge.AZDO])
+        self.assertEqual(forges.by_kind(forge.AZDO).url,
+                         "https://dev.azure.com/acme")
+
+    def test_half_a_set_of_azure_devops_credentials_is_not_a_host(self):
+        self.assertEqual(
+            forge.configured({"AZDO_ORG_URL": "https://dev.azure.com/acme"}).kinds(), [])
+        self.assertEqual(
+            forge.configured({"AZDO_API_TOKEN": "t"}).kinds(), [])
+        self.assertEqual(
+            forge.configured({"AZDO_ORG": "acme"}).kinds(), [])
+
+    def test_all_four_sets_of_credentials_build_all_four(self):
+        forges = forge.configured({"GITHUB_TOKEN": "t",
+                                   "GITLAB_URL": "https://g.invalid",
+                                   "GITLAB_API_TOKEN": "t",
+                                   "GITEA_URL": "https://t.invalid",
+                                   "GITEA_API_TOKEN": "t",
+                                   "AZDO_ORG_URL": "https://dev.azure.com/acme",
+                                   "AZDO_API_TOKEN": "t"})
+        self.assertEqual(forges.kinds(),
+                         [forge.GITHUB, forge.GITLAB, forge.GITEA, forge.AZDO])
+
+    def test_adding_azure_devops_does_not_disturb_a_deployment_without_it(self):
+        for env in ({"GITHUB_TOKEN": "t"},
+                    {"GITEA_URL": "https://t.invalid", "GITEA_API_TOKEN": "t"}):
+            with self.subTest(env=sorted(env)):
+                self.assertNotIn(forge.AZDO, forge.configured(env).kinds())
+
     def test_no_credentials_at_all_is_no_host_and_not_a_crash(self):
         forges = forge.configured({})
         self.assertEqual(len(forges), 0)

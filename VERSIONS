@@ -56,3 +56,9 @@ SEMGREP_MCP_VERSION=0.9.0
 SEMGREP_VERSION=1.174.0
 SQLPACKAGE_VERSION=170.4.83
 TESTSSL_VERSION=3.2.4
+
+# Gitea and Azure DevOps: the CLI and MCP for each, added with the forge
+# modules that talk to them.
+TEA_VERSION=0.15.1
+GITEA_MCP_VERSION=1.6.0
+AZDO_MCP_VERSION=2.9.0
