@@ -54,7 +54,7 @@ and applies a plain Kubernetes Secret straight to the cluster via
 
 2. **User-Assigned Managed Identity** for GitHub Actions OIDC:
    ```bash
-   az identity create --name github-claw-code --resource-group claw-code
+   az identity create --name deploy-claw-code --resource-group claw-code
    ```
    Note the `clientId` for `AZURE_CLIENT_ID`.
 
@@ -69,14 +69,27 @@ and applies a plain Kubernetes Secret straight to the cluster via
 
 4. **Role assignments** on the identity:
    ```bash
-   MI_PRINCIPAL_ID=$(az identity show --name github-claw-code --resource-group claw-code --query principalId -o tsv)
+   MI_PRINCIPAL_ID=$(az identity show --name deploy-claw-code --resource-group claw-code --query principalId -o tsv)
    RG_ID=$(az group show --name claw-code --query id -o tsv)
 
    az role assignment create --role "Contributor" --assignee-object-id $MI_PRINCIPAL_ID --scope $RG_ID
    az role assignment create --role "Storage Account Contributor" --assignee-object-id $MI_PRINCIPAL_ID --scope $RG_ID
    ```
 
-5. **Terraform state** already exists:
+5. **Key Vault access for the state encryption key.** The state is encrypted
+   with the RSA key named `claw-code` in `kv-mytofustates`, and the deploy
+   identity authenticates to it as itself — so it needs crypto rights on that
+   key. The vault is RBAC-enabled and lives in a different resource group, so
+   the grants above do not reach it:
+   ```bash
+   KEY_ID=$(az keyvault key show --vault-name kv-mytofustates --name claw-code --query key.kid -o tsv)
+   KEY_SCOPE="/subscriptions/<sub>/resourceGroups/terraform/providers/Microsoft.KeyVault/vaults/kv-mytofustates/keys/claw-code"
+   az role assignment create --role "Key Vault Crypto User" \
+     --assignee-object-id $MI_PRINCIPAL_ID --assignee-principal-type ServicePrincipal \
+     --scope "$KEY_SCOPE"
+   ```
+
+6. **OpenTofu state** already exists:
    - Account: `mytofustates`
    - Container: `claw-code`
    - Key: `dev.tfstate`

@@ -309,6 +309,6 @@ output "kubeconfig" {
 }
 
 output "deploy_identity_client_id" {
-  description = "Client ID of the github-claw-code MI (used for Entra app registration OIDC clientID)"
+  description = "Client ID of the deploy-claw-code MI (used for Entra app registration OIDC clientID)"
   value       = data.azurerm_user_assigned_identity.deploy_identity.client_id
 }
