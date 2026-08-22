@@ -22,18 +22,18 @@ configured, each targeting a different host:
 Read TOOLS-gitflow.md for the workflow rules; this doc only
 covers GitLab-specific tools, auth, and shortcuts.
 
-## ⚠️ State: the binaries are in the image; the TOKENS may not be
+## ⚠️ State: GitLab support is documented but NOT wired in this image
 
-The `glab` CLI and `@yoda.digital/gitlab-mcp-server` are now installed
-by the Dockerfile, pinned in `/VERSIONS` as `GLAB_VERSION` and
-`GITLAB_MCP_VERSION`. The forge layer already spoke GitLab through
-`forge_gitlab.py`; what was missing was the tooling underneath it.
+In the current claw-code build, **neither** the `glab` CLI nor the
+GitLab MCP servers are baked into the image, and no GitLab tokens
+are sealed into `openclaw-secrets`. This document describes the
+target shape of GitLab support — it tells you what the MCP names
+will be once the build wires them, and what envs you will need.
 
-What is still a human step is the CREDENTIALS. Until the tokens below
-are sealed into `openclaw-secrets`, the binaries are present but
-unauthenticated, and **that is not the same as being able to act on
-GitLab.** Surface the unconfigured state and ask for the PATs rather
-than reporting a failure as if the feature were broken.
+Until the Dockerfile installs `glab` + `@yoda.digital/gitlab-mcp-server`
+AND a human seals the secrets below, **don't pretend the bot can
+act on GitLab.** Surface the unconfigured state and ask the user to
+provision the binaries + PATs.
 
 Secrets you will need (once wired):
 

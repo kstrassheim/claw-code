@@ -10,15 +10,15 @@ OPENCLAW_UPSTREAM=v2026.7.1-2
 # skips on. Bump the trailing .N for any change to builder/ that must reach the
 # cluster; leave it alone and the deploy reuses the image already in ACR
 # instead of rebuilding it.
-OPENCLAW_VERSION=v2026.7.1-2.1
+OPENCLAW_VERSION=v2026.7.1-2.2
 
 # Tools baked into the openclaw image.
 GH_CLI_VERSION=2.98.0
 GITHUB_MCP_SERVER_VERSION=1.10.1
-AWS_CLI_VERSION=2.34.45
+AWS_CLI_VERSION=2.36.29
 GCLOUD_VERSION=567.0.0
-ALIYUN_CLI_VERSION=3.3.14
-TERRAFORM_VERSION=1.13.0
+ALIYUN_CLI_VERSION=3.4.11
+TERRAFORM_VERSION=1.15.9
 
 # OpenTofu drives the CI pipelines. Terraform stays pinned above because the
 # BUILDER IMAGE still ships it for terraform-mcp — the agent may be pointed at
@@ -26,31 +26,27 @@ TERRAFORM_VERSION=1.13.0
 # with it. The two pins are independent on purpose.
 TOFU_VERSION=1.12.6
 TERRAFORM_MCP_VERSION=1.2.0
-CODE_SERVER_VERSION=4.118.0
+CODE_SERVER_VERSION=4.133.0
 
 # ---------------------------------------------------------------------------
 # Pins carried over with the claw-code-local toolchain: the security passes
 # (semgrep, bandit, gitleaks, nuclei, testssl, pip-audit), the PowerShell and
 # .NET stacks the reviewer needs, mermaid rendering, kubelogin, and OpenTofu.
 # ---------------------------------------------------------------------------
-AZ_ACCOUNTS_VERSION=4.0.2
-AZ_AUTOMATION_VERSION=1.11.1
-AZ_DATAFACTORY_VERSION=1.18.5
-AZ_SYNAPSE_VERSION=3.0.2
 BANDIT_VERSION=1.9.4
 DOTNET_SDK_VERSION=8.0
 GITLEAKS_VERSION=8.30.1
 GIT_LFS_VERSION=3.7.1
 KUBELOGIN_VERSION=0.2.19
-MERMAID_CLI_VERSION=11.12.0
+MERMAID_CLI_VERSION=11.16.0
 NUCLEI_TEMPLATES_VERSION=10.4.7
 NUCLEI_VERSION=3.11.1
 OPENTOFU_MCP_VERSION=0.1.5
 OPENTOFU_VERSION=1.12.6
-PESTER_VERSION=5.7.1
+PESTER_VERSION=6.1.0
 PIP_AUDIT_VERSION=2.10.1
 PSSCRIPTANALYZER_VERSION=1.25.0
-PWSH_VERSION=7.6.4
+PWSH_VERSION=7.6.5
 PYMONGO_VERSION=4.17.0
 SEMGREP_MCP_VERSION=0.9.0
 SEMGREP_VERSION=1.174.0
@@ -66,3 +62,4 @@ AZDO_MCP_VERSION=2.9.0
 # GitLab: the CLI and the MCP server TOOLS-gitlab.md names.
 GLAB_VERSION=1.97.0
 GITLAB_MCP_VERSION=0.7.0
+AZ_VERSION=16.2.0
