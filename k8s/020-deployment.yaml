@@ -96,7 +96,18 @@ spec:
         # node still can't write to it after the regroup. Runs as root
         # in a busybox-style shell from the openclaw image; idempotent.
         - name: fix-perms
-          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:latest
+          # PINNED TO THE VERSION, not :latest, and substituted by the deploy.
+          #
+          # `:latest` with `Always` re-pulled ~1.8GB on every rollout, even when
+          # the image was byte-identical — which it usually is, because the
+          # build already skips when OPENCLAW_VERSION has not moved. On a
+          # 2-vCPU node with a Recreate strategy that pull IS the rollout time.
+          #
+          # An immutable tag makes IfNotPresent correct rather than risky: the
+          # node either has this exact version or it does not, so there is
+          # nothing stale to serve. When the version does move, the tag moves
+          # with it and the pull happens then — once.
+          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:PLACEHOLDER_IMAGE_TAG
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 0
@@ -141,8 +152,8 @@ spec:
         # up the rendered value when it starts (envFrom resolves after
         # initContainers complete).
         - name: render-config
-          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:latest
-          imagePullPolicy: Always
+          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:PLACEHOLDER_IMAGE_TAG
+          imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "/scripts/render-config.sh"]
           env:
             # THE MOUNT COMES FIRST, and that ordering is the whole mechanism:
@@ -202,8 +213,8 @@ spec:
               memory: 256Mi
       containers:
         - name: claw-code
-          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:latest
-          imagePullPolicy: Always
+          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:PLACEHOLDER_IMAGE_TAG
+          imagePullPolicy: IfNotPresent
           env:
             # THE MOUNT COMES FIRST, and that ordering is the mechanism: the
             # same scripts exist in the image under /usr/local/bin, so

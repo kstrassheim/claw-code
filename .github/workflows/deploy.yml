@@ -484,6 +484,17 @@ jobs:
           fi
           sed -i "s|PLACEHOLDER_POD_CLIENT_ID|${CLIENT_ID}|g" k8s/020-deployment.yaml
           sed -i "s|PLACEHOLDER_COSMOS_ENDPOINT|${ENDPOINT}|g" k8s/020-deployment.yaml
+          # The image tag, so the manifests name an IMMUTABLE version rather
+          # than :latest. Without this the placeholder would reach the cluster
+          # literally and no pod could pull.
+          # Read from /VERSIONS, NOT from steps.version — that step belongs to
+          # the build job, and a steps.* reference across jobs resolves to
+          # empty. The tag would have become "" and every manifest would have
+          # named an image with no tag at all.
+          TAG="$(grep '^OPENCLAW_VERSION=' VERSIONS | cut -d= -f2)"
+          [ -n "$TAG" ] || { echo "::error::OPENCLAW_VERSION missing from VERSIONS"; exit 1; }
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${TAG}|g" k8s/*.yaml
+          echo ">> images pinned to ${TAG}"
           echo ">> workload identity ${CLIENT_ID}, planning store ${ENDPOINT}"
 
       - name: Apply k8s/ manifests

@@ -246,8 +246,8 @@ spec:
           restartPolicy: Never
           containers:
             - name: watcher
-              image: clwcodecodevdev2.azurecr.io/openclaw/claw-code-cron:latest
-              imagePullPolicy: Always
+              image: clwcodecodevdev2.azurecr.io/openclaw/claw-code-cron:PLACEHOLDER_IMAGE_TAG
+              imagePullPolicy: IfNotPresent
               # Named WITHOUT a directory so PATH decides — the mount at
               # /opt/claw-scripts comes first, ahead of the image copy.
               command: ["cron-issue-spawn"]
