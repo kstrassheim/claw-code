@@ -191,6 +191,17 @@ spec:
         - name: claw-code
           image: clwcodecodevdev1.azurecr.io/openclaw/claw-code:latest
           imagePullPolicy: Always
+          env:
+            # THE MOUNT COMES FIRST, and that ordering is the mechanism: the
+            # same scripts exist in the image under /usr/local/bin, so
+            # whichever directory PATH names first is what runs. A ConfigMap
+            # that fails to mount degrades to the image's copy — stale, never
+            # missing. PYTHONPATH keeps the image on the path for the same
+            # reason: a module the ConfigMap does not carry still resolves.
+            - name: PATH
+              value: "/opt/claw-scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            - name: PYTHONPATH
+              value: "/opt/claw-scripts:/usr/local/bin"
           ports:
             - containerPort: 18789
               name: web
@@ -204,6 +215,8 @@ spec:
             - secretRef:
                 name: claw-code-secrets
           volumeMounts:
+            - name: claw-scripts
+              mountPath: /opt/claw-scripts
             # Mount the PVC at the WHOLE openclaw state directory, not just
             # the `workspace/` subdir. Previously openclaw.json, identity/,
             # tasks/, plugin-skills/, logs/ all lived on the container's
