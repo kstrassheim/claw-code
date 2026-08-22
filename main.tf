@@ -61,7 +61,7 @@ data "azurerm_user_assigned_identity" "deploy_identity" {
 resource "azurerm_storage_account" "pv" {
   name                       = local.storage_account_name
   resource_group_name        = data.azurerm_resource_group.rg.name
-  location                   = data.azurerm_resource_group.rg.location
+  location                   = local.location
   account_tier               = "Standard"
   account_replication_type   = "LRS"
   min_tls_version            = "TLS1_2"
@@ -86,7 +86,7 @@ resource "azurerm_storage_share" "claw_code" {
 resource "azurerm_container_registry" "acr" {
   name                = "clwcodecodev${var.unique_suffix}" # clwcodecodev + suffix, max 50 chars
   resource_group_name = data.azurerm_resource_group.rg.name
-  location            = data.azurerm_resource_group.rg.location
+  location            = local.location
   sku                 = "Basic"
   admin_enabled       = false # Entra-only auth, no admin user
 
@@ -127,7 +127,7 @@ output "container_registry_login_server" {
 resource "azurerm_kubernetes_cluster" "aks" {
   name                = local.cluster_name
   resource_group_name = data.azurerm_resource_group.rg.name
-  location            = data.azurerm_resource_group.rg.location
+  location            = local.location
   dns_prefix          = "claw-code"
   kubernetes_version  = local.aks_version
   sku_tier            = "Free"

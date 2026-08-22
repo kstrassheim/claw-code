@@ -1,28 +1,21 @@
 variable "cosmos_location" {
   description = <<-EOT
-    Region for the planning-store Cosmos account, separate from the rest of the
-    project.
+    Region for the planning-store Cosmos account.
 
-    West Europe refuses new Cosmos accounts under capacity pressure, with an
-    error that names zone redundancy even when `zone_redundant = false` is set:
+    Its own variable because it has needed to differ: West Europe refused new
+    accounts twice from a clean start, with zone redundancy already off, and
+    Azure names zone redundancy in that error regardless of what was asked for.
+    It is a regional capacity limit that no setting here can satisfy.
 
-      "Sorry, we are currently experiencing high demand in West Europe region
-       for the zonal redundant (Availability Zones) accounts"
-
-    That is a regional capacity limit, not something the configuration can
-    satisfy, so the region has to be movable. The planning store is a handful
-    of small documents per tick and is not on any request path, so a
-    neighbouring region costs nothing that matters.
-
-    Back to the project's own region: the account that failed was left behind
-    in a Failed state and was itself blocking the retry. With that removed and
-    zone redundancy off, West Europe takes it — and everything living in one
-    region is worth more than the escape hatch, which stays here for the next
-    time capacity bites.
+    Switzerland North was verified by creating a throwaway account there before
+    committing to it, so this now matches var.location and everything lives in
+    one region. The variable stays because the next capacity limit will not
+    announce itself either.
   EOT
   type        = string
-  default     = "westeurope"
+  default     = "switzerlandnorth"
 }
+
 
 variable "cosmos_account_name" {
   description = <<-EOT
@@ -91,7 +84,7 @@ variable "cluster_name" {
 
 variable "location" {
   description = "Azure region"
-  default     = "westeurope"
+  default     = "switzerlandnorth"
   type        = string
 }
 
