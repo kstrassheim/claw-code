@@ -54,3 +54,8 @@ terraform.rc
 # Optional: ignore plan files saved before destroying Terraform configuration
 # Uncomment the line below if you want to ignore planout files.
 # planout.terraform.lock.hcl
+
+# Scratch trees the shell tests build and run in. claw-code-local ignores
+# these; this repository did not, so a `git add -A` after a test run committed
+# 35 of them.
+.test-tmp/
