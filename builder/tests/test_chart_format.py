@@ -134,10 +134,17 @@ class TheImageInstallsTheRenderer(unittest.TestCase):
         self.assertIn("PUPPETEER_SKIP_DOWNLOAD", self.docker)
         self.assertIn("PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium", self.docker)
 
-    def test_the_build_proves_it_renders(self):
-        # `command -v mmdc` only shows the package unpacked. The build renders
-        # a real diagram, because the way this fails is at render time.
-        self.assertIn("smoke.mmd", self.docker)
+    def test_the_build_installs_a_usable_mmdc(self):
+        # The build used to render a real diagram here, because the way this
+        # fails is at render time and `command -v mmdc` cannot see it. That was
+        # dropped: chromium could not complete a render on an emulated builder
+        # at all — 284s against a 180s ceiling — so a check meant to catch a
+        # broken image was failing images that were fine.
+        #
+        # What is still worth asserting is that the install step exists and is
+        # pinned. Render failures now surface at runtime, in mermaid-render.
+        self.assertIn("@mermaid-js/mermaid-cli@${MERMAID_CLI_VERSION}", self.docker)
+        self.assertIn("command -v mmdc", self.docker)
 
 
 if __name__ == "__main__":

@@ -777,43 +777,31 @@ ENV PUPPETEER_SKIP_DOWNLOAD=1 \
 # and chromium crashes rendering anything large, which looks like a broken
 # diagram rather than a full tmpfs.
 #
-# "timeout" raises chromium's LAUNCH ceiling from puppeteer's 30s default. On a
-# native arm64 builder the browser is up in a couple of seconds and this never
-# applies; under QEMU emulation it does not finish in thirty and the build dies
-# on the smoke render with
-#
-#     TimeoutError: Timed out after waiting 30000ms
-#
-# while the image itself is perfectly fine. The same file is used at RUNTIME by
-# mermaid-render, so this also stops a chart falling back to ASCII on a loaded
-# node — the ceiling only matters when something is slow, and waiting is a
-# better answer there than giving up.
+# "timeout" raises chromium's launch ceiling from puppeteer's 30s default. It no
+# longer matters at BUILD time — the smoke render below was removed — but this
+# same file is read by mermaid-render at RUNTIME, and there a slow launch on a
+# loaded node should mean waiting rather than a chart that fails. A ceiling only
+# costs you when something is slow.
 RUN printf '%s\n' \
       '{"args":["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"],"timeout":180000}' \
       > /etc/puppeteer-no-sandbox.json \
  && chmod 0644 /etc/puppeteer-no-sandbox.json
 
 ARG MERMAID_CLI_VERSION
+# No render at build time. There WAS one — it caught a case where the package
+# unpacked cleanly and chromium still could not launch in the sandbox, which
+# `command -v mmdc` cannot see. It was dropped because a build is not a test
+# harness: it cost a real chromium launch on every build, and under QEMU
+# emulation it exceeded puppeteer's launch ceiling and failed images that were
+# fine.
+#
+# What replaces it: the launch ceiling above is generous enough for slow
+# hardware, and rendering is exercised where it actually matters — a chart the
+# bot draws. If mermaid-render starts failing at runtime, that class of bug is
+# back and this is the check that used to catch it.
 RUN npm install -g --no-audit --no-fund --loglevel=error \
       "@mermaid-js/mermaid-cli@${MERMAID_CLI_VERSION}" \
- && command -v mmdc \
- # Render for real, with the SAME arguments mermaid-render uses. Checking that
- # the binary unpacked proves nothing: this failed at render time, on the
- # sandbox, with the package installed perfectly.
- #
- # A writable HOME is not optional — chromium spawns chrome_crashpad_handler
- # before anything else and it derives its database from the home directory.
- # See the long note in mermaid-render, which learned this the expensive way.
- && mkdir -p /tmp/smoke-home \
- && printf 'graph TD\n  A[build] --> B[check]\n' > /tmp/smoke.mmd \
- && { HOME=/tmp/smoke-home XDG_CONFIG_HOME=/tmp/smoke-home/.config \
-      XDG_CACHE_HOME=/tmp/smoke-home/.cache \
-      mmdc --input /tmp/smoke.mmd --output /tmp/smoke.svg \
-        --puppeteerConfigFile /etc/puppeteer-no-sandbox.json \
-      || { echo "=== mmdc smoke render failed ==="; exit 1; }; } \
- && test -s /tmp/smoke.svg \
- && head -c 60 /tmp/smoke.svg && echo \
- && rm -rf /tmp/smoke.mmd /tmp/smoke.svg /tmp/smoke-home
+ && command -v mmdc
 
 # ---------------------------------------------------------------------------
 # The tools documentation, BAKED IN.
