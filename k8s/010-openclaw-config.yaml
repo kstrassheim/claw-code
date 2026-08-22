@@ -24,7 +24,7 @@ data:
         "defaults": {
           "model": {
             "primary": "mistral/mistral-medium-latest",
-            "fallbacks": ["mistral/codestral-latest", "kimi/k3", "minimax/MiniMax-M3"]
+            "fallbacks": ["kimi/k3", "minimax/MiniMax-M3"]
           },
           "imageModel": {
             "primary": "minimax/MiniMax-M3",
