@@ -5,7 +5,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: claw-code-skill-tester
+  name: openclaw-skill-tester
   namespace: claw-code
 data:
   SKILL.md: |

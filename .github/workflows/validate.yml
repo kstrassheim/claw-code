@@ -206,9 +206,38 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          for key in OPENCLAW_UPSTREAM GH_CLI_VERSION GITHUB_MCP_SERVER_VERSION \
-                     TERRAFORM_VERSION TERRAFORM_MCP_VERSION CODE_SERVER_VERSION \
-                     AWS_CLI_VERSION GCLOUD_VERSION ALIYUN_CLI_VERSION; do
+          for key in OPENCLAW_UPSTREAM OPENCLAW_VERSION \
+                     ALIYUN_CLI_VERSION \
+                     AWS_CLI_VERSION \
+                     AZ_ACCOUNTS_VERSION \
+                     AZ_AUTOMATION_VERSION \
+                     AZ_DATAFACTORY_VERSION \
+                     AZ_SYNAPSE_VERSION \
+                     BANDIT_VERSION \
+                     CODE_SERVER_VERSION \
+                     DOTNET_SDK_VERSION \
+                     GCLOUD_VERSION \
+                     GH_CLI_VERSION \
+                     GITHUB_MCP_SERVER_VERSION \
+                     GITLEAKS_VERSION \
+                     GIT_LFS_VERSION \
+                     KUBELOGIN_VERSION \
+                     MERMAID_CLI_VERSION \
+                     NUCLEI_TEMPLATES_VERSION \
+                     NUCLEI_VERSION \
+                     OPENTOFU_MCP_VERSION \
+                     OPENTOFU_VERSION \
+                     PESTER_VERSION \
+                     PIP_AUDIT_VERSION \
+                     PSSCRIPTANALYZER_VERSION \
+                     PWSH_VERSION \
+                     PYMONGO_VERSION \
+                     SEMGREP_MCP_VERSION \
+                     SEMGREP_VERSION \
+                     SQLPACKAGE_VERSION \
+                     TERRAFORM_MCP_VERSION \
+                     TERRAFORM_VERSION \
+                     TESTSSL_VERSION; do
             echo "${key}=$(grep "^${key}=" VERSIONS | cut -d= -f2)" >> $GITHUB_OUTPUT
           done
 
@@ -221,16 +250,40 @@ jobs:
           push: false
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
+          load: true
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/openclaw/openclaw-base:${{ steps.version.outputs.OPENCLAW_UPSTREAM }}
+            ALIYUN_CLI_VERSION=${{ steps.version.outputs.ALIYUN_CLI_VERSION }}
+            AWS_CLI_VERSION=${{ steps.version.outputs.AWS_CLI_VERSION }}
+            AZ_ACCOUNTS_VERSION=${{ steps.version.outputs.AZ_ACCOUNTS_VERSION }}
+            AZ_AUTOMATION_VERSION=${{ steps.version.outputs.AZ_AUTOMATION_VERSION }}
+            AZ_DATAFACTORY_VERSION=${{ steps.version.outputs.AZ_DATAFACTORY_VERSION }}
+            AZ_SYNAPSE_VERSION=${{ steps.version.outputs.AZ_SYNAPSE_VERSION }}
+            BANDIT_VERSION=${{ steps.version.outputs.BANDIT_VERSION }}
+            CODE_SERVER_VERSION=${{ steps.version.outputs.CODE_SERVER_VERSION }}
+            DOTNET_SDK_VERSION=${{ steps.version.outputs.DOTNET_SDK_VERSION }}
+            GCLOUD_VERSION=${{ steps.version.outputs.GCLOUD_VERSION }}
             GH_CLI_VERSION=${{ steps.version.outputs.GH_CLI_VERSION }}
             GITHUB_MCP_SERVER_VERSION=${{ steps.version.outputs.GITHUB_MCP_SERVER_VERSION }}
-            TERRAFORM_VERSION=${{ steps.version.outputs.TERRAFORM_VERSION }}
+            GITLEAKS_VERSION=${{ steps.version.outputs.GITLEAKS_VERSION }}
+            GIT_LFS_VERSION=${{ steps.version.outputs.GIT_LFS_VERSION }}
+            KUBELOGIN_VERSION=${{ steps.version.outputs.KUBELOGIN_VERSION }}
+            MERMAID_CLI_VERSION=${{ steps.version.outputs.MERMAID_CLI_VERSION }}
+            NUCLEI_TEMPLATES_VERSION=${{ steps.version.outputs.NUCLEI_TEMPLATES_VERSION }}
+            NUCLEI_VERSION=${{ steps.version.outputs.NUCLEI_VERSION }}
+            OPENTOFU_MCP_VERSION=${{ steps.version.outputs.OPENTOFU_MCP_VERSION }}
+            OPENTOFU_VERSION=${{ steps.version.outputs.OPENTOFU_VERSION }}
+            PESTER_VERSION=${{ steps.version.outputs.PESTER_VERSION }}
+            PIP_AUDIT_VERSION=${{ steps.version.outputs.PIP_AUDIT_VERSION }}
+            PSSCRIPTANALYZER_VERSION=${{ steps.version.outputs.PSSCRIPTANALYZER_VERSION }}
+            PWSH_VERSION=${{ steps.version.outputs.PWSH_VERSION }}
+            PYMONGO_VERSION=${{ steps.version.outputs.PYMONGO_VERSION }}
+            SEMGREP_MCP_VERSION=${{ steps.version.outputs.SEMGREP_MCP_VERSION }}
+            SEMGREP_VERSION=${{ steps.version.outputs.SEMGREP_VERSION }}
+            SQLPACKAGE_VERSION=${{ steps.version.outputs.SQLPACKAGE_VERSION }}
             TERRAFORM_MCP_VERSION=${{ steps.version.outputs.TERRAFORM_MCP_VERSION }}
-            CODE_SERVER_VERSION=${{ steps.version.outputs.CODE_SERVER_VERSION }}
-            AWS_CLI_VERSION=${{ steps.version.outputs.AWS_CLI_VERSION }}
-            GCLOUD_VERSION=${{ steps.version.outputs.GCLOUD_VERSION }}
-            ALIYUN_CLI_VERSION=${{ steps.version.outputs.ALIYUN_CLI_VERSION }}
+            TERRAFORM_VERSION=${{ steps.version.outputs.TERRAFORM_VERSION }}
+            TESTSSL_VERSION=${{ steps.version.outputs.TESTSSL_VERSION }}
           platforms: linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -344,3 +397,16 @@ jobs:
       - name: Check
         run: sh builder/verify-skills-locked.sh
 
+      - name: The lockdown must actually hold
+        # Only meaningful when an image was built — see the ACR login step.
+        if: steps.acr.outputs.present == 'true'
+        # The static check says the manifests are right; this one tries to
+        # DEFEAT the real lockdown as uid 1000 inside the real image, and also
+        # checks it did not go too far — the agent must still be able to write
+        # its own workspace file, or chat dispatch dies with EACCES every turn.
+        run: |
+          docker run --rm --user 0 \
+            -v "$PWD/builder/verify-lockdown-effective.sh:/tmp/verify.sh:ro" \
+            --entrypoint sh \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}" \
+            /tmp/verify.sh
