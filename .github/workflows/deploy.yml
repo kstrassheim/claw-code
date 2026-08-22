@@ -42,7 +42,16 @@ permissions:
 # happened, instead of leaving a red mark on a commit that has been overtaken.
 concurrency:
   group: deploy-${{ github.ref }}
-  cancel-in-progress: true
+  # QUEUE, do not cancel. Verify can be killed mid-run harmlessly; an apply
+  # cannot. Cancelling one mid-`tofu apply` leaves the state blob LOCKED, and
+  # the next run then fails with "state blob is already locked" until the lease
+  # expires — which is exactly what happened here, twice, once the group was
+  # added with cancel-in-progress.
+  #
+  # Queuing costs a few minutes of waiting. Cancelling costs a locked state and
+  # possibly a half-applied one, which is not a trade worth making to save
+  # them.
+  cancel-in-progress: false
 
 jobs:
   wait-for-verify:
