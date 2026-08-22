@@ -21,6 +21,11 @@ on:
       - '**.tf'
       - '**.tfvars'
       - '.github/workflows/deploy.yml'
+      # Verify gates this workflow now, so a change to what Verify DOES is a
+      # change to what may deploy. Without this, edits to the gate itself
+      # triggered nothing and the deploy sat on an older commit — which is
+      # exactly what happened while wiring the gate up.
+      - '.github/workflows/validate.yml'
 
 env:
   REGISTRY: clwcodecodevdev2.azurecr.io
@@ -29,6 +34,15 @@ env:
 permissions:
   id-token: write
   contents: read
+
+# One run per branch. Pushing again while a run is in flight used to leave the
+# older one CANCELLED — and a cancelled Verify is not a passing Verify, so the
+# deploy gate correctly refused it and reported a failure for a commit nobody
+# was waiting on any more. Superseding the run explicitly says that is what
+# happened, instead of leaving a red mark on a commit that has been overtaken.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   wait-for-verify:

@@ -29,6 +29,15 @@ permissions:
   id-token: write
   contents: read
 
+# One run per branch. Pushing again while a run is in flight used to leave the
+# older one CANCELLED — and a cancelled Verify is not a passing Verify, so the
+# deploy gate correctly refused it and reported a failure for a commit nobody
+# was waiting on any more. Superseding the run explicitly says that is what
+# happened, instead of leaving a red mark on a commit that has been overtaken.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check-llm-secrets:
     # openclaw needs at least one LLM API key to render a usable config.
