@@ -651,6 +651,52 @@ print(lexical_guard.ask_note_id(json.load(sys.stdin), os.environ.get('BOT','')) 
 " 2>/dev/null || echo 0
 }
 
+# Has a person already answered a lexical ask on this issue? Reads the issue's
+# OWN HISTORY rather than the pod-local marker, so it survives everything the
+# marker does not: a wiped volume, a pod replaced mid-run, a cursor advanced
+# past the answer by an earlier run.
+#
+# That last case is not hypothetical. The marker-and-cursor pair deadlocks:
+# escaping the "asked, not yet answered" state needs a mention NEWER than the
+# cursor, but the cursor advances past the answer the first time it is read —
+# so the issue re-parks every tick forever and every @-mention buys exactly one
+# run. k8s-ultimate-web-stack#116 logged 82 label events in twelve hours that
+# way. Clearing the marker by hand does not help either: the guard then sees a
+# fresh issue and posts the ask AGAIN.
+#
+# History cannot drift, so this asks the question the marker was standing in
+# for: did a human reply after the ask?  Fails toward ASKING — an unreadable
+# history means the confirmation gate still runs, which is the safe direction
+# for a guard about destructive changes.
+lexical_ask_answered() {
+  BOT="$BOT_LOGIN" "${FORGE[@]}" comments --number "$ISSUE_NUM" 2>/dev/null \
+  | python3 -c "
+import json, os, sys
+sys.path.insert(0, os.environ.get('PYTHONPATH','').split(os.pathsep)[0])
+import lexical_guard
+notes = json.load(sys.stdin)
+bot = (os.environ.get('BOT') or '').lower()
+ask = lexical_guard.ask_note_id(notes, bot)
+if not ask:
+    print('no')
+    raise SystemExit(0)
+for n in notes or []:
+    if not isinstance(n, dict) or n.get('system'):
+        continue
+    try:
+        nid = int(n.get('id'))
+    except (TypeError, ValueError):
+        continue
+    if nid <= int(ask):
+        continue
+    who = ((n.get('author') or {}).get('username') or n.get('user', {}).get('login') or '')
+    if who and who.lower() != bot:
+        print('yes')
+        raise SystemExit(0)
+print('no')
+" 2>/dev/null || echo no
+}
+
 # CI fingerprint: a stable token for the CI state on the PR head. The
 # head SHA is part of the fingerprint so a new push (even one whose CI
 # settles with the exact same set of check conclusions as the previous
@@ -2281,6 +2327,14 @@ for r in (FR, RF):
         sys.exit(0)
 PYEOF
 )"
+  if [ -n "$PATTERN_HIT" ] && [ "$(lexical_ask_answered)" = "yes" ]; then
+    # Asked once, answered already — do not ask the same question again just
+    # because the local marker is gone. Re-creating it keeps the state machine
+    # honest for the rest of this run.
+    echo "[lexical-guard] destructive pattern matched: $PATTERN_HIT — but a person already answered an earlier ask; proceeding"
+    touch "$LEXICAL_ASKED_MARKER" 2>/dev/null || true
+    PATTERN_HIT=""
+  fi
   if [ -n "$PATTERN_HIT" ]; then
     echo "[lexical-guard] destructive pattern matched: $PATTERN_HIT — posting ASK and deferring"
     TRIGGER_LABEL="${PATTERN_HIT%%:*}"  # A or B
@@ -2354,7 +2408,15 @@ fi
 if [ -z "$EXISTING_PR_NUMBER" ] && [ -f "$LEXICAL_ASKED_MARKER" ]; then
   POST_ASK_NEW="$(fetch_new_mentions "$LAST_SEEN_ID" 2>/dev/null || echo '[]')"
   POST_ASK_NEW_COUNT="$(echo "$POST_ASK_NEW" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')"
-  if [ "$POST_ASK_NEW_COUNT" = "0" ]; then
+  if [ "$POST_ASK_NEW_COUNT" = "0" ] && [ "$(lexical_ask_answered)" = "yes" ]; then
+    # The cursor has moved past the answer, but the ISSUE still shows a person
+    # replied to the ask — so the wait is over even though "new since cursor"
+    # says otherwise. Retire the ask and let the run proceed; without this the
+    # two disagree forever and the issue parks every tick.
+    echo "[lexical-guard] no new @-mention since cursor=$LAST_SEEN_ID, but the ask was already answered — retiring it and proceeding"
+    rm -f "$LEXICAL_ASKED_MARKER" 2>/dev/null || true
+    unpark_on_hold
+  elif [ "$POST_ASK_NEW_COUNT" = "0" ]; then
     # Silently to the LOG, never to the issue. The marker lives on a volume
     # only this pod can read, so a wait recorded only here is a wait nobody
     # outside the cluster can see — and this branch runs every five minutes

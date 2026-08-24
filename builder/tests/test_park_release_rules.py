@@ -370,6 +370,48 @@ class NoInvisibleParks(unittest.TestCase):
             self.fail("the lexical silent-exit branch has moved or gone; "
                       "check it still labels before exiting")
 
+    def test_the_guard_reads_history_not_just_the_local_marker(self):
+        """Both dead ends must consult lexical_ask_answered.
+
+        The marker-and-cursor pair deadlocks on its own: escaping "asked, not
+        answered" needs a mention NEWER than the cursor, but the cursor
+        advances past the answer the first time it is read. So the issue parks
+        every tick forever (#116: 82 label events in twelve hours), and
+        clearing the marker by hand makes it worse — the guard then sees a
+        fresh issue and posts the ask a second time.
+
+        The issue's own history cannot drift, so both the re-ask gate and the
+        silent-exit branch ask it whether a person already answered.
+        """
+        import pathlib as _pl
+        src = (_pl.Path(__file__).resolve().parents[1] / "fixer-runner.sh")
+        text = src.read_text()
+        self.assertIn("lexical_ask_answered()", text,
+                      "the history-based predicate is gone")
+        lines = text.splitlines()
+
+        # 1. the re-ask gate
+        for n, line in enumerate(lines):
+            if "destructive pattern matched" in line and "posting ASK" in line:
+                gate = "\n".join(lines[max(0, n - 14):n])
+                self.assertIn("lexical_ask_answered", gate,
+                              f"line {n + 1} posts an ask without checking "
+                              "whether one was already answered")
+                break
+        else:
+            self.fail("the ask-posting branch has moved or gone")
+
+        # 2. the silent-exit branch
+        for n, line in enumerate(lines):
+            if "exiting silently (waiting for user reply)" in line:
+                branch = "\n".join(lines[max(0, n - 20):n])
+                self.assertIn("lexical_ask_answered", branch,
+                              f"line {n + 1} parks without checking the "
+                              "issue history — the cursor alone deadlocks")
+                break
+        else:
+            self.fail("the silent-exit branch has moved or gone")
+
     def test_an_answered_lexical_ask_is_retired_not_re_asked_forever(self):
         """The ask marker must be cleared in the branch that consumes the reply.
 
