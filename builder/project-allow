@@ -52,10 +52,12 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from project_allowlist import (  # noqa: E402
+    gitlab_hosts,
     list_path,
     log_path,
     normalize,
@@ -100,8 +102,17 @@ def _api_base() -> str:
 
 
 def _url_for(repo: str) -> str:
-    """owner/repo → its browser URL — clickable in chat, and the exact string
-    the user would paste back into `projects add`."""
+    """A stored path → its browser URL — clickable in chat, and the exact
+    string the user would paste back into `projects add`.
+
+    It has to name the right forge to be either of those things: a GitLab
+    project rendered as a github.com URL is a dead link, and pasting it back
+    would ask to grant a repository on the wrong host.
+    """
+    if _is_gitlab_path(repo):
+        base = os.environ.get("GITLAB_URL", "").strip().rstrip("/")
+        if base:
+            return f"{base}/{repo}"
     host = os.environ.get("GITHUB_HOST", "").strip().strip("/") or "github.com"
     return f"https://{host}/{repo}"
 
@@ -216,14 +227,92 @@ def _api_get(url: str) -> tuple[dict, str]:
     return (data, "")
 
 
-def _repo_lookup(repo: str) -> tuple[str, str]:
-    """Resolve owner/repo against GitHub. → (canonical owner/repo, error).
+def _is_gitlab_path(repo: str) -> bool:
+    """Should this stored path be treated as a GitLab project?
 
-    GET /repos/{owner}/{repo} is the whole check: it 404s for a repository
-    that does not exist AND for one the bot's token cannot see, which are the
-    same thing from here — permission to work on a repository the bot cannot
-    read is permission to do nothing.
+    A nested path can only be GitLab — GitHub does not nest. A two-segment
+    path is a valid shape on both, so it falls to what this deployment can
+    actually reach: GitLab when that is the only forge with credentials.
+    Guessing wrong is not dangerous, only unhelpful — the lookup below is a
+    confirmation step, and the URL is a convenience — but guessing wrong every
+    time would train the owner to ignore both.
     """
+    if not gitlab_hosts():
+        return False
+    if repo.count("/") > 1:
+        return True
+    return not (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
+
+
+def _gitlab_api_get(url: str) -> tuple[dict, str]:
+    """GET a GitLab API URL. → (parsed object, error), same contract as
+    _api_get: "" success, "unverified" when we could not ask, a readable
+    reason when GitLab answered no."""
+    token = (os.environ.get("GITLAB_API_TOKEN", "")
+             or os.environ.get("GITLAB_TOKEN", ""))
+    base = os.environ.get("GITLAB_URL", "").strip().rstrip("/")
+    if not token or not base:
+        return ({}, "unverified")
+    cmd = [
+        "curl", "-fsS", "--max-time", str(CURL_TIMEOUT),
+        "-H", f"PRIVATE-TOKEN: {token}",
+        url,
+    ]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=CURL_TIMEOUT + 5)
+    except (OSError, subprocess.SubprocessError):
+        return ({}, "unverified")
+
+    if p.returncode == 22:
+        code = _http_code(p.stderr)
+        if code == "401":
+            print("warning: the API rejected our credentials (HTTP 401) — "
+                  "GITLAB_API_TOKEN looks wrong or expired", file=sys.stderr)
+            return ({}, "unverified")
+        if code in ("500", "502", "503", "504"):
+            return ({}, "unverified")
+        where = f" (HTTP {code})" if code else ""
+        return ({}, f"no such project, or not visible to the bot{where}")
+
+    if p.returncode != 0:
+        return ({}, "unverified")
+    try:
+        data = json.loads(p.stdout or "")
+    except ValueError:
+        return ({}, "unverified")
+    if not isinstance(data, dict):
+        return ({}, "unverified")
+    return (data, "")
+
+
+def _gitlab_lookup(repo: str) -> tuple[str, str]:
+    """Resolve a path_with_namespace against GitLab. → (canonical path, error).
+
+    The path is URL-encoded whole, slashes included: GitLab addresses a
+    project either by numeric id or by its percent-encoded full path, and a
+    nested path with raw slashes would read as a different endpoint entirely.
+    """
+    base = os.environ.get("GITLAB_URL", "").strip().rstrip("/")
+    data, err = _gitlab_api_get(
+        f"{base}/api/v4/projects/{urllib.parse.quote(repo, safe='')}")
+    if err:
+        return ("", err)
+    return (str(data.get("path_with_namespace") or repo), "")
+
+
+def _repo_lookup(repo: str) -> tuple[str, str]:
+    """Resolve a reference against whichever forge it belongs to.
+    → (canonical path, error).
+
+    One lookup on GitHub (GET /repos/{owner}/{repo}) or GitLab (GET
+    /projects/{path}) is the whole check: both 404 for a project that does not
+    exist AND for one the bot's token cannot see, which are the same thing
+    from here — permission to work on a repository the bot cannot read is
+    permission to do nothing.
+    """
+    if _is_gitlab_path(repo):
+        return _gitlab_lookup(repo)
     data, err = _api_get(f"{_api_base()}/repos/{repo}")
     if err:
         return ("", err)
@@ -314,7 +403,8 @@ def cmd_add(args: list[str]) -> int:
             rc = rc or EXIT_NO_REPO
             continue
         if canonical and canonical.casefold() != repo.casefold():
-            print(f"note: {repo} -> {canonical} (canonical name on GitHub)")
+            forge = "GitLab" if _is_gitlab_path(repo) else "GitHub"
+            print(f"note: {repo} -> {canonical} (canonical name on {forge})")
         repo = canonical or repo
         if repo.casefold() in existing:
             print(f"= {_url_for(repo)} (already permitted)")

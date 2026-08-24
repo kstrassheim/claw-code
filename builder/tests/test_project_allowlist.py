@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -32,6 +33,35 @@ CLI = os.path.join(BUILDER, "project-allow")
 # The fake curl is a /bin/sh script; Windows cannot exec it, and the CLI would
 # take its "could not ask" path instead of the one under test.
 needs_curl = unittest.skipIf(os.name == "nt", "the fake curl needs a POSIX sh")
+
+
+# Every test below except the GitLabProjects class describes the GITHUB
+# ruleset, and which ruleset applies is a property of the environment: a
+# deployment with GitLab credentials reads `a/b/c` as a nested project rather
+# than as a malformed repository. So the environment that selects GitHub's
+# rules is pinned here rather than inherited.
+#
+# Inheriting it was a real failure, not a hypothetical one: CI runners export
+# GITLAB_URL as a masked variable, so these tests passed on every laptop and
+# failed only in the pipeline, reporting a fault in the parser rather than in
+# their own setup. Any developer with a GITLAB_API_TOKEN exported would have
+# seen the same thing locally.
+_SAVED_ENV: dict[str, str | None] = {}
+_FORGE_ENV = ("GITLAB_URL", "GITLAB_HOST", "GITLAB_API_TOKEN", "GITLAB_TOKEN")
+
+
+def setUpModule():
+    for var in _FORGE_ENV:
+        _SAVED_ENV[var] = os.environ.pop(var, None)
+
+
+def tearDownModule():
+    for var, was in _SAVED_ENV.items():
+        if was is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = was
+
 
 
 class Normalising(unittest.TestCase):
@@ -118,6 +148,228 @@ class Normalising(unittest.TestCase):
                          "Octocat/Hello-World")
         self.assertTrue(pa.Allowlist(["octocat/hello-world"])
                         .allows("Octocat/Hello-World"))
+
+
+
+# GITLAB_URL is what makes a deployment GitLab-hosted, so every test in here
+# sets it. Without it the module is GitHub-only, which is the subject of the
+# last test in the class.
+def gitlab():
+    # A token as well as a URL: gitlab_hosts() treats a URL without one as no
+    # GitLab at all, exactly as forge.configured() does.
+    return temp_env(GITLAB_URL="https://gitlab.example.com",
+                    GITLAB_HOST="https://gitlab.example.com",
+                    GITLAB_API_TOKEN="glpat-test")
+
+
+class GitLabProjects(unittest.TestCase):
+    """A GitLab project must be grantable on a GitLab deployment.
+
+    These exist because their absence was not theoretical: the allowlist was
+    once narrowed to GitHub's exactly-two-segments while the planners stayed
+    dual-forge, and on a GitLab deployment that parses every existing grant to
+    nothing. The list then reports itself EMPTY rather than unreadable, so
+    every subsystem idles quietly and `projects add` refuses the same path it
+    is being asked to grant — a lockout with no way out from chat.
+    """
+
+    def test_a_path_with_namespace_is_a_project(self):
+        with gitlab():
+            self.assertEqual(pa.normalize("acme-corp/team/web-test"),
+                             "acme-corp/team/web-test")
+
+    def test_a_namespace_may_be_purely_numeric(self):
+        # Top-level groups are routinely numeric (a cost centre, a department
+        # code). A segment rule that assumed a leading letter would reject
+        # every project under one, which is a whole organisation unable to
+        # grant anything.
+        with gitlab():
+            self.assertEqual(pa.normalize("4711/team/web-test"),
+                             "4711/team/web-test")
+
+    def test_subgroups_nest_arbitrarily_deep(self):
+        with gitlab():
+            self.assertEqual(pa.normalize("acme-corp/team/sub/project"),
+                             "acme-corp/team/sub/project")
+
+    def test_the_forms_a_human_pastes_from_gitlab(self):
+        with gitlab():
+            for raw in (
+                "https://gitlab.example.com/acme-corp/team/web-test",
+                "https://gitlab.example.com/acme-corp/team/web-test/",
+                "https://gitlab.example.com/acme-corp/team/web-test.git",
+                # The web UI continues past the project with /-/...
+                "https://gitlab.example.com/acme-corp/team/web-test/-/merge_requests/12",
+                "https://gitlab.example.com/acme-corp/team/web-test/-/issues/3",
+                "https://gitlab.example.com/acme-corp/team/web-test/-/tree/main",
+                # Clone URLs. SSH terminates on a different host than the web
+                # UI on this install, which is exactly what people copy.
+                "git@ssh.gitlab.example.com:acme-corp/team/web-test.git",
+                "https://gitlab.example.com/acme-corp/team/web-test.git",
+            ):
+                with self.subTest(raw=raw):
+                    self.assertEqual(pa.normalize(raw),
+                                     "acme-corp/team/web-test")
+
+    def test_a_nested_path_is_taken_WHOLE_never_trimmed(self):
+        # The GitHub ruleset trims a known subresource off owner/repo/<sub>.
+        # Doing that here would read a project named `security` inside the
+        # `acme-corp/team` subgroup as a grant of the ENTIRE subgroup — permitting
+        # every project in it, none of which the owner named. Several of those
+        # subresource words are ordinary project names.
+        with gitlab():
+            for name in ("security", "projects", "packages", "releases",
+                         "tags", "wiki", "issues"):
+                with self.subTest(name=name):
+                    self.assertEqual(pa.normalize(f"acme-corp/team/{name}"),
+                                     f"acme-corp/team/{name}")
+                    self.assertFalse(
+                        pa.Allowlist([f"acme-corp/team/{name}"]).allows("acme-corp/team"))
+
+    def test_github_references_still_work_on_a_gitlab_deployment(self):
+        # The planners are dual-forge; configuring one must not disable the
+        # other, or a deployment that talks to both can only grant on one.
+        with gitlab():
+            for raw in ("octocat/hello-world",
+                        "https://github.com/octocat/hello-world",
+                        "https://github.com/octocat/hello-world/issues/5",
+                        "git@github.com:octocat/hello-world.git"):
+                with self.subTest(raw=raw):
+                    self.assertEqual(pa.normalize(raw), "octocat/hello-world")
+
+    def test_another_host_is_still_not_this_project(self):
+        with gitlab():
+            self.assertEqual(
+                pa.normalize("https://gitlab.example.net/acme-corp/team/web-test"), "")
+            self.assertEqual(
+                pa.normalize("https://evil.example.com/octocat/hello-world"), "")
+
+    def test_the_list_a_gitlab_deployment_actually_has_reads_back(self):
+        with gitlab():
+            allowed = pa.Allowlist(pa.parse(textwrap.dedent("""
+                # Projects this bot is permitted to work on.
+                acme-corp/team/web-test
+                acme-corp/team/automation-test
+            """)))
+            self.assertEqual(len(allowed), 2)
+            self.assertTrue(allowed.allows("acme-corp/team/web-test"))
+            # Discovered but never granted: denied for the reason that says so.
+            self.assertEqual(allowed.deny_reason("acme-corp/team/ungranted"), "not-permitted")
+
+    def test_without_gitlab_configured_nothing_changes(self):
+        # The GitHub-only deployment must behave exactly as it did before
+        # GitLab was understood at all — a nested path grants nothing there.
+        with temp_env(GITLAB_URL="", GITLAB_HOST="", GITLAB_API_TOKEN=""):
+            self.assertEqual(pa.normalize("acme-corp/team/web-test"), "")
+            self.assertEqual(pa.normalize("octocat/hello-world"),
+                             "octocat/hello-world")
+
+
+class ForgeSelection(unittest.TestCase):
+    """The two rulesets, and the decision about which one applies.
+
+    normalize() is the composition of these; they are exercised directly as
+    well because the interesting cases are the ones where the two disagree,
+    and a test that can only reach them through the composition cannot say
+    which half was wrong.
+    """
+
+    def test_gitlab_hosts_needs_credentials_not_just_a_url(self):
+        # A URL with no token is a host the bot cannot read. Treating it as
+        # configured changes how every reference parses in exchange for a
+        # grant that could never be acted on.
+        with temp_env(GITLAB_URL="https://gitlab.example.com",
+                      GITLAB_API_TOKEN=""):
+            self.assertEqual(pa.gitlab_hosts(), set())
+        with temp_env(GITLAB_URL="", GITLAB_API_TOKEN="glpat-test"):
+            self.assertEqual(pa.gitlab_hosts(), set())
+
+    def test_gitlab_hosts_covers_the_web_and_ssh_endpoints(self):
+        with temp_env(GITLAB_URL="https://gitlab.example.com/",
+                      GITLAB_API_TOKEN="glpat-test"):
+            hosts = pa.gitlab_hosts()
+        self.assertIn("gitlab.example.com", hosts)
+        # Clone URLs commonly terminate somewhere other than the web host.
+        self.assertIn("ssh.gitlab.example.com", hosts)
+        self.assertIn("www.gitlab.example.com", hosts)
+
+    def test_as_github_is_two_segments_and_trims_known_subresources(self):
+        self.assertEqual(pa._as_github("octocat/hello-world"),
+                         "octocat/hello-world")
+        self.assertEqual(pa._as_github("octocat/hello-world/issues/5"),
+                         "octocat/hello-world")
+        # Not a subresource: an unrecognised third segment is a question, not
+        # a guess at which repository was meant.
+        self.assertEqual(pa._as_github("octocat/hello-world/some-branch"), "")
+        self.assertEqual(pa._as_github("octocat"), "")
+
+    def test_as_gitlab_nests_and_never_trims(self):
+        self.assertEqual(pa._as_gitlab("acme-corp/team/web-test"),
+                         "acme-corp/team/web-test")
+        self.assertEqual(pa._as_gitlab("acme-corp/team/web-test.git"),
+                         "acme-corp/team/web-test")
+        self.assertEqual(
+            pa._as_gitlab("acme-corp/team/web-test/-/merge_requests/12"),
+            "acme-corp/team/web-test")
+        # The GitHub ruleset would read this as a trim to `acme-corp/team`.
+        self.assertEqual(pa._as_gitlab("acme-corp/team/issues"),
+                         "acme-corp/team/issues")
+        self.assertEqual(pa._as_gitlab("just-one-segment"), "")
+
+
+class CliForgeRouting(unittest.TestCase):
+    """Which forge the CLI verifies against, and which URL it prints back.
+
+    In-process: none of these reach the network — the credential-less path
+    returns before curl is invoked, and the lookup is given a stub — so they
+    need the module rather than the subprocess sandbox CliTestCase builds.
+    """
+
+    def setUp(self):
+        self.cli = load_script("project-allow")
+
+    def test_is_gitlab_path_reads_nesting_then_credentials(self):
+        with temp_env(GITLAB_URL="https://gitlab.example.com",
+                      GITLAB_API_TOKEN="glpat-test", GITHUB_TOKEN="ghp-x"):
+            # Nesting can only be GitLab, whatever else is configured.
+            self.assertTrue(self.cli._is_gitlab_path("acme-corp/team/web-test"))
+            # Two segments are a valid shape on both, so the forge that has
+            # credentials decides — here GitHub also does, so it wins.
+            self.assertFalse(self.cli._is_gitlab_path("octocat/hello-world"))
+        with temp_env(GITLAB_URL="https://gitlab.example.com",
+                      GITLAB_API_TOKEN="glpat-test", GITHUB_TOKEN="",
+                      GH_TOKEN=""):
+            self.assertTrue(self.cli._is_gitlab_path("octocat/hello-world"))
+        with temp_env(GITLAB_URL="", GITLAB_API_TOKEN=""):
+            self.assertFalse(self.cli._is_gitlab_path("acme-corp/team/web-test"))
+
+    def test_gitlab_api_get_without_credentials_is_unverified_not_a_denial(self):
+        # "We could not ask" must never be reported as "the project is not
+        # there" — that would refuse a grant the owner is entitled to make.
+        with temp_env(GITLAB_URL="https://gitlab.example.com",
+                      GITLAB_API_TOKEN=""):
+            data, err = self.cli._gitlab_api_get(
+                "https://gitlab.example.com/api/v4/projects/x")
+        self.assertEqual(data, {})
+        self.assertEqual(err, "unverified")
+
+    def test_gitlab_lookup_encodes_the_whole_path(self):
+        # GitLab addresses a project by its percent-encoded full path; raw
+        # slashes would read as a different endpoint entirely.
+        seen = {}
+
+        def fake_get(url):
+            seen["url"] = url
+            return ({"path_with_namespace": "acme-corp/team/web-test"}, "")
+
+        with temp_env(GITLAB_URL="https://gitlab.example.com",
+                      GITLAB_API_TOKEN="glpat-test"):
+            with mock.patch.object(self.cli, "_gitlab_api_get", fake_get):
+                canonical, err = self.cli._gitlab_lookup("acme-corp/team/web-test")
+        self.assertEqual(err, "")
+        self.assertEqual(canonical, "acme-corp/team/web-test")
+        self.assertIn("acme-corp%2Fteam%2Fweb-test", seen["url"])
+        self.assertNotIn("acme-corp/team/web-test", seen["url"])
 
 
 class Parsing(unittest.TestCase):

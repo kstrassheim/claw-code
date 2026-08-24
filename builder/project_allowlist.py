@@ -31,11 +31,14 @@ restarts and redeploys, which an env var in the Deployment would not (that
 needs a secret edit and a rollout to change, and a revoke that needs a rollout
 is a revoke that happens late).
 
-One `owner/repo` per line, `#` comments and blank lines ignored:
+One repository per line, `#` comments and blank lines ignored. The path is
+whatever its own forge calls it — `owner/repo` on GitHub, a nested
+`path_with_namespace` on GitLab:
 
     # granted 2026-08-14 by the owner
     octocat/hello-world
     acme-corp/web-test
+    acme-corp/team/web-test
 
 Edits go through `project-allow`, which writes atomically and appends to
 projects-allowed.log. Nothing stops a human editing the file by hand; the
@@ -82,11 +85,65 @@ _SUBRESOURCES = frozenset("""
     security settings stargazers tags tree watchers wiki
 """.split())
 
-# The bot authenticates against api.github.com and nothing else. A reference
-# on another host cannot be worked on at all, and quietly reducing it to
-# owner/repo would permit a DIFFERENT repository that happens to share the
-# name. GITHUB_HOST exists for a GitHub Enterprise deployment.
+# A reference on a host the bot cannot authenticate against is unusable, and
+# quietly reducing it to owner/repo would permit a DIFFERENT repository that
+# happens to share the name. GITHUB_HOST exists for a GitHub Enterprise
+# deployment.
 _DEFAULT_HOSTS = ("github.com", "www.github.com", "api.github.com")
+
+# A GitLab path_with_namespace: at least one namespace segment and a project
+# segment, nesting arbitrarily deep through subgroups. GitLab allows
+# [A-Za-z0-9_.-] per segment with an alphanumeric leading character.
+#
+# This deployment is GitLab-hosted (GITLAB_URL / GITLAB_API_TOKEN in the
+# secret) and the planners are dual-forge — heartbeat-issue-tick, tester-tick
+# and reviewer-tick each accept GitHub, GitLab or Gitea credentials and
+# discover work from whichever is configured. The allowlist therefore has to
+# be able to express a project on any of them: a parser that only understands
+# `owner/repo` cannot represent `acme-corp/team/web-test`, so on a GitLab
+# deployment NO project can be permitted, every subsystem idles, and
+# `projects add` rejects the very path it is being asked to grant. That is
+# not a lockout the owner can talk their way out of from chat, which is why
+# the shape is accepted here rather than left to the forge layer.
+_GL_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+_GL_PATH_RE = re.compile(rf"^{_GL_SEGMENT}(?:/{_GL_SEGMENT})+$")
+
+
+def gitlab_hosts() -> set[str]:
+    """Hosts that mean "read this reference as a GitLab path".
+
+    Configured means CREDENTIALS, not merely a URL — the same test
+    forge.configured() applies before it constructs a GitLabForge. A host with
+    no token is one the bot cannot read, so a grant naming it could never be
+    acted on, and treating it as configured would change how every reference
+    on the deployment parses in exchange for nothing. CI runners that export
+    GITLAB_URL as a masked variable and no token are exactly that case, and
+    they would otherwise silently switch the ruleset under every test.
+
+    This mirrors forge.configured() rather than calling it: the permission
+    layer is deliberately free of dependencies (os, re, unicodedata) and must
+    not start importing the network layer to answer a parsing question. If the
+    rule there changes, it changes here.
+    """
+    if not os.environ.get("GITLAB_API_TOKEN", "").strip():
+        return set()
+    hosts: set[str] = set()
+    for var in ("GITLAB_URL", "GITLAB_HOST"):
+        raw = os.environ.get(var, "").strip().lower().rstrip("/")
+        if not raw:
+            continue
+        if "://" in raw:
+            raw = raw.split("://", 1)[1]
+        raw = raw.split("/", 1)[0].rsplit("@", 1)[-1].partition(":")[0].rstrip(".")
+        if raw:
+            # `ssh.` because that is where GitLab installs commonly terminate
+            # SSH — an install's clone URLs commonly terminate on ssh.<host>
+            # while GITLAB_URL names the web host — and a clone URL is the
+            # thing a human is most likely to have on the clipboard. Naming
+            # the ruleset is all this decides; the path still has to be
+            # granted afterwards.
+            hosts.update({raw, f"www.{raw}", f"ssh.{raw}"})
+    return hosts
 
 
 def state_root() -> str:
@@ -110,15 +167,24 @@ def allowed_hosts() -> set[str]:
 
 
 def normalize(raw: str) -> str:
-    """A user-typed repository reference → bare `owner/repo`, or "" if it
+    """A user-typed repository reference → the bare path the forge knows it
+    by (`owner/repo` on GitHub, `path_with_namespace` on GitLab), or "" if it
     could not be one.
 
     Accepts what a human actually pastes into chat: the browser URL of the
-    repository, of an issue, of a pull request; the HTTPS or SSH clone URL; a
-    stray trailing slash. Getting this wrong is expensive in a way an ordinary
-    parse error is not — a reference that does not match is not a loud
-    failure, it is the bot quietly never working on that repository again — so
-    it is worth being generous about the shape and strict about the result.
+    repository, of an issue, of a merge or pull request; the HTTPS or SSH
+    clone URL; a stray trailing slash. Getting this wrong is expensive in a
+    way an ordinary parse error is not — a reference that does not match is
+    not a loud failure, it is the bot quietly never working on that repository
+    again — so it is worth being generous about the shape and strict about the
+    result.
+
+    Which forge's rules apply is decided by the host when the reference
+    carries one, and otherwise by what this deployment is configured to talk
+    to. The two rulesets differ in ways that matter (GitHub is exactly two
+    segments and trims known subresources; GitLab nests and is taken whole),
+    so they are kept apart in _as_github and _as_gitlab rather than merged
+    into one permissive regex that would be wrong for both.
     """
     s = (raw or "").strip().strip("\"'").strip()
     if not s:
@@ -144,6 +210,11 @@ def normalize(raw: str) -> str:
     if host:
         host = host.rsplit("@", 1)[-1].partition(":")[0].strip().lower()
         host = host.rstrip(".")
+        # The host is the most reliable statement of which forge a reference
+        # belongs to, so when one is present it picks the ruleset outright
+        # rather than being guessed at from the shape below.
+        if host in gitlab_hosts():
+            return _as_gitlab(s)
         if host not in allowed_hosts():
             return ""
         if host.startswith("api."):
@@ -151,7 +222,22 @@ def normalize(raw: str) -> str:
             if not s.lower().startswith("repos/"):
                 return ""
             s = s[len("repos/"):]
+        return _as_github(s)
 
+    # No host to go on. On a GitLab deployment a bare reference is read as a
+    # path_with_namespace first, because that is the shape its own API hands
+    # the planners; `owner/repo` satisfies both readings and comes back
+    # unchanged either way. Where GitLab is not configured this is skipped
+    # entirely and the GitHub rules apply exactly as before.
+    if gitlab_hosts():
+        path = _as_gitlab(s)
+        if path:
+            return path
+    return _as_github(s)
+
+
+def _as_github(s: str) -> str:
+    """A hostless remainder → `owner/repo` under GitHub's rules, or ""."""
     s = s.strip("/")
     if not s:
         return ""
@@ -172,6 +258,29 @@ def normalize(raw: str) -> str:
         # "." and ".." are path traversal dressed as a repository name.
         return ""
     return f"{owner}/{repo}"
+
+
+def _as_gitlab(s: str) -> str:
+    """A hostless remainder → `path_with_namespace` under GitLab's rules, or "".
+
+    The path is taken WHOLE. There is deliberately no equivalent of the
+    GitHub subresource trim here: GitLab nests, so `acme-corp/team/security`
+    is an ordinary project inside a subgroup, and trimming it to the first
+    two segments would grant the entire `acme-corp/team` group instead of the
+    one project the owner named. Several _SUBRESOURCES entries — security, projects,
+    packages, releases, tags, wiki — are perfectly good project names, so the
+    trim is not merely unnecessary here, it is an over-grant waiting for the
+    right project name. A whole path that matches nothing denies; a trimmed
+    one permits something nobody asked for.
+    """
+    # GitLab web URLs continue past the project: /-/issues/7, /-/tree/main.
+    if "/-/" in s:
+        s = s.split("/-/", 1)[0]
+    s = s.strip("/")
+    if s.endswith(".git") and len(s) > len(".git"):
+        s = s[: -len(".git")]
+    s = s.strip("/")
+    return s if _GL_PATH_RE.match(s) else ""
 
 
 def parse(text: str) -> list[str]:
