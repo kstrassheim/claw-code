@@ -370,6 +370,43 @@ class NoInvisibleParks(unittest.TestCase):
             self.fail("the lexical silent-exit branch has moved or gone; "
                       "check it still labels before exiting")
 
+    def test_resuming_work_lifts_the_label_where_the_answer_is_consumed(self):
+        """Both proceed-past-a-park branches must call unpark_on_hold.
+
+        The planner's release_hold also lifts the label, but on its own
+        five-minute cadence and only when the issue wins that tick's spawn
+        budget — observed lagging the actual work by hours, with the bot
+        mid-implementation on an issue still labelled "waiting on a person".
+        The label is a statement to a HUMAN about who is being waited on; the
+        process that consumes the answer is the one that must retract it.
+        """
+        import pathlib as _pl
+        src = (_pl.Path(__file__).resolve().parents[1] / "fixer-runner.sh")
+        text = src.read_text()
+        lines = text.splitlines()
+        for needle in ("user replied, proceeding with agent",
+                       "clearing the awaiting-human park"):
+            for n, line in enumerate(lines):
+                if needle not in line:
+                    continue
+                window = "\n".join(lines[n:n + 4])
+                self.assertIn("unpark_on_hold", window,
+                              f"the branch at line {n + 1} resumes work "
+                              "without lifting On Hold — the label lies "
+                              "until the planner happens to catch up")
+                break
+            else:
+                self.fail(f"proceed branch {needle!r} has moved or gone")
+        # And the function itself must retract BOTH halves of the park —
+        # label and marker — for the same reason park_on_hold writes both.
+        start = next(n for n, line in enumerate(lines)
+                     if line.startswith("unpark_on_hold()"))
+        end = next(n for n in range(start + 1, len(lines))
+                   if lines[n] == "}")
+        body = "\n".join(lines[start:end])
+        self.assertIn("remove-label", body)
+        self.assertIn("AWAITING_HUMAN_MARKER", body)
+
     def test_only_park_on_hold_creates_the_marker(self):
         import pathlib
         src = pathlib.Path(__file__).resolve().parents[1] / "fixer-runner.sh"
