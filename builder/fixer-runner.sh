@@ -2369,6 +2369,19 @@ if [ -z "$EXISTING_PR_NUMBER" ] && [ -f "$LEXICAL_ASKED_MARKER" ]; then
     exit 0
   fi
   echo "[lexical-guard] marker present AND $POST_ASK_NEW_COUNT new @-mention(s) since cursor — user replied, proceeding with agent"
+  # The ask has been ANSWERED, so retire it. Without this the marker outlives
+  # the answer: the cursor advances past the reply, the next tick finds the
+  # marker still present with no NEWER mention, and re-parks — forever. Every
+  # @-mention then buys exactly one run, and the issue oscillates between
+  # parked and working every five minutes (k8s-ultimate-web-stack#116: 82
+  # label events, the planner releasing and this branch re-parking, for
+  # twelve hours).
+  #
+  # Safe to retire: the guard exists so the agent never sees a destructive
+  # issue body the person has not confirmed. Once confirmed it stays
+  # confirmed; re-asking on every later tick protects nothing and blocks the
+  # work. wipe_issue_state removes it on completion for the same reason.
+  rm -f "$LEXICAL_ASKED_MARKER" 2>/dev/null || true
   unpark_on_hold
   # Pre-react + advance cursor so the initial prompt sees the user's
   # reply consistently and we never re-prompt for the same comment.

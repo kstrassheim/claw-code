@@ -370,6 +370,36 @@ class NoInvisibleParks(unittest.TestCase):
             self.fail("the lexical silent-exit branch has moved or gone; "
                       "check it still labels before exiting")
 
+    def test_an_answered_lexical_ask_is_retired_not_re_asked_forever(self):
+        """The ask marker must be cleared in the branch that consumes the reply.
+
+        The marker outliving its answer is a perpetual re-park: the cursor
+        advances past the reply, the next tick finds the marker present with
+        no NEWER mention, and parks again — so every @-mention buys exactly
+        one run and the issue oscillates between parked and working every five
+        minutes. k8s-ultimate-web-stack#116 logged 82 label events over twelve
+        hours that way, the planner releasing and this branch re-parking.
+
+        Retiring it is safe: the guard exists so the agent never sees a
+        destructive issue body nobody confirmed. Once confirmed it stays
+        confirmed.
+        """
+        import pathlib as _pl
+        src = (_pl.Path(__file__).resolve().parents[1] / "fixer-runner.sh")
+        lines = src.read_text().splitlines()
+        for n, line in enumerate(lines):
+            if "user replied, proceeding with agent" not in line:
+                continue
+            window = "\n".join(lines[n:n + 18])
+            self.assertIn("LEXICAL_ASKED_MARKER", window,
+                          f"line {n + 1} consumes the reply without retiring "
+                          "the ask — the next tick re-parks on a question "
+                          "that has been answered")
+            self.assertRegex(window, r"rm -f .*LEXICAL_ASKED_MARKER")
+            break
+        else:
+            self.fail("the lexical proceed branch has moved or gone")
+
     def test_resuming_work_lifts_the_label_where_the_answer_is_consumed(self):
         """Both proceed-past-a-park branches must call unpark_on_hold.
 
@@ -389,7 +419,10 @@ class NoInvisibleParks(unittest.TestCase):
             for n, line in enumerate(lines):
                 if needle not in line:
                     continue
-                window = "\n".join(lines[n:n + 4])
+                # Generous window: an explanatory comment block may sit
+                # between the decision and the call, and this asserts the call
+                # is IN the branch, not that it is the next line.
+                window = "\n".join(lines[n:n + 20])
                 self.assertIn("unpark_on_hold", window,
                               f"the branch at line {n + 1} resumes work "
                               "without lifting On Hold — the label lies "
