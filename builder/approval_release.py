@@ -238,6 +238,26 @@ def signed_off(verdicts=None, comments=None, bot="", sha="",
             continue      # approved an older commit; a push invalidates it
         return {"who": r.get("author"), "how": "approved the pull request"}
 
+    # A sign-off typed into the review UI as a plain Comment review. The
+    # verdict state is "commented", so the button path above skips it — and the
+    # body never reaches the comments list, because the host keeps review
+    # bodies in a separate API. Observed: the reviewer answered the ask with a
+    # review whose whole body was "lgtm", and the park held for hours with the
+    # approval sitting in plain sight — exactly the silence this module exists
+    # to prevent. The verdict carries the sha it was given on, which anchors
+    # it to the commit the ask named; one without a sha stays unread, failing
+    # toward parked like everything else here.
+    for r in reversed(list(verdicts or [])):
+        if not isinstance(r, dict):
+            continue
+        who = _norm(r.get("author"))
+        if not who or who == bot:
+            continue
+        if not r.get("sha") or (sha and not sha_match(sha, r.get("sha"))):
+            continue
+        if _LGTM.search(_prose(r.get("body"))):
+            return {"who": r.get("author"), "how": "signed off in a review comment"}
+
     # Words, which carry no sha — so the anchor does that job instead. The ask
     # is re-posted for every new head commit, so "after the newest ask" means
     # "about the commit the ask named".

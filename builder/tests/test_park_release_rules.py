@@ -72,6 +72,32 @@ class ApprovalPark(ParkRelease):
         self.assertTrue(self.release(
             [note(ASK, "bot", 1), note("LGTM", "human", 2)]))
 
+    def test_lgtm_typed_into_a_comment_review_releases_it(self):
+        # The third way a person answers, and the one that fell through: the
+        # review UI's "Comment" option. The verdict state is "commented", so
+        # the button rule skips it, and the host keeps review bodies out of
+        # the comments list, so the words rule never saw it either. Observed
+        # live: a reviewer answered the ask with a review whose whole body was
+        # "lgtm", and the park held for hours.
+        self.assertTrue(self.release(
+            [note(ASK, "bot", 1)],
+            [{"author": "human", "verdict": "commented",
+              "body": "lgtm", "sha": SHA}]))
+
+    def test_a_comment_review_on_a_superseded_commit_is_not_a_sign_off(self):
+        self.assertFalse(self.release(
+            [note(ASK, "bot", 1)],
+            [{"author": "human", "verdict": "commented",
+              "body": "lgtm", "sha": "dead0000beef1111"}]))
+
+    def test_a_comment_review_without_lgtm_is_feedback_not_a_sign_off(self):
+        # "looks interesting" is conversation. Releasing on ANY commented
+        # review would merge on small talk.
+        self.assertFalse(self.release(
+            [note(ASK, "bot", 1)],
+            [{"author": "human", "verdict": "commented",
+              "body": "looks interesting, why the extra flag?", "sha": SHA}]))
+
     def test_requesting_changes_releases_it_too(self):
         # A rejection ends the wait as surely as an approval: the reviewer has
         # handed the issue back. Staying parked would leave what they typed
