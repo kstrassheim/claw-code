@@ -1683,6 +1683,22 @@ print('\\n'.join(str(n) for n in (d.get('labels') or [])))
   fi
 }
 
+# The counterpart, run at the moments this runner PROCEEDS past a park because
+# a person has answered. The planner's release_hold also lifts the label, but
+# on its own five-minute cadence and only when the issue wins that tick's
+# spawn budget — observed lagging the actual work by hours, with the bot mid-
+# implementation on an issue still labelled "waiting on a person". The label
+# is a statement to a HUMAN about who is being waited on; the moment the
+# answer is consumed the statement is false, and the process that consumed it
+# is the right one to retract it. Removing an absent label is a quiet no-op.
+unpark_on_hold() {
+  rm -f "$AWAITING_HUMAN_MARKER" 2>/dev/null || true
+  if "${FORGE[@]}" remove-label --number "$ISSUE_NUM" --label "On Hold" \
+       >/dev/null 2>&1; then
+    echo "[park] On Hold removed from #$ISSUE_NUM — answered, resuming work"
+  fi
+}
+
 # Is the newest comment on the issue the BOT asking a human something that
 # nobody has answered?
 #
@@ -2353,6 +2369,7 @@ if [ -z "$EXISTING_PR_NUMBER" ] && [ -f "$LEXICAL_ASKED_MARKER" ]; then
     exit 0
   fi
   echo "[lexical-guard] marker present AND $POST_ASK_NEW_COUNT new @-mention(s) since cursor — user replied, proceeding with agent"
+  unpark_on_hold
   # Pre-react + advance cursor so the initial prompt sees the user's
   # reply consistently and we never re-prompt for the same comment.
   while read -r cid; do
@@ -2432,8 +2449,8 @@ fi
 # question, so the park is over. Clearing the marker here rather than waiting
 # for the label to be removed by hand means an answer alone is enough.
 if [ -f "$AWAITING_HUMAN_MARKER" ] && ! bot_awaiting_human_reply; then
-  rm -f "$AWAITING_HUMAN_MARKER" 2>/dev/null || true
   echo "[park] a human has replied — clearing the awaiting-human park"
+  unpark_on_hold
 fi
 
 if [ -n "$EXISTING_PR_NUMBER" ]; then
