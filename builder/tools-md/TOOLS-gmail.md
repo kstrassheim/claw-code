@@ -1,5 +1,5 @@
 <!--
-  Appended to TOOLS.md ONLY for the openclaw instance (not olga) via the
+  Appended to TOOLS.md ONLY for the primary openclaw instance via the
   conditional in templates/tools-md-configmap.yaml. Describes the
   read-only Gmail capability scoped to this single instance.
 -->

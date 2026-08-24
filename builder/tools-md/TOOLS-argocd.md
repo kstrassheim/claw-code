@@ -1,5 +1,5 @@
 <!--
-  Appended to TOOLS.md ONLY for the openclaw instance (not olga) via
+  Appended to TOOLS.md ONLY for the primary openclaw instance via
   the conditional in templates/tools-md-configmap.yaml. Describes the
   argocd CLI capabilities (read-only on all apps + sync on
   openclaw-sandbox-* apps).

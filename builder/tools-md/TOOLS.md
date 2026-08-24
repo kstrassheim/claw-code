@@ -57,9 +57,8 @@ docs only translate those rules into concrete tool calls.
 
 - No Gmail / IMAP integration (use a generic SMTP MCP if you need
   email).
-- No Vedic astrology / `jhora` / `pyswisseph` stack — claw-code is a
-  coding agent, the upstream openclaw image strips those packages
-  here.
+- No astrology / ephemeris stack — claw-code is a coding agent, the
+  upstream openclaw image strips those packages here.
 - No ollama / local LLM runtime — chat models are configured via
   `openclaw.json` (Mistral + optional MiniMax by default).
 - No Argo CD CLI — Helm/kubectl is the deploy surface; if you want
