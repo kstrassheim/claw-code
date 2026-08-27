@@ -234,7 +234,9 @@ class ReviewRetry(WaitBlock):
         self.assertIn("SLEEP", out, out + err)
         self.assertIn("a human should look", out)
         self.assertEqual(len(self.comments_posted()), 1, self.requests())
-        self.assertIn("@o", json.dumps(self.comments_posted()) + out)
+        # ONE person, named by the host — not "@o", the group the project
+        # path starts with. See Forge.owner_login.
+        self.assertIn("@creator", json.dumps(self.comments_posted()) + out)
 
     def test_the_escalation_is_one_comment_per_condition_not_per_tick(self):
         self.verdict("changes")

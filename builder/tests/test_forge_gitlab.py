@@ -357,5 +357,107 @@ class Vocabulary(unittest.TestCase):
                             forge.GitHubForge("t").change_request_noun)
 
 
+class OneHumanOwner(unittest.TestCase):
+    """WHO the bot talks to — and why it is never "the owners".
+
+    A project path here starts with a GROUP, and a group inherits Owners from
+    every group above it. Splitting the path and calling the first segment the
+    owner put one tester run's findings in front of FORTY-TWO people at once:
+    assigning a group assigns everybody in it, @-mentioning one notifies
+    everybody in it.
+
+    The project record names the one account that CREATED it. That is the
+    answer, however many Owners the group has. The member list is consulted
+    only when there is no creator to read, and even then exactly one name
+    comes back — never the set.
+    """
+
+    ENC = "group%2Fsub%2Fapp"
+
+    def owner(self, *, creator=None, user=None, members=None, me="bot"):
+        routes = {"/user": {"username": me}}
+        routes["%2Fapp"] = {"creator_id": creator} if creator else {}
+        if user is not None:
+            routes[f"/users/{creator}"] = user
+        if members is not None:
+            routes["%2Fapp/members/all"] = members
+        f, t = gl(routes)
+        return f.owner_login("group/sub/app"), t
+
+    @staticmethod
+    def member(uid, name, level=50, state="active"):
+        return {"id": uid, "username": name, "access_level": level,
+                "state": state}
+
+    def test_the_creator_is_the_answer_however_many_owners_there_are(self):
+        crowd = [self.member(i, f"person{i}") for i in range(42)]
+        who, _t = self.owner(creator=7,
+                             user={"username": "ada", "state": "active"},
+                             members=crowd)
+        self.assertEqual(who, "ada")
+
+    def test_the_answer_is_one_name_and_not_a_list_of_them(self):
+        # The shape is the guarantee: a caller cannot accidentally assign a
+        # crowd if there is no crowd to assign.
+        who, _t = self.owner(creator=7,
+                             user={"username": "ada", "state": "active"},
+                             members=[self.member(i, f"p{i}") for i in range(42)])
+        self.assertIsInstance(who, str)
+        self.assertNotIn(",", who)
+        self.assertNotIn(" ", who)
+
+    def test_a_creator_who_has_left_falls_back_to_ONE_owner(self):
+        # Longest-standing = lowest id. Deterministic, so two ticks address
+        # the same person rather than taking turns.
+        who, _t = self.owner(creator=7,
+                             user={"username": "gone", "state": "blocked"},
+                             members=[self.member(9, "carol"),
+                                      self.member(3, "bob"),
+                                      self.member(5, "dave")])
+        self.assertEqual(who, "bob")
+
+    def test_the_bot_is_never_the_person_asked(self):
+        # The tester files its own findings. Handing them back to the bot is
+        # how work disappears.
+        who, _t = self.owner(creator=7,
+                             user={"username": "bot", "state": "active"},
+                             members=[self.member(1, "bot"),
+                                      self.member(8, "erin")])
+        self.assertEqual(who, "erin")
+
+    def test_a_maintainer_is_not_an_owner(self):
+        who, _t = self.owner(creator=None,
+                             members=[self.member(2, "mo", level=40)])
+        self.assertEqual(who, "")
+
+    def test_nobody_readable_is_nobody_asked_not_the_group(self):
+        # The failure mode this whole method exists to prevent: answering with
+        # `group`, which is what the path would have given.
+        who, _t = self.owner(creator=None, members=[])
+        self.assertEqual(who, "")
+
+    def test_an_unreadable_project_does_not_raise(self):
+        f, _t = gl({"/user": {"username": "bot"},
+                    "%2Fapp": RuntimeError("500")})
+        self.assertEqual(f.owner_login("group/sub/app"), "")
+
+    def test_a_blocked_account_is_not_a_name_to_hand_work_to(self):
+        # `_active_username` is the guard: a creator who has left the instance
+        # still has an id on the project, and @-mentioning them asks nobody.
+        f, _t = gl({"/user": {"username": "bot"},
+                    "/users/7": {"username": "gone", "state": "blocked"},
+                    "/users/8": {"username": "ada", "state": "active"}})
+        self.assertEqual(f._active_username(7), "")
+        self.assertEqual(f._active_username(8), "ada")
+
+    def test_the_members_are_asked_for_inherited_ones_too(self):
+        # `/members` alone omits the ones a group grants, which on this host
+        # is most of them.
+        _who, t = self.owner(creator=None,
+                             members=[self.member(4, "ana")])
+        self.assertTrue(any("/members/all" in u for u in t.urls("GET")),
+                        t.urls("GET"))
+
+
 if __name__ == "__main__":
     unittest.main()

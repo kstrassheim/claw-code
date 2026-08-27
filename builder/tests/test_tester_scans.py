@@ -541,5 +541,34 @@ class DuplicateGuard(_Blocks):
         self.assertIn("open-issues", asked)
 
 
+class AnOwnerFindingGoesToOneHuman(unittest.TestCase):
+    """`assigneeRole: OWNER` must resolve to a person, and to only one.
+
+    WHAT WENT WRONG. The target was `${REPO%%/*}` — the first segment of the
+    project path, taken to be the owner. On the hosted GitLab that segment is
+    a GROUP: the findings of one run were filed against all FORTY-TWO of its
+    members. The wrapper asks the host now (`forge-cli owner`, which answers
+    with the project's creator), and files the issue UNASSIGNED when the host
+    can name nobody — an unassigned issue is a small problem, and forty-two
+    assignees is not.
+    """
+
+    def setUp(self):
+        from harness import BUILDER
+        with open(os.path.join(BUILDER, RUNNER), encoding="utf-8") as fh:
+            self.src = fh.read()
+
+    def test_the_owner_is_asked_of_the_host(self):
+        self.assertIn('forge-cli --repo "$REPO" owner', self.src)
+
+    def test_the_path_is_never_read_as_an_owner_again(self):
+        self.assertNotIn('REPO_OWNER="${REPO%%/*}"', self.src)
+
+    def test_exactly_one_assignee_is_ever_written(self):
+        # `[login]` — a one-element list, and an empty one when there is
+        # nobody. Nothing here can grow into a crowd.
+        self.assertIn("d['assignees'] = [login] if login else []", self.src)
+
+
 if __name__ == "__main__":
     unittest.main()

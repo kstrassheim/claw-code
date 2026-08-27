@@ -235,6 +235,78 @@ class Forge(abc.ABC):
     #: project is a bug report waiting to happen.
     change_request_noun: str = "change request"
 
+    # -- who a sentence may notify --------------------------------------
+
+    #: An @-mention as a host reads one: at a word boundary, not inside a code
+    #: span, and possibly a nested `group/subgroup` or `org/team` path.
+    _MENTION = re.compile(
+        r"(?<![\w`/])@([A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_.-]+)*)")
+
+    def _is_user(self, name: str) -> bool:
+        """Does this name belong to ONE human account on this host?
+
+        Answered by each host, because each has its own idea of what else a
+        name can be — a group, an organisation, a team. The default is False:
+        a host that cannot tell must not be the one that pages a department.
+        """
+        return False
+
+    def _one_human_only(self, body: str) -> str:
+        """Defuse every @-mention in outgoing prose that is not one person.
+
+        THE LAST LINE OF DEFENCE, and it exists because the same mistake was
+        made twice in two different files: something took the first segment of
+        a project path to be the owner and @-mentioned it. That segment is a
+        GROUP, so a question meant for one person was put to all forty-two
+        members of a department — and the second time, twice over.
+
+        A name that resolves to a single account is left exactly as written.
+        Anything else keeps its text and loses its "@", so the sentence still
+        reads the way its author meant and notifies nobody. Callers cannot opt
+        out: this runs inside the write, not next to it.
+
+        ONE implementation, deliberately. The bug spread because the rule had
+        two copies; a guard against it must not have four.
+        """
+        text = str(body or "")
+        if "@" not in text:
+            return text
+        # Mentions inside code are not mentions. Match against a copy with the
+        # code spans blanked, then edit the ORIGINAL at those offsets so the
+        # code itself is returned untouched.
+        masked = re.sub(r"```[\s\S]*?```",
+                        lambda m: " " * len(m.group(0)), text)
+        masked = re.sub(r"`[^`\n]*`",
+                        lambda m: " " * len(m.group(0)), masked)
+        out, last = [], 0
+        for m in self._MENTION.finditer(masked):
+            name = m.group(1)
+            if self._is_user(name):
+                continue
+            out.append(text[last:m.start()])
+            out.append(f"`{name}`")
+            last = m.end()
+        if not out:
+            return text
+        out.append(text[last:])
+        return "".join(out)
+
+    def _mention_seen(self, name: str, verdict=None):
+        """The per-instance answer cache `_is_user` shares.
+
+        Lazy rather than set in every host's __init__: a host that forgets the
+        line would otherwise lose the guard, which is the failure mode this
+        whole area is about.
+        """
+        cache = getattr(self, "_mention_cache", None)
+        if cache is None:
+            cache = {}
+            self._mention_cache = cache
+        if verdict is None:
+            return cache.get(name)
+        cache[name] = verdict
+        return verdict
+
     # -- identity -------------------------------------------------------
 
     @abc.abstractmethod
@@ -244,6 +316,40 @@ class Forge(abc.ABC):
         Resolved rather than configured: sibling deployments run under
         different accounts, and a hardcoded name makes "has the bot already
         said this?" answer about somebody else.
+        """
+
+    @abc.abstractmethod
+    def owner_login(self, repo: str) -> str:
+        """The ONE human to escalate a repository's work to, or "".
+
+        THE RULE, AND IT IS ABSOLUTE: exactly one person, or nobody. This must
+        never return, and no caller may ever expand it into, a group, a team,
+        an organisation, a mailing list, or two accounts. Not "the owners".
+        Not "the maintainers". ONE login, or the empty string. An issue that
+        is assigned to a group is assigned to every member of it, and a
+        comment that @-mentions one notifies all of them — this bot filed such
+        an issue at FORTY-TWO people, which is the reason this method exists.
+        Anything that multiplies one name into many is a bug, however
+        reasonable it looks in the code that does it.
+
+        Read from the host, never derived from the path. The first segment of
+        `group/subgroup/project` is a GROUP on some hosts and an ORGANISATION
+        on others, and neither is a person.
+
+        Where a host records who CREATED the project, that is the answer, even
+        when a dozen accounts hold owner rights: the creator is the one who
+        wanted this repository to exist. Only when there is no creator to read
+        does the answer come from the owner-level members, and then it is ONE
+        of them — the longest-standing — never the set. A project with a
+        single owner is the easy case and lands on that same one name.
+
+        Never the bot itself: the bot files issues (the tester does), and
+        handing those back to the bot is how work disappears.
+
+        "" means the host cannot name a human. A caller reads that as "there
+        is nobody to ask", NOT as licence to widen the net — falling back to
+        the path, to the member list, or to "everyone with access" is exactly
+        the failure this forbids. Saying nothing is the correct answer.
         """
 
     # -- discovery ------------------------------------------------------

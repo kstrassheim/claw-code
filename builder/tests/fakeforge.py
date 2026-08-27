@@ -39,6 +39,9 @@ class FakeForge(forge.Forge):
         self.kind = kind
         self.change_request_noun = noun
         self.identity = identity
+        # The ONE human the repository escalates to. A name, never a group:
+        # the real implementations answer with the project's creator.
+        self.owner = "owner"
 
         # What the host would answer.
         self.issues: list[dict] = []          # every assigned open issue
@@ -94,6 +97,10 @@ class FakeForge(forge.Forge):
     def bot_identity(self) -> str:
         self._maybe_raise("bot_identity")
         return self.identity
+
+    def owner_login(self, repo: str) -> str:
+        self._maybe_raise("owner_login")
+        return self.owner
 
     # -- discovery --------------------------------------------------------
 

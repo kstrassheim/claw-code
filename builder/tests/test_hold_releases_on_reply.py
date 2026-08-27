@@ -289,6 +289,68 @@ class AnAnsweredQuestionStopsBlockingTheSpawn(unittest.TestCase):
         self.assertTrue(self.blocked([]))
         self.assertEqual(self.forge.writes_of("labels"), [["On Hold"]])
 
+    def test_human_to_ask_answers_one_name_or_none(self):
+        # The resolver by name, so the ledger sees it and a rename has to come
+        # past a test: it is the only thing standing between this question and
+        # a department.
+        self.forge.owner = "creator"
+        issue = {"number": 5, "title": self.DESTRUCTIVE, "body": ""}
+        self.assertEqual(
+            self.h.human_to_ask(self.forge, "group/team/app",
+                                dict(issue, author="ada"), "bot"), "ada")
+        self.assertEqual(
+            self.h.human_to_ask(self.forge, "group/team/app",
+                                dict(issue, author="bot"), "bot"), "creator")
+        self.forge.owner = ""
+        self.assertEqual(
+            self.h.human_to_ask(self.forge, "group/team/app",
+                                dict(issue, author="bot"), "bot"), "")
+
+    def test_the_question_goes_to_the_person_who_filed_it(self):
+        """WHO the question is put to — and it is never the group.
+
+        The mention was the first segment of the project path. On the hosted
+        GitLab that is a department: `@group` asked every member of
+        one to confirm a destructive change, on two issues, minutes apart.
+        """
+        self.forge.notes[5] = []
+        self.forge.owner = "creator"
+        self.h.ask_before_spawning(
+            self.forge, "group/team/app",
+            {"number": 5, "title": self.DESTRUCTIVE, "body": "",
+             "author": "ada"}, "bot")
+        asked = self.forge.writes_of("comment")[0]
+        self.assertIn("@ada", asked)
+        self.assertNotIn("@group", asked)
+
+    def test_an_issue_the_bot_filed_asks_the_repository_creator(self):
+        # The tester files its own findings. Asking the bot to confirm the
+        # bot's request answers nothing — and the fallback is still ONE
+        # account, resolved by the host, never the path.
+        self.forge.notes[5] = []
+        self.forge.owner = "creator"
+        self.h.ask_before_spawning(
+            self.forge, "group/team/app",
+            {"number": 5, "title": self.DESTRUCTIVE, "body": "",
+             "author": "bot"}, "bot")
+        asked = self.forge.writes_of("comment")[0]
+        self.assertIn("@creator", asked)
+        self.assertNotIn("@group", asked)
+
+    def test_nobody_to_name_still_asks_the_question(self):
+        # A guard that skips itself because it could not find a name is a
+        # guard that lets the destructive change through.
+        self.forge.notes[5] = []
+        self.forge.owner = ""
+        self.h.ask_before_spawning(
+            self.forge, "group/team/app",
+            {"number": 5, "title": self.DESTRUCTIVE, "body": "",
+             "author": "bot"}, "bot")
+        asked = self.forge.writes_of("comment")[0]
+        self.assertIn("DESTRUCTIVE CHANGE", asked)
+        self.assertNotIn("@ ", asked)
+        self.assertNotIn("@group", asked)
+
     def test_wording_that_is_not_destructive_never_reaches_the_gate(self):
         self.forge.notes[5] = []
         self.assertFalse(self.h.ask_before_spawning(

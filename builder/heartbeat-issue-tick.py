@@ -257,6 +257,37 @@ def answer_after(notes, bot: str, anchor):
     return None
 
 
+def human_to_ask(f: forge.Forge, repo: str, issue: dict, bot: str) -> str:
+    """The ONE person a question about this issue is put to, or "".
+
+    ONE. Never a group, never a list. This line used to take the first
+    segment of the project path — `repo` cut at its first slash — on the
+    reasoning that it named the owner. On a hosted GitLab it names the GROUP,
+    and the destructive-change question the planner posts went to every member
+    of it: forty-two people asked to confirm one issue, twice.
+
+    Who it is, in order:
+      1. whoever FILED the issue. They asked for the destructive thing, so
+         they are the one who can say what they meant.
+      2. the repository's owner as the HOST names it — `owner_login`, which
+         answers with the project's creator and never with a group — for the
+         issues the bot files itself (the tester's). Asking the bot to confirm
+         the bot's own request answers nothing.
+
+    "" when neither can be read: the question is still posted, addressed to
+    nobody in particular. A guard that skips itself because it could not find
+    a name is a guard that lets the destructive change through, and widening
+    the net to "everyone with access" is the failure this exists to prevent.
+    """
+    who = str(issue.get("author") or "").strip()
+    if who and who.lower() != (bot or "").lower():
+        return who
+    try:
+        return f.owner_login(repo) or ""
+    except Exception:  # noqa: BLE001 - unreadable is "nobody to name"
+        return ""
+
+
 def ask_before_spawning(f: forge.Forge, repo: str, issue: dict,
                         bot: str) -> bool:
     """True ⟺ this issue must NOT be spawned: it asks for something
@@ -311,10 +342,7 @@ def ask_before_spawning(f: forge.Forge, repo: str, issue: dict,
             return False
         return True
 
-    # The repo OWNER, not the issue author: the bot may open issues itself
-    # later, and pinging the author would then ping the bot.
-    mention = repo.split("/", 1)[0]
-    body = lexical_guard.ask_note(hit, mention, bot)
+    body = lexical_guard.ask_note(hit, human_to_ask(f, repo, issue, bot), bot)
     if not f.post_comment(repo, number, body):
         sys.stderr.write(f"  {repo}#{number}: could not post the "
                          "confirmation question — not spawning\n")

@@ -59,6 +59,9 @@ class ParkIsVisibleAndReleasesTheSlot(ShellTestCase):
             'FORGE=(forge-cli --repo "$REPO")',
             f'AWAITING_HUMAN_MARKER="$PWD/awaiting-human"',
             'repo_owner_login() { echo owner; }',
+            # WHO the bot addressed. One person: the issue's filer, or the
+            # repository's creator when the bot filed it itself.
+            'issue_human_target() { echo owner; }',
             f'export FAKE_FORGE_DIR="$PWD/fx"',
             f'export FAKE_FORGE_LOG="$PWD/forge.log"',
         ])
@@ -132,6 +135,9 @@ class DetectingAnUnansweredQuestion(ShellTestCase):
             'ACCEPT_HEADER="Accept: application/vnd.github+json"',
             'APIV_HEADER="X-GitHub-Api-Version: 2022-11-28"',
             'repo_owner_login() { echo owner; }',
+            # WHO the bot addressed. One person: the issue's filer, or the
+            # repository's creator when the bot filed it itself.
+            'issue_human_target() { echo owner; }',
             'export FAKE_CURL_DIR="$PWD/fx"',
             f'. "{blk}"',
             'if bot_awaiting_human_reply; then echo WAITING; else echo NOT_WAITING; fi',

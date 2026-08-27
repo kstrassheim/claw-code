@@ -155,10 +155,24 @@ else
   fi
 fi
 
-# Repo owner — used as the OWNER @-mention / assignee target for issues
-# the bot can't act on (e.g. Entra access denied). Derived from $REPO
-# so no API call needed; identity-agnostic.
-REPO_OWNER="${REPO%%/*}"
+# Repo owner — the ONE human an issue the bot cannot act on is assigned to
+# (Entra access denied, a TLS certificate, a product decision).
+#
+# ASKED OF THE HOST, not split off $REPO. `${REPO%%/*}` is the first path
+# segment, which is a GROUP on GitLab and an ORGANISATION on GitHub — not a
+# person. Filing against it assigns every member: one run put its findings on
+# forty-two people. The forge answers with the project's CREATOR, and falls
+# back to a single owner-level member only when there is no creator to read
+# (see Forge.owner_login).
+#
+# Empty is a legitimate answer — the host knows no human owner — and an
+# OWNER-role finding is then filed UNASSIGNED rather than assigned to a crowd.
+REPO_OWNER="$(forge-cli --repo "$REPO" owner 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+if [ -n "$REPO_OWNER" ]; then
+  echo "[owner] OWNER-role findings in $REPO go to @$REPO_OWNER (project creator, or its single owner)"
+else
+  echo "[owner] WARN: no human owner could be resolved for $REPO — OWNER-role findings will be filed unassigned"
+fi
 
 MAX_LIFETIME_SECONDS="${TESTER_MAX_LIFETIME:-3600}"
 # Runtime-adjustable via `agent-limits` (stored on the PVC, read here at the
@@ -1230,8 +1244,12 @@ for draft in "$DRAFTS_DIR"/*.json; do
   # identity-agnostic per spec).
   #
   # BOT means the issue-solver picks it up on its next tick; OWNER means the
-  # repository owner, for the findings no amount of app code can fix —
-  # infrastructure, TLS, credentials, a product decision.
+  # ONE human $REPO_OWNER resolved to, for the findings no amount of app code
+  # can fix — infrastructure, TLS, credentials, a product decision.
+  #
+  # One name or none. An empty $REPO_OWNER files the finding UNASSIGNED, which
+  # is a small problem; assigning the group the project sits in is not, and is
+  # what this used to do — forty-two people on one issue.
   payload="$(BOT_LOGIN_VAL="$BOT_LOGIN" OWNER_LOGIN="$REPO_OWNER" \
     python3 -c "
 import sys, json, os
@@ -1239,7 +1257,7 @@ with open('$draft') as f:
     d = json.load(f)
 role = d.pop('assigneeRole', 'OWNER')
 login = os.environ['BOT_LOGIN_VAL'] if role == 'BOT' else os.environ['OWNER_LOGIN']
-d['assignees'] = [login]
+d['assignees'] = [login] if login else []
 # Tag the issue so the user can tell tester-created issues apart from
 # human-created ones at a glance in the GitHub list view.
 labels = d.get('labels', [])

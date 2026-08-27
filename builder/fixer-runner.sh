@@ -584,14 +584,61 @@ fetch_issue_state() {
   | python3 -c "import sys,json; print(json.load(sys.stdin).get('state') or 'open')"
 }
 
-# Repository owner login — the @-mention target for any question the
-# bot needs to ask. Pinned to the repo owner (NOT the issue author) on
-# purpose: later, the bot itself may create issues (e.g. from a chat
-# command), and pinging the issue.user.login would mean the bot pings
-# itself. The repo owner is always the right human to escalate to.
-# Derived from `$REPO` (owner/name) so no API call needed.
+# The repository's own human — the fallback target for anything the bot has
+# to ask when the issue in front of it was filed by the bot itself (the
+# tester files its findings, and the bot cannot answer the bot). Who gets
+# asked about a given issue is issue_human_target, one layer up.
+#
+# ONE human, ASKED OF THE HOST. This used to be `${REPO%%/*}` — the first
+# path segment — which is a GROUP on GitLab and an ORGANISATION on GitHub,
+# not a person: mentioning it notifies every member, and one issue reached
+# forty-two of them. The forge answers with the project's CREATOR instead,
+# and falls back to a single owner-level member only when there is no
+# creator to read (see Forge.owner_login).
+#
+# Empty means the host could not name anybody, which callers read as "there
+# is nobody to ask" rather than as licence to fall back to the group.
+#
+# `head -n 1` and stripping whitespace are not decoration: everything
+# downstream puts this straight after an `@`, and one stray line would
+# address a second person.
 repo_owner_login() {
-  echo "${REPO%%/*}"
+  "${FORGE[@]}" owner 2>/dev/null | head -n 1 | tr -d '[:space:]'
+}
+
+# WHO the bot talks to about THIS issue, in order:
+#   1. the person who FILED it. A human opened this and is waiting on it, so
+#      questions and escalations go to them — not to whoever happens to own
+#      the repository they filed in.
+#   2. the repository's CREATOR, when the filer was the bot itself. The tester
+#      files its own findings, and the bot cannot answer the bot.
+# One account either way; see repo_owner_login for why that matters.
+#
+# `resolve_review_target` is that exact order and already skips the bot, so it
+# is asked rather than re-implemented. $ISSUE_AUTHOR is the same answer cached
+# for the run — the preflight can reach here before the run resolves it, which
+# is why the call is still made when it is unset.
+issue_human_target() {
+  local who
+  who="${ISSUE_AUTHOR:-}"
+  [ -n "$who" ] || who="$(resolve_review_target 2>/dev/null)"
+  # Belt and braces: an unreadable issue must not turn a question addressed
+  # to somebody into a question addressed to nobody. The repository's creator
+  # is the same single account that resolver ends on anyway.
+  [ -n "$who" ] || who="$(repo_owner_login 2>/dev/null)"
+  printf '%s' "$who"
+}
+
+# How a sentence addresses that human. "@ — could you take a look?" is a
+# question put to nobody, so a host that can name nobody gets a noun.
+owner_mention() {
+  local who
+  who="$(issue_human_target 2>/dev/null)"
+  if [ -n "$who" ]; then
+    printf '@%s' "$who"
+  else
+    printf 'Whoever maintains this repository'
+  fi
 }
 
 # Filter to comments newer than cursor where the bot is @-mentioned
@@ -1668,7 +1715,7 @@ escalate_once() { # $1 = marker file, $2 = fingerprint, $3 = body, $4 = log tag
     return 1
   fi
   post_issue_comment "$body" \
-    && echo "[$tag] escalated '$fp' to @$(repo_owner_login)" \
+    && echo "[$tag] escalated '$fp' to $(owner_mention)" \
     || echo "[$tag] WARNING: could not post the escalation comment"
   # Written whether or not the post succeeded, exactly as the review request
   # is: a comment that cannot be posted now will not post better on the next
@@ -1755,7 +1802,10 @@ unpark_on_hold() {
 # not been told they are being waited on.
 bot_awaiting_human_reply() {
   local target
-  target="$(repo_owner_login 2>/dev/null)"
+  # The same person the question was addressed to — the filer, or the repo's
+  # creator when the bot filed it. Reading a different name here would look
+  # for an answer to a question nobody was asked.
+  target="$(issue_human_target 2>/dev/null)"
   [ -n "$target" ] || return 1
   "${FORGE[@]}" comments --number "$ISSUE_NUM" 2>/dev/null \
   | BOT="$BOT_LOGIN" MENTION="$target" python3 -c "
@@ -1932,7 +1982,7 @@ review_needs_agent() { # $1 = pr number
   escalate_once "$REVIEW_ESCALATED_FILE" "$fp" \
     "⚠️ The autonomous reviewer asked for changes on \`${head:0:8}\` in PR #$pr, and $REVIEW_RETRY_CAP attempts later they are still not addressed. I am not going to keep trying on my own.
 
-@$(repo_owner_login) — the findings are in the review comment on the pull request. Reply here and @-mention \`@$BOT_LOGIN\` with what you want done and I will pick it back up." \
+$(owner_mention) — the findings are in the review comment on the pull request. Reply here and @-mention \`@$BOT_LOGIN\` with what you want done and I will pick it back up." \
     "review-retry"
   echo "[review-retry] verdict $fp unaddressed after $REVIEW_RETRY_CAP attempts — not retrying (a human should look)"
   return 1
@@ -1989,7 +2039,7 @@ ci_red_needs_agent() { # $1 = pr number, $2 = ci fingerprint, $3 = 1 if it chang
   escalate_once "$CI_RED_ESCALATED_FILE" "$fp" \
     "⚠️ PR #$pr is still failing after $CI_RED_RETRY_CAP fix attempts on \`$sha7\`. I could not get the checks green on my own — the failing runs are on the pull request.
 
-@$(repo_owner_login) — could you take a look? Reply here and @-mention \`@$BOT_LOGIN\` and I will try again." \
+$(owner_mention) — could you take a look? Reply here and @-mention \`@$BOT_LOGIN\` and I will try again." \
     "ci-red-retry"
   echo "[ci-red-retry] checks still red after $CI_RED_RETRY_CAP attempts on $sha7 — not retrying (a human should look)"
   return 1
@@ -2154,10 +2204,19 @@ fi
 
 ISSUE_BODY="$(fetch_issue_body 2>/dev/null || echo '')"
 ALL_COMMENTS_JSON="$(fetch_all_comments 2>/dev/null || echo '[]')"
-# Default @-mention target = repo owner (NOT issue author). Stable
-# even when the bot itself creates issues later via chat commands.
-ISSUE_AUTHOR="$(repo_owner_login)"
-echo "[mention-target] @-mention target = repo owner @$ISSUE_AUTHOR (NOT issue author; stable across bot-created issues)"
+# WHO the agent addresses. The person who FILED the issue: they asked for
+# this, and an answer belongs to whoever is waiting for it. Only when the bot
+# filed it itself — the tester does — does this fall back to the repository's
+# CREATOR, because the bot @-mentioning the bot asks nobody anything.
+#
+# Resolved once, here, so every later caller (issue_human_target) reads a name
+# instead of the host, and so the log says who the run decided to talk to.
+ISSUE_AUTHOR="$(resolve_review_target)"
+if [ -n "$ISSUE_AUTHOR" ]; then
+  echo "[mention-target] @-mention target = @$ISSUE_AUTHOR (whoever filed #$ISSUE_NUM; the repo creator when that was the bot)"
+else
+  echo "[mention-target] nobody could be resolved for #$ISSUE_NUM — the agent will not @-mention anyone"
+fi
 
 ISSUE_HISTORY_TEXT="$(python3 - <<'PY'
 import os, sys, json
@@ -2370,7 +2429,7 @@ PYEOF
     # fails the build if the two ever drift.
     ASK_BODY="🛑 DESTRUCTIVE CHANGE — PLEASE CONFIRM
 
-@$ISSUE_AUTHOR — I need clarification before writing any code.
+$(owner_mention) — I need clarification before writing any code.
 
 $ASK_INTRO
 
@@ -2953,6 +3012,15 @@ A fix is NOT done when only one test layer is touched. Before you push:
    reply; when the user answers (by tagging you @$BOT_LOGIN),
    you'll be re-invoked in the same session with their reply
    as the next user message.
+
+   **@-mention EXACTLY ONE person, and only \`@$ISSUE_AUTHOR\`.**
+   Never a group, a team, an organisation, a role, or a second
+   account — not "the owners", not "the maintainers", not
+   everyone who touched the file. On this host an @-mention of a
+   group notifies every member of it: one run addressed its
+   findings to forty-two people. If you think somebody else
+   should see this, say so in words and let \`@$ISSUE_AUTHOR\`
+   bring them in.
 
 6. **When you finish**: ensure there is exactly ONE open PR for
    this issue. Post a final status comment on the issue with the

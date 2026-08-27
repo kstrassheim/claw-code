@@ -81,6 +81,26 @@ class GitLabForge(Forge):
         return self._transport("GET", f"{self.api}{path}",
                                headers=self._headers(), params=params)
 
+    def _is_user(self, name: str) -> bool:
+        """Does this name belong to ONE human account on this instance?
+
+        A group answers no. So does a name that cannot be read at all, which
+        is deliberate: an unreadable name is not proof that it is safe to
+        notify, and the whole point of this check is that the expensive
+        mistake is in the other direction.
+        """
+        cached = self._mention_seen(name)
+        if cached is not None:
+            return cached
+        try:
+            found = self._get("/users", {"username": name})
+        except Exception:  # noqa: BLE001 - unreadable is "not a person"
+            found = None
+        ok = bool(isinstance(found, list) and len(found) == 1
+                  and isinstance(found[0], dict)
+                  and str(found[0].get("username") or "").lower() == name.lower())
+        return self._mention_seen(name, ok)
+
     def _write(self, method: str, path: str, fields: dict | None = None):
         try:
             self._transport(method, f"{self.api}{path}",
@@ -172,6 +192,72 @@ class GitLabForge(Forge):
             self._identity = str((me or {}).get("username") or "") \
                 if isinstance(me, dict) else ""
         return self._identity
+
+    # The access level GitLab gives an Owner. Maintainer is 40, and a
+    # Maintainer is not who a project belongs to.
+    _OWNER_ACCESS = 50
+
+    def owner_login(self, repo: str) -> str:
+        """The project's CREATOR, falling back to one owner-level member.
+
+        A GitLab project path starts with a GROUP, and a group can hold dozens
+        of Owners — inheriting them from every group above it. Asking "who
+        owns this?" and taking the answer whole is how one issue reached
+        forty-two people. The project record names the ONE account that
+        created it, and that is the human this bot talks to.
+
+        The fallback runs only when there is no readable creator (the account
+        was deleted, blocked, or is the bot itself). It reads the members with
+        Owner access — `/members/all` so inherited ones count — and takes the
+        longest-standing of them, which is the lowest user id. One name, and
+        the same name on every tick.
+        """
+        bot = (self.bot_identity() or "").lower()
+        try:
+            project = self._get(f"/projects/{self._project(repo)}")
+        except Exception:  # noqa: BLE001 - unreadable is "cannot name one"
+            project = None
+        if not isinstance(project, dict):
+            project = {}
+        creator_id = project.get("creator_id")
+        if creator_id:
+            name = self._active_username(creator_id)
+            if name and name.lower() != bot:
+                return name
+        try:
+            members = self._get(f"/projects/{self._project(repo)}/members/all",
+                                {"per_page": "100"})
+        except Exception:  # noqa: BLE001
+            return ""
+        if not isinstance(members, list):
+            return ""
+        owners = [m for m in members
+                  if isinstance(m, dict)
+                  and int(m.get("access_level") or 0) >= self._OWNER_ACCESS
+                  and str(m.get("state") or "active") == "active"
+                  and str(m.get("username") or "").lower() != bot
+                  and str(m.get("username") or "").strip()]
+        if not owners:
+            return ""
+        owners.sort(key=lambda m: int(m.get("id") or 0))
+        return str(owners[0].get("username") or "")
+
+    def _active_username(self, user_id) -> str:
+        """One account's name, or "" when it is gone or blocked.
+
+        A creator who has left the instance still has an id on the project.
+        Their name would @-mention nobody and assign to an account that cannot
+        answer, so a non-active account is the same as no answer at all.
+        """
+        try:
+            user = self._get(f"/users/{user_id}")
+        except Exception:  # noqa: BLE001
+            return ""
+        if not isinstance(user, dict):
+            return ""
+        if str(user.get("state") or "") != "active":
+            return ""
+        return str(user.get("username") or "")
 
     # -- discovery ------------------------------------------------------
 
@@ -306,7 +392,7 @@ class GitLabForge(Forge):
     def post_comment(self, repo: str, number: int, body: str) -> bool:
         return self._write(
             "POST", f"/projects/{self._project(repo)}/issues/{number}/notes",
-            {"body": body})
+            {"body": self._one_human_only(body)})
 
     def add_labels(self, repo: str, number: int, labels) -> bool:
         names = [str(l) for l in (labels or []) if str(l).strip()]
@@ -503,7 +589,7 @@ class GitLabForge(Forge):
         return self._write(
             "POST",
             f"/projects/{self._project(repo)}/merge_requests/{number}/notes",
-            {"body": body})
+            {"body": self._one_human_only(body)})
 
     def close_change_request(self, repo: str, number: int) -> bool:
         """`state_event` closes a merge request, as it closes an issue."""
@@ -592,7 +678,8 @@ class GitLabForge(Forge):
             return False
         if not body:
             return True
-        return self._write("POST", f"{path}/notes", {"body": body})
+        return self._write("POST", f"{path}/notes",
+                           {"body": self._one_human_only(body)})
 
     def review_requests(self, repo: str, number: int) -> list[str]:
         row = self._get(
@@ -620,9 +707,12 @@ class GitLabForge(Forge):
                     ids.append(uid)
         if not ids:
             return False
+        # One reviewer. "Ask the owners to review" is the same mistake as
+        # assigning them: a review that belongs to everybody belongs to no one,
+        # and every one of them gets the notification.
         return self._write(
             "PUT", f"/projects/{self._project(repo)}/merge_requests/{number}",
-            {"reviewer_ids": ",".join(str(i) for i in ids)})
+            {"reviewer_ids": str(ids[0])})
 
     def remove_review_request(self, repo: str, number: int,
                               reviewers) -> bool:
@@ -706,13 +796,19 @@ class GitLabForge(Forge):
 
     def create_issue(self, repo: str, title: str, body: str = "",
                      labels=None, assignees=None) -> int:
-        fields = {"title": title, "description": body or ""}
+        fields = {"title": title,
+                  "description": self._one_human_only(body or "")}
         names = [str(l) for l in (labels or []) if str(l).strip()]
         if names:
             fields["labels"] = ",".join(names)
         # Assignees are numeric ids here, so each account name is resolved.
         # A name that does not resolve is dropped rather than guessed at: an
         # id for the wrong account assigns somebody else's work to a stranger.
+        #
+        # ONE id reaches the host, whatever the caller passed. A group path
+        # resolves to nothing here and is dropped already; the cap is for the
+        # other half of the same mistake — a caller handing over a LIST of
+        # owners, which assigns the work to a crowd and belongs to nobody.
         ids = []
         for who in (assignees or []):
             who = str(who).strip()
@@ -723,7 +819,7 @@ class GitLabForge(Forge):
                 if found[0].get("id"):
                     ids.append(found[0]["id"])
         if ids:
-            fields["assignee_ids"] = ",".join(str(i) for i in ids)
+            fields["assignee_ids"] = str(ids[0])
         try:
             made = self._transport(
                 "POST", f"{self.api}/projects/{self._project(repo)}/issues",
