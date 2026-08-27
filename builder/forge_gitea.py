@@ -110,6 +110,68 @@ class GiteaForge(Forge):
                 if isinstance(me, dict) else ""
         return self._identity
 
+    def _is_user(self, name: str) -> bool:
+        """One person, or something that stands for several.
+
+        An organisation is an account here too, and a team (`org/team`) is not
+        an account at all. The organisation endpoint knows only organisations,
+        so a name it recognises is not a person — and a name that cannot be
+        read is treated the same way, because an unreadable name is not proof
+        that it is safe to notify everybody behind it.
+        """
+        cached = self._mention_seen(name)
+        if cached is not None:
+            return cached
+        if "/" in name:
+            return self._mention_seen(name, False)
+        try:
+            org = self._get(f"/orgs/{urllib.parse.quote(name)}")
+        except Exception:  # noqa: BLE001 - not an organisation, or unreadable
+            org = None
+        if isinstance(org, dict) and org.get("id"):
+            return self._mention_seen(name, False)
+        try:
+            who = self._get(f"/users/{urllib.parse.quote(name)}")
+        except Exception:  # noqa: BLE001
+            who = None
+        ok = bool(isinstance(who, dict) and who.get("id"))
+        return self._mention_seen(name, ok)
+
+    def owner_login(self, repo: str) -> str:
+        """The account the repository belongs to, when that is a PERSON.
+
+        This host models an organisation as an account too, so `owner/name`
+        alone cannot say whether the first segment is somebody or a team — and
+        handing work to a team hands it to everyone in it. The organisation
+        endpoint answers the question: it knows only organisations, so a
+        repository whose owner it recognises is an org-owned one, and the
+        human is one of the collaborators instead (alphabetically, never the
+        bot, so two ticks name the same person).
+        """
+        bot = (self.bot_identity() or "").lower()
+        owner, _name = self._split(repo)
+        owner = str(owner or "").strip()
+        if not owner:
+            return ""
+        try:
+            org = self._get(f"/orgs/{urllib.parse.quote(owner)}")
+        except Exception:  # noqa: BLE001 - not an organisation, or unreadable
+            org = None
+        if not isinstance(org, dict) or not org.get("id"):
+            return "" if owner.lower() == bot else owner
+        try:
+            people = self._get(f"{self._repo_path(repo)}/collaborators",
+                               {"limit": "100"})
+        except Exception:  # noqa: BLE001
+            return ""
+        if not isinstance(people, list):
+            return ""
+        names = sorted(str(p.get("login") or "") for p in people
+                       if isinstance(p, dict)
+                       and str(p.get("login") or "").strip()
+                       and str(p.get("login") or "").lower() != bot)
+        return names[0] if names else ""
+
     # -- neutral shapes -------------------------------------------------
 
     def _labels(self, raw) -> list[str]:
@@ -306,7 +368,7 @@ class GiteaForge(Forge):
     def post_comment(self, repo: str, number: int, body: str) -> bool:
         return self._write(
             "POST", f"{self._repo_path(repo)}/issues/{int(number)}/comments",
-            {"body": body or ""})
+            {"body": self._one_human_only(body or "")})
 
     def add_labels(self, repo: str, number: int, labels) -> bool:
         names = [str(l).strip() for l in (labels or []) if str(l).strip()]
@@ -540,7 +602,7 @@ class GiteaForge(Forge):
         """
         return self._write(
             "POST", f"{self._repo_path(repo)}/issues/{int(number)}/comments",
-            {"body": body or ""})
+            {"body": self._one_human_only(body or "")})
 
     def close_change_request(self, repo: str, number: int) -> bool:
         """Close a pull request without merging. The branch survives."""
@@ -596,7 +658,7 @@ class GiteaForge(Forge):
                      str(verdict or "").strip().lower(), "COMMENT")
         return self._write(
             "POST", f"{self._repo_path(repo)}/pulls/{int(number)}/reviews",
-            {"event": event, "body": body or ""})
+            {"event": event, "body": self._one_human_only(body or "")})
 
     def review_requests(self, repo: str, number: int) -> list[str]:
         """Who has been asked to review, by account name.
@@ -621,7 +683,8 @@ class GiteaForge(Forge):
         return self._write(
             "POST",
             f"{self._repo_path(repo)}/pulls/{int(number)}/requested_reviewers",
-            {"reviewers": names})
+            # ONE reviewer: a review asked of a crowd is a review nobody owns.
+            {"reviewers": names[:1]})
 
     def remove_review_request(self, repo: str, number: int,
                               reviewers) -> bool:
@@ -631,7 +694,8 @@ class GiteaForge(Forge):
         return self._write(
             "DELETE",
             f"{self._repo_path(repo)}/pulls/{int(number)}/requested_reviewers",
-            {"reviewers": names})
+            # ONE reviewer: a review asked of a crowd is a review nobody owns.
+            {"reviewers": names[:1]})
 
     def react(self, repo: str, number: int, comment_id, emoji: str) -> bool:
         """Acknowledge one comment.
@@ -729,7 +793,8 @@ class GiteaForge(Forge):
         created rather than dropped: silently losing the status label is how
         an issue ends up outside the vocabulary every planner reads.
         """
-        payload: dict = {"title": title or "", "body": body or ""}
+        payload: dict = {"title": title or "",
+                         "body": self._one_human_only(body or "")}
         names = [str(l).strip() for l in (labels or []) if str(l).strip()]
         if names:
             ids = []
@@ -741,9 +806,12 @@ class GiteaForge(Forge):
                     ids.append(label_id)
             if ids:
                 payload["labels"] = ids
+        # ONE assignee, whatever the caller passed. The interface promises one
+        # human (Forge.owner_login); a list here is a caller that mistook a
+        # team for a person, and it hands the work to all of them.
         who = [str(a).strip() for a in (assignees or []) if str(a).strip()]
         if who:
-            payload["assignees"] = who
+            payload["assignees"] = who[:1]
         try:
             raw = self._transport(
                 "POST", f"{self.api}{self._repo_path(repo)}/issues",

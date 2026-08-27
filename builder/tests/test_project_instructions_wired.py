@@ -131,7 +131,8 @@ class AskingAPersonIsVisibleOnTheIssue(unittest.TestCase):
 
     def test_the_escalation_path_still_parks(self):
         # The path that always did it — pinned so a refactor cannot drop it.
-        self.assertIn("park_on_hold", self.block_after("escalated '$fp' to @", 12))
+        self.assertIn("park_on_hold",
+                      self.block_after("escalated '$fp' to $(owner_mention)", 12))
 
     def test_park_on_hold_is_defined_before_both_callers(self):
         definition = self.src.index("\npark_on_hold() {")
@@ -218,7 +219,31 @@ class TheSignOffGoesToWhoeverAskedForIt(unittest.TestCase):
         self.assertNotIn('owner="$(repo_owner_login)"', fn,
                          "still pinned to the owner regardless of who filed it")
 
-    def test_the_mention_target_is_left_alone(self):
-        # Separate decision, separate rationale — pinned to the owner so it is
-        # stable across bot-filed issues. Changing it is not in scope here.
-        self.assertIn('ISSUE_AUTHOR="$(repo_owner_login)"', self.src)
+    def test_the_mention_target_is_the_filer_too(self):
+        """The @-mention target follows the same order as the sign-off.
+
+        It used to be pinned to the repository owner regardless of who filed
+        the issue, and on a hosted GitLab that "owner" was the first path
+        segment — a GROUP. One tester run addressed its findings to all
+        forty-two members of one. The person who FILED the issue is a person,
+        and `resolve_review_target` already falls back to the repository's
+        creator for the issues the bot files itself.
+        """
+        self.assertIn('ISSUE_AUTHOR="$(resolve_review_target)"', self.src)
+        self.assertNotIn('ISSUE_AUTHOR="$(repo_owner_login)"', self.src)
+
+    def test_the_owner_is_asked_of_the_host_not_split_off_the_path(self):
+        """`${REPO%%/*}` is a group, and a group is not one person."""
+        i = self.src.index("repo_owner_login() {")
+        fn = chr(10).join(self.src[i:].splitlines()[:10])
+        self.assertNotIn("${REPO%%/*}", fn,
+                         "back to naming the group the project lives in")
+        self.assertIn("owner", fn, "never asks the host who the owner is")
+
+    def test_one_name_or_none_ever_reaches_a_mention(self):
+        """`owner_mention` prints one login, or a noun — never a list."""
+        i = self.src.index("owner_mention() {")
+        fn = chr(10).join(self.src[i:].splitlines()[:12])
+        self.assertIn("issue_human_target", fn)
+        self.assertIn("printf '@%s' \"$who\"", fn,
+                      "a single %s is what keeps this to one person")

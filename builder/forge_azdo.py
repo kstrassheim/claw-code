@@ -136,6 +136,29 @@ class AzureDevOpsForge(Forge):
                 if isinstance(me, dict) else ""
         return self._identity
 
+    def _one_human_only(self, body: str) -> str:
+        """Unchanged: an "@name" in this host's prose notifies nobody.
+
+        A mention here is markup carrying an identity GUID, which this bot
+        never writes — plain text reading `@somebody` is inert, so there is
+        nothing to defuse and rewriting it would only mangle the sentence.
+        The rule itself still holds on this host: what it assigns and who it
+        asks to review is one account, enforced where those are written.
+        """
+        return str(body or "")
+
+    def owner_login(self, repo: str) -> str:
+        """Nobody: this host does not record who a repository belongs to.
+
+        A project here is an administrative container with a permission list,
+        not something an account owns, and no endpoint names a creator. The
+        honest answer is "" — the callers then ask the person who FILED the
+        work instead. Returning `project` (the first path segment) would be a
+        container name, and asking a container to look at something asks
+        everyone with access to it.
+        """
+        return ""
+
     # -- addressing -----------------------------------------------------
 
     @staticmethod
@@ -860,7 +883,9 @@ class AzureDevOpsForge(Forge):
         cannot always read. An account already ON the pull request is
         addressable, so this refuses honestly rather than half-working.
         """
-        names = [str(r).strip() for r in (reviewers or []) if str(r).strip()]
+        # ONE reviewer. A review asked of everybody is a review nobody owns,
+        # and every one of them is notified — see Forge.owner_login.
+        names = [str(r).strip() for r in (reviewers or []) if str(r).strip()][:1]
         if not names:
             return True
         ok = True

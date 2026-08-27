@@ -890,5 +890,64 @@ class TheAzureDevOpsHelpersAddressingDependsOn(unittest.TestCase):
         self.assertEqual(impl._reviewer_id("proj/app", 7, "nobody"), "")
 
 
+class OneHumanOwnerEverywhere(unittest.TestCase):
+    """One name, or none — asked of every host that answers it.
+
+    The per-host files pin how each one finds the person. This pins the part
+    that is the same everywhere and the part that went wrong in production:
+    the answer is ONE account, and a host with nobody to name says nothing
+    rather than naming the group, the organisation, or the member list. An
+    issue assigned to a group is assigned to all forty-two of its members.
+    """
+
+    def test_no_host_ever_answers_with_more_than_one_name(self):
+        crowd = [{"id": i, "username": f"p{i}", "access_level": 50,
+                  "state": "active"} for i in range(42)]
+        hosts = (
+            ("gitea", gitea({"/user": {"login": "bot"},
+                             "/orgs/acme": {"id": 1},
+                             "/repos/acme/app/collaborators":
+                                 [{"login": f"p{i}"} for i in range(42)]})[0]),
+            ("github", github({"/user": {"login": "bot"},
+                               "/repos/acme/app":
+                                   {"owner": {"login": "acme",
+                                              "type": "Organization"}},
+                               "/repos/acme/app/collaborators":
+                                   [{"login": f"p{i}"} for i in range(42)]})[0]),
+            ("gitlab", gitlab({"/user": {"username": "bot"},
+                               "%2Fapp": {"creator_id": 7},
+                               "/users/7": {"username": "ada",
+                                            "state": "active"},
+                               "%2Fapp/members/all": crowd})[0]),
+        )
+        for label, impl in hosts:
+            with self.subTest(host=label):
+                who = impl.owner_login(REPO)
+                self.assertIsInstance(who, str)
+                self.assertNotIn(",", who)
+                self.assertNotIn(" ", who)
+                self.assertTrue(who)
+
+    def test_gitea_asks_the_organisation_endpoint_before_trusting_the_path(self):
+        # `acme/app` says nothing about whether `acme` is a person here.
+        impl, t = gitea({"/user": {"login": "bot"},
+                         "/orgs/acme": {"id": 1},
+                         "/repos/acme/app/collaborators": [{"login": "ada"}]})
+        self.assertEqual(impl.owner_login(REPO), "ada")
+        self.assertTrue(any(u.endswith("/orgs/acme") for u in t.urls("GET")),
+                        t.urls("GET"))
+
+    def test_gitea_leaves_a_personal_repository_with_its_person(self):
+        impl, _t = gitea({"/user": {"login": "bot"}, "/orgs/acme": None})
+        self.assertEqual(impl.owner_login(REPO), "acme")
+
+    def test_azure_devops_names_nobody_rather_than_the_project(self):
+        # A project there is a container with a permission list, not something
+        # an account owns. "" is the honest answer; the project name would be
+        # a container, and asking a container asks everyone in it.
+        impl, _t = azdo()
+        self.assertEqual(impl.owner_login("proj/app"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -233,5 +233,31 @@ class RoutingToTheRightHost(CliTestCase):
         self.assertEqual(json.loads(out)["title"], "elsewhere")
 
 
+class AskingWhoTheHumanIs(CliTestCase):
+    """`owner` is how the shell learns WHO to talk to.
+
+    It used to not ask at all: the runners split `${REPO%%/*}` off the path
+    and called that the owner. On a hosted GitLab that first segment is a
+    GROUP, and one tester run addressed its findings to all forty-two members
+    of one. The verb exists so the answer comes from the host — and so that a
+    host with nobody to name can say so.
+    """
+
+    def test_one_login_goes_to_stdout(self):
+        self.forge.owner = "ada"
+        rc, out, err = self.run_cli("--repo", REPO, "owner")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "ada" + chr(10))
+
+    def test_nobody_is_a_failure_and_prints_nothing(self):
+        # The shell reads stdout. An empty answer that exited 0 would be
+        # interpolated straight after an "@".
+        self.forge.owner = ""
+        rc, out, err = self.run_cli("--repo", REPO, "owner")
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
+        self.assertIn("owner", err)
+
+
 if __name__ == "__main__":
     unittest.main()

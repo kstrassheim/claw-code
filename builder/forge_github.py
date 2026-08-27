@@ -75,6 +75,27 @@ class GitHubForge(Forge):
         return self._transport("GET", f"{self.api}{path}",
                                headers=self._headers(), params=params)
 
+    def _is_user(self, name: str) -> bool:
+        """Does this name belong to ONE person account?
+
+        An organisation answers no — the endpoint serves both and says which.
+        So does a team (`org/team`), which is not an account at all, and a
+        name that cannot be read: an unreadable name is not proof that it is
+        safe to notify everybody behind it.
+        """
+        cached = self._mention_seen(name)
+        if cached is not None:
+            return cached
+        ok = False
+        if "/" not in name:
+            try:
+                who = self._get(f"/users/{name}")
+            except Exception:  # noqa: BLE001 - unreadable is "not a person"
+                who = None
+            ok = bool(isinstance(who, dict)
+                      and str(who.get("type") or "") == "User")
+        return self._mention_seen(name, ok)
+
     def _write(self, method: str, path: str, payload=None):
         """A write that reports rather than raises.
 
@@ -96,6 +117,42 @@ class GitHubForge(Forge):
             self._identity = str((me or {}).get("login") or "") \
                 if isinstance(me, dict) else ""
         return self._identity
+
+    def owner_login(self, repo: str) -> str:
+        """The account the repository belongs to, when that is a PERSON.
+
+        `owner/name` names a user for a personal repository and an
+        ORGANISATION for everything else, and the two read identically in the
+        path — which is why this asks the host instead of splitting a string.
+        An organisation cannot be assigned an issue, and @-mentioning one
+        notifies every member of it.
+
+        For an organisation-owned repository the answer is one admin
+        collaborator, alphabetically so the same tick answers the same way
+        twice, and never the bot.
+        """
+        bot = (self.bot_identity() or "").lower()
+        try:
+            raw = self._get(f"/repos/{repo}")
+        except Exception:  # noqa: BLE001 - unreadable is "cannot name one"
+            return ""
+        owner = (raw or {}).get("owner") or {} if isinstance(raw, dict) else {}
+        login = str(owner.get("login") or "")
+        kind = str(owner.get("type") or "User")
+        if login and kind == "User" and login.lower() != bot:
+            return login
+        try:
+            people = self._get(f"/repos/{repo}/collaborators",
+                               {"permission": "admin", "per_page": "100"})
+        except Exception:  # noqa: BLE001
+            return ""
+        if not isinstance(people, list):
+            return ""
+        names = sorted(str(p.get("login") or "") for p in people
+                       if isinstance(p, dict)
+                       and str(p.get("login") or "").strip()
+                       and str(p.get("login") or "").lower() != bot)
+        return names[0] if names else ""
 
     # -- neutral shapes -------------------------------------------------
 
@@ -321,7 +378,7 @@ class GitHubForge(Forge):
 
     def post_comment(self, repo: str, number: int, body: str) -> bool:
         return self._write("POST", f"/repos/{repo}/issues/{number}/comments",
-                           {"body": body})
+                           {"body": self._one_human_only(body)})
 
     def add_labels(self, repo: str, number: int, labels) -> bool:
         names = [str(l) for l in (labels or []) if str(l).strip()]
@@ -572,7 +629,7 @@ class GitHubForge(Forge):
         independently readable: they are the same call only on this host.
         """
         return self._write("POST", f"/repos/{repo}/issues/{number}/comments",
-                           {"body": body})
+                           {"body": self._one_human_only(body)})
 
     def close_change_request(self, repo: str, number: int) -> bool:
         """A pull request has no close REASON — only a state."""
@@ -655,7 +712,8 @@ class GitHubForge(Forge):
         # Expected to fail when the bot reviews its own work, which is the
         # normal case here — the solver and the reviewer are one account.
         return self._write("POST", f"/repos/{repo}/pulls/{number}/reviews",
-                           {"event": event, "body": body or ""})
+                           {"event": event,
+                            "body": self._one_human_only(body or "")})
 
     def review_requests(self, repo: str, number: int) -> list[str]:
         raw = self._get(f"/repos/{repo}/pulls/{number}/requested_reviewers")
@@ -670,9 +728,12 @@ class GitHubForge(Forge):
             return False
         # 422 when the author is among them, which is this bot on its own
         # pull requests. `False` is the honest answer: nobody was asked.
+        #
+        # ONE reviewer, whatever the caller passed: a review asked of a crowd
+        # is a review nobody owns, and every one of them is notified.
         return self._write("POST",
                            f"/repos/{repo}/pulls/{number}/requested_reviewers",
-                           {"reviewers": names})
+                           {"reviewers": names[:1]})
 
     def remove_review_request(self, repo: str, number: int,
                               reviewers) -> bool:
@@ -750,13 +811,16 @@ class GitHubForge(Forge):
 
     def create_issue(self, repo: str, title: str, body: str = "",
                      labels=None, assignees=None) -> int:
-        payload = {"title": title, "body": body or ""}
+        payload = {"title": title, "body": self._one_human_only(body or "")}
         names = [str(l) for l in (labels or []) if str(l).strip()]
         if names:
             payload["labels"] = names
+        # ONE assignee. Work handed to a crowd belongs to nobody, and the
+        # caller that hands over a list is the caller that took a group for a
+        # person — see Forge.owner_login.
         who = [str(a) for a in (assignees or []) if str(a).strip()]
         if who:
-            payload["assignees"] = who
+            payload["assignees"] = who[:1]
         try:
             made = self._transport("POST", f"{self.api}/repos/{repo}/issues",
                                    headers=self._headers(), json_body=payload)

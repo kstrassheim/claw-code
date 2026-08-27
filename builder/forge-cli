@@ -205,6 +205,7 @@ def main(argv=None) -> int:
     p.add_argument("--body-file", required=True)
 
     sub.add_parser("identity", help="the account these credentials are")
+    sub.add_parser("owner", help="the one human this repository escalates to")
     sub.add_parser("noun", help="what a person calls a change here")
 
     args = ap.parse_args(argv)
@@ -312,6 +313,17 @@ def main(argv=None) -> int:
             # waiting to happen, and every line this bot writes is read by
             # somebody who uses one word or the other.
             _out(f.change_request_noun)
+            return 0
+
+        if args.verb == "owner":
+            # ONE login, or nothing at all. Never the first path segment: that
+            # is a group on some hosts and an organisation on others, and
+            # handing work to one of those hands it to everybody in it.
+            who = f.owner_login(args.repo)
+            if not who:
+                _say(f"{args.repo} has no owner account this host can name")
+                return 1
+            _out(who)
             return 0
 
         if args.verb == "identity":

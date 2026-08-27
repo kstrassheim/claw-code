@@ -161,9 +161,18 @@ def ask_note(hit: dict, mention: str, bot: str) -> str:
     solver phrased it differently the solver would not recognise the planner's
     note and would ask the same question again — which is the whole complaint
     this was written to answer.
+
+    `mention` NAMES ONE PERSON, or is empty. Never a group, an organisation or
+    a team: this note @-mentions whatever it is given, and a group mention
+    notifies every member of it — this question went to forty-two people
+    because the caller passed the first segment of the project path. An empty
+    mention drops the "@" line's address rather than writing a bare "@", and
+    the question is still asked: not knowing who to ask is not a reason to
+    skip a destructive-change confirmation.
     """
+    address = f"@{mention} — " if str(mention or "").strip() else ""
     lines = [f"🛑 {ASK_MARKER}", "",
-             f"@{mention} — I need clarification before writing any code.", "",
+             f"{address}I need clarification before writing any code.", "",
              f"The issue wording matches a destructive-change pattern "
              f"(`{hit.get('hit', '')}`)."]
     context = hit.get("context")

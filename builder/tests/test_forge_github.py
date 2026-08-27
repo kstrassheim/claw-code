@@ -494,5 +494,54 @@ class Vocabulary(unittest.TestCase):
         self.assertEqual(f.kind, forge.GITHUB)
 
 
+class OneHumanOwner(unittest.TestCase):
+    """`owner/name` names a person for a user repository and an ORG otherwise.
+
+    The two are indistinguishable in the path, which is why this asks the host.
+    An organisation cannot be assigned an issue at all, and @-mentioning one
+    notifies every member — the same failure that put a tester run's findings
+    on forty-two people on the sibling host.
+    """
+
+    def test_a_personal_repository_belongs_to_that_person(self):
+        f, t = gh({"/user": {"login": "bot"},
+                   "/repos/ada/app": {"owner": {"login": "ada",
+                                                "type": "User"}}})
+        self.assertEqual(f.owner_login("ada/app"), "ada")
+        self.assertFalse([u for u in t.urls("GET") if "collaborators" in u],
+                         "asked for collaborators it did not need")
+
+    def test_an_organisation_is_not_a_person_so_ONE_admin_is_asked(self):
+        f, _t = gh({"/user": {"login": "bot"},
+                    "/repos/acme/app": {"owner": {"login": "acme",
+                                                  "type": "Organization"}},
+                    "/repos/acme/app/collaborators": [{"login": "zoe"},
+                                                      {"login": "ada"},
+                                                      {"login": "bot"}]})
+        # One name, the same one on every tick, and never the bot.
+        self.assertEqual(f.owner_login("acme/app"), "ada")
+
+    def test_only_admins_are_asked_for(self):
+        f, t = gh({"/user": {"login": "bot"},
+                   "/repos/acme/app": {"owner": {"login": "acme",
+                                                 "type": "Organization"}},
+                   "/repos/acme/app/collaborators": []})
+        self.assertEqual(f.owner_login("acme/app"), "")
+        self.assertEqual(t.params_for("collaborators").get("permission"),
+                         "admin")
+
+    def test_an_organisation_with_nobody_to_ask_is_empty_not_the_org(self):
+        f, _t = gh({"/user": {"login": "bot"},
+                    "/repos/acme/app": {"owner": {"login": "acme",
+                                                  "type": "Organization"}},
+                    "/repos/acme/app/collaborators": [{"login": "bot"}]})
+        self.assertEqual(f.owner_login("acme/app"), "")
+
+    def test_an_unreadable_repository_does_not_raise(self):
+        f, _t = gh({"/user": {"login": "bot"},
+                    "/repos/acme/app": RuntimeError("500")})
+        self.assertEqual(f.owner_login("acme/app"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

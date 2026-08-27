@@ -82,6 +82,10 @@ class RunnerBlock(ShellTestCase):
         self.env["FAKE_FORGE_LOG"] = "$PWD/forge.log"
         self.env["FAKE_CURL_DIR"] = "$PWD/fixtures"
         self.env["FAKE_CURL_LOG"] = "$PWD/curl.log"
+        # WHO the host says the one human is. The runner asks for it now
+        # instead of splitting `${REPO%%/*}` off the path, because that first
+        # segment is a GROUP and a group is not a person to hand work to.
+        self.fixture("owner", "creator" + chr(10))
         self.blocks = {}
 
     def block(self, name):
