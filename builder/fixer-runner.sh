@@ -3015,7 +3015,7 @@ A fix is NOT done when only one test layer is touched. Before you push:
 
    **@-mention EXACTLY ONE person, and only \`@$ISSUE_AUTHOR\`.**
    Never a group, a team, an organisation, a role, or a second
-   account — not "the owners", not "the maintainers", not
+   account — not \"the owners\", not \"the maintainers\", not
    everyone who touched the file. On this host an @-mention of a
    group notifies every member of it: one run addressed its
    findings to forty-two people. If you think somebody else
