@@ -20,9 +20,9 @@ import subprocess
 import tempfile
 import unittest
 
-from harness import BUILDER
+from harness import BUILDER, bash_path, sandbox_root
 
-LIB = os.path.join(BUILDER, "project-instructions.sh")
+LIB = bash_path(os.path.join(BUILDER, "project-instructions.sh"))
 
 EXPECTED = {
     "fixer-runner.sh": "CLAWCODE-issuesolver-instructions.md",
@@ -64,13 +64,14 @@ class AMissingFileChangesNothing(unittest.TestCase):
     """The loader itself, driven through bash against a real directory."""
 
     def load(self, filename, contents=None):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory(dir=sandbox_root()) as _d:
+            d, d_sh = _d, bash_path(_d)
             if contents is not None:
                 with open(os.path.join(d, filename), "w", encoding="utf-8") as fh:
                     fh.write(contents)
             script = (
                 f'. "{LIB}"\n'
-                f'load_project_instructions "{filename}" "" "{d}"\n'
+                f'load_project_instructions "{filename}" "" "{d_sh}"\n'
             )
             return subprocess.run(["bash", "-c", script], capture_output=True,
                                   text=True, timeout=60)

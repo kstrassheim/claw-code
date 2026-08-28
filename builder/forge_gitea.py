@@ -15,7 +15,7 @@ import urllib.parse
 
 from forge import (  # noqa: F401 - the shared vocabulary
     DELIVERED, FAILED, GREEN, NONE, PENDING, REVOKED,
-    Forge, ForgeError, RateLimited, _http,
+    Forge, ForgeError, RateLimited, _http, _with_credential,
     GITEA,
 )
 
@@ -337,6 +337,10 @@ class GiteaForge(Forge):
                 break
             page += 1
         return out[:limit]
+
+    def clone_url(self, repo: str) -> str:
+        # Gitea takes the token as the user half, with no password at all.
+        return _with_credential(self.url, "", self.token, repo)
 
     def default_branch_head(self, repo: str) -> tuple[str, str]:
         try:

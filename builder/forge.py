@@ -217,6 +217,41 @@ def _http(method: str, url: str, *, headers: dict, params: dict | None = None,
         return None
 
 
+def _with_credential(base: str, user: str, token: str, repo: str) -> str:
+    """`https://user:token@host/path/repo.git` from a host base and a repo.
+
+    Every host spells the user half differently and only its own spelling is
+    accepted, so the caller supplies it; everything else about assembling one
+    of these is identical and easy to get subtly wrong.
+
+    The token is percent-encoded. Forge tokens are not hex — GitLab's may
+    carry `-` and `_`, and a PAT that happens to contain `/`, `@` or `:`
+    silently reshapes the URL into a different host if it is pasted in raw,
+    which fails as a DNS error naming a host nobody recognises.
+
+    An empty `user` puts the token in the user half on its own — the form
+    Gitea takes, where there is no password at all.
+
+    An empty TOKEN yields an ANONYMOUS url rather than `https://user:@host`,
+    whatever `user` says. A URL carrying an empty password is not a neutral
+    fallback: git offers it, the host rejects it, and the failure reads as bad
+    credentials rather than as none. Public repositories still clone; private
+    ones fail saying so.
+    """
+    base = (base or "").rstrip("/")
+    repo = (repo or "").strip("/")
+    if not base or not repo:
+        return ""
+    scheme, _, host = base.partition("://")
+    if not host:
+        scheme, host = "https", base
+    if not token:
+        return f"{scheme}://{host}/{repo}.git"
+    secret = urllib.parse.quote(token, safe="")
+    userinfo = f"{urllib.parse.quote(user, safe='')}:{secret}" if user else secret
+    return f"{scheme}://{userinfo}@{host}/{repo}.git"
+
+
 class Forge(abc.ABC):
     """Everything the bot needs to know about a code host.
 
@@ -377,6 +412,31 @@ class Forge(abc.ABC):
     def default_branch_head(self, repo: str) -> tuple[str, str]:
         """(default branch, head sha). Empty strings when it cannot be read;
         the caller treats that as "skip this repository"."""
+
+    @abc.abstractmethod
+    def clone_url(self, repo: str) -> str:
+        """An HTTPS URL `git` can clone, fetch and push with, unattended.
+
+        The credential is IN the URL because there is no terminal to prompt
+        at: a runner is a background subprocess with stdin closed, so a git
+        that decides to ask for a username does not ask, it dies —
+
+            fatal: could not read Username for '<host>': No such device or
+            address
+
+        — and everything downstream reads the empty result as fact. That is
+        not hypothetical. Every runner built this URL itself, hardcoded to
+        `github.com` with $GITHUB_TOKEN, so on a GitLab-only deployment each
+        one pointed at the wrong host with an empty credential: `git fetch`
+        failed, `git remote show origin` returned nothing, and the checkout
+        continued against an EMPTY default branch:
+
+            [checkout] default-branch=
+            fatal: ambiguous argument 'origin/': unknown revision
+
+        Asked of the forge instead, because the forge is the only thing that
+        knows which host owns the repository and which token opens it.
+        """
 
     # -- issues ---------------------------------------------------------
 

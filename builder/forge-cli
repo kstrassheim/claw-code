@@ -196,6 +196,9 @@ def main(argv=None) -> int:
 
     sub.add_parser("default-branch", help="the default branch and its head")
 
+    sub.add_parser("clone-url",
+                   help="an https url git can clone/fetch/push unattended")
+
     p = sub.add_parser("file-at-ref", help="one file's text at one commit")
     p.add_argument("--path", required=True)
     p.add_argument("--ref", required=True)
@@ -437,6 +440,17 @@ def main(argv=None) -> int:
                 _say(f"could not read {args.branch} in {args.repo}")
                 return 1
             _out(sha)
+            return 0
+
+        if args.verb == "clone-url":
+            # Empty is a FAILURE, not an anonymous fallback: a caller that
+            # took "" would run `git clone ""` and report the confusing thing
+            # rather than the true one.
+            url = f.clone_url(args.repo)
+            if not url:
+                _say(f"could not build a clone url for {args.repo}")
+                return 1
+            _out(url)
             return 0
 
         if args.verb == "default-branch":

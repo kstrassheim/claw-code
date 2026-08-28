@@ -502,8 +502,14 @@ print(f'(total changed lines: {total})')
 
 # -- workspace: the reviewer's OWN checkout ----------------------------
 # Cloned over HTTPS with the token in the URL, exactly as the fixer does, so a
-# private repo works without an SSH key on the pod.
-CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/$REPO.git"
+# private repo works without an SSH key on the pod. The URL is asked of the
+# forge: spelling it here meant github.com and $GITHUB_TOKEN, which on a
+# GitLab deployment is the wrong host and an empty credential.
+CLONE_URL="$(forge-cli --repo "$REPO" clone-url 2>/dev/null || true)"
+if [ -z "$CLONE_URL" ]; then
+  echo "FATAL: no clone url for $REPO — is a forge credential configured?" >&2
+  exit 1
+fi
 if [ ! -d "$PROJECT_DIR/.git" ]; then
   echo "[clone] $REPO → $PROJECT_DIR"
   git clone --quiet "$CLONE_URL" "$PROJECT_DIR" || { echo "FATAL: clone failed"; exit 1; }

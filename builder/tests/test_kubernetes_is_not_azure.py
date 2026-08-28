@@ -19,15 +19,16 @@ import subprocess
 import tempfile
 import unittest
 
-from harness import BUILDER
+from harness import BUILDER, bash_path, sandbox_root
 
-LIB = os.path.join(BUILDER, "project-kind.sh")
+LIB = bash_path(os.path.join(BUILDER, "project-kind.sh"))
 TF = 'resource "null_resource" "x" {}\n'
 
 
 def kinds_for(files):
     """PROJECT_KINDS from the real detector over a throwaway checkout."""
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(dir=sandbox_root()) as _d:
+        d, d_sh = _d, bash_path(_d)
         for rel, body in files.items():
             path = os.path.join(d, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -35,7 +36,7 @@ def kinds_for(files):
                 fh.write(body)
         r = subprocess.run(
             ["bash", "-c",
-             f'. "{LIB}"; detect_project_kinds_from_dir "{d}"; '
+             f'. "{LIB}"; detect_project_kinds_from_dir "{d_sh}"; '
              f'printf "%s" "$PROJECT_KINDS"'],
             capture_output=True, text=True, timeout=60)
         assert r.returncode == 0, r.stderr

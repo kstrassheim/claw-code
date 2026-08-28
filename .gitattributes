@@ -1,0 +1,35 @@
+# Line endings are LF in the working tree, on every platform.
+#
+# Everything this repository produces runs on Linux: the runners are bash, the
+# images are Debian, the ConfigMaps carry those same scripts verbatim into a
+# pod. A CRLF is not a formatting preference there, it is a syntax error that
+# does not say so — the kernel reads `#!/usr/bin/env bash\r` and looks for an
+# interpreter named "bash\r":
+#
+#     bash: /.../mermaid-render: No such file or directory
+#
+# naming a file that is plainly present and executable.
+#
+# Without this file, a checkout on Windows with the default core.autocrlf=true
+# rewrites every script to CRLF on the way out. The committed blobs stay LF, so
+# CI on Linux is green and nothing looks wrong; only the developer's own
+# checkout is unrunnable, and the test suite fails there in ways that read like
+# product bugs — a sourced library that silently defines no functions, and
+# assertions that report an empty answer rather than a missing file.
+#
+# `text=auto` still lets git decide what is text; `eol=lf` fixes what a text
+# file looks like once it has decided.
+* text=auto eol=lf
+
+# Binaries git must never touch. Detection is good but not perfect, and a
+# single "normalised" byte corrupts these silently.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.woff binary
+*.woff2 binary

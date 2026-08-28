@@ -15,7 +15,7 @@ import urllib.parse
 
 from forge import (  # noqa: F401 - the shared vocabulary
     DELIVERED, FAILED, GREEN, NONE, PENDING, REVOKED,
-    Forge, ForgeError, RateLimited, _http,
+    Forge, ForgeError, RateLimited, _http, _with_credential,
     GITHUB,
 )
 
@@ -346,6 +346,19 @@ class GitHubForge(Forge):
         })
         rows = repos if isinstance(repos, list) else []
         return [r["full_name"] for r in rows][:limit]
+
+    def clone_url(self, repo: str) -> str:
+        # Only GitHub keeps the API on a different host from the git remote,
+        # so the web host is derived rather than stored: `api.github.com` for
+        # the public instance, `<host>/api/v3` for an Enterprise one.
+        base = self.api
+        if base.endswith("/api/v3"):
+            base = base[: -len("/api/v3")]
+        elif "//api.github.com" in base:
+            base = base.replace("//api.github.com", "//github.com")
+        # `x-access-token` is the user half GitHub accepts for both a PAT and
+        # an app installation token.
+        return _with_credential(base, "x-access-token", self.token, repo)
 
     def default_branch_head(self, repo: str) -> tuple[str, str]:
         try:
