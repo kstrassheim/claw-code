@@ -62,6 +62,7 @@ class FakeForge(forge.Forge):
         self.default_checks = forge.NONE
         self.repos: list[str] = []
         self.heads: dict[str, tuple[str, str]] = {}
+        self.clone_urls: dict[str, str] = {}
         self.candidates: list[dict] = []
         self.findings: dict[int, list[dict]] = {}
 
@@ -122,6 +123,10 @@ class FakeForge(forge.Forge):
     def default_branch_head(self, repo: str) -> tuple[str, str]:
         self._maybe_raise("default_branch_head")
         return self.heads.get(repo, ("", ""))
+
+    def clone_url(self, repo: str) -> str:
+        self._maybe_raise("clone_url")
+        return self.clone_urls.get(repo, f"https://fake.invalid/{repo}.git")
 
     # -- issues -----------------------------------------------------------
 

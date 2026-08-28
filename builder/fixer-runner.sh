@@ -2175,11 +2175,26 @@ fi
 
 # -- workspace setup --------------------------------------------------
 
+# Asked of the forge rather than spelled here. This was hardcoded to
+# github.com with $GITHUB_TOKEN, so on a GitLab deployment it named the wrong
+# host with an empty credential and every git call died on
+# "could not read Username" — leaving DEFAULT_BRANCH empty and the checkout
+# arguing with `origin/`.
+CLONE_URL="$("${FORGE[@]}" clone-url 2>/dev/null || true)"
+if [ -z "$CLONE_URL" ]; then
+  echo "FATAL: no clone url for $REPO — is a forge credential configured?" >&2
+  exit 1
+fi
 if [ ! -d "$PROJECT_DIR/.git" ]; then
   echo "[clone] $REPO → $PROJECT_DIR"
-  git clone --quiet "https://github.com/$REPO.git" "$PROJECT_DIR"
+  git clone --quiet "$CLONE_URL" "$PROJECT_DIR"
 fi
 cd "$PROJECT_DIR"
+# Repair the remote on every run, not only on the clone. The long-lived
+# checkouts on the workspace volume were cloned by an older runner and still
+# carry its credential-less github.com URL; without this they stay broken
+# forever, because the clone branch above never runs again for them.
+git remote set-url origin "$CLONE_URL" 2>/dev/null || true
 git fetch --quiet origin
 DEFAULT_BRANCH="$(git remote show origin | awk '/HEAD branch/ {print $NF}')"
 echo "[checkout] default-branch=$DEFAULT_BRANCH"
@@ -3015,7 +3030,7 @@ A fix is NOT done when only one test layer is touched. Before you push:
 
    **@-mention EXACTLY ONE person, and only \`@$ISSUE_AUTHOR\`.**
    Never a group, a team, an organisation, a role, or a second
-   account — not "the owners", not "the maintainers", not
+   account — not \"the owners\", not \"the maintainers\", not
    everyone who touched the file. On this host an @-mention of a
    group notifies every member of it: one run addressed its
    findings to forty-two people. If you think somebody else

@@ -217,9 +217,28 @@ mkdir -p "$LOG_DIR" "$LOCK_ROOT" "$TESTER_STATE_DIR" "$TESTER_DRAFTS_ROOT" \
 
 # Per-repo lock (sibling of fixer's $STATE_ROOT/.fixer-locks/ — the two
 # subsystems hold independent locks so they never block each other).
+#
+# Reclaimed when stale, exactly as the fixer's is. A plain mkdir-or-abort
+# looks safe and is not: a tester killed without its EXIT trap firing
+# (SIGKILL, an evicted pod, the wall-clock backstop below) leaves the lock dir
+# behind, and since nothing ever removes it that repository is never tested
+# again. Silently — every later tick reports "lock held" and moves on, which
+# reads exactly like a tester that is busy working.
+LOCK_TTL="${TESTER_LOCK_TTL:-${MAX_LIFETIME_SECONDS:-3600}}"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  echo "[$(date -Iseconds)] tester lock held for $REPO; aborting" >> "$LOG_FILE"
-  exit 0
+  lock_age=$(( $(date +%s) - $(stat -c %Y "$LOCK_DIR" 2>/dev/null || date +%s) ))
+  lock_pid="$(awk 'NR==1{print $1}' "$LOCK_DIR/owner" 2>/dev/null || true)"
+  if [ "$lock_age" -ge "$LOCK_TTL" ] || { [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; }; then
+    echo "[$(date -Iseconds)] reclaiming stale tester lock for $REPO (age=${lock_age}s owner=${lock_pid:-?})" >> "$LOG_FILE"
+    rm -rf "$LOCK_DIR"
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+      echo "[$(date -Iseconds)] tester lock race after reclaim for $REPO; aborting" >> "$LOG_FILE"
+      exit 0
+    fi
+  else
+    echo "[$(date -Iseconds)] tester lock held for $REPO (age=${lock_age}s, owner live); aborting" >> "$LOG_FILE"
+    exit 0
+  fi
 fi
 echo "$BASHPID $(date -Iseconds)" > "$LOCK_DIR/owner"
 
@@ -229,13 +248,45 @@ echo "$BASHPID $(date -Iseconds)" > "$LOCK_DIR/owner"
 # it leaked would throttle the solver and the reviewer for a long time.
 SENTINEL_WATCHER_PID=""
 LIFETIME_WATCHER_PID=""
+RUN_WATCHER_PID=""
 cleanup() {
   command -v release_agent_slot >/dev/null 2>&1 && release_agent_slot
   [ -n "$SENTINEL_WATCHER_PID" ] && kill "$SENTINEL_WATCHER_PID" 2>/dev/null
   [ -n "$LIFETIME_WATCHER_PID" ] && kill "$LIFETIME_WATCHER_PID" 2>/dev/null
+  [ -n "$RUN_WATCHER_PID" ] && kill "$RUN_WATCHER_PID" 2>/dev/null
   rm -rf "$LOCK_DIR"
 }
 trap cleanup EXIT
+
+# Watcher 0 — the WHOLE run, armed here rather than around the model turn.
+#
+# MAX_LIFETIME caps the AGENT and nothing else: it kills $AGENT_PID, `wait`
+# returns, and the run walks on into drafts processing — screenshot uploads,
+# issue filing, and a headless browser. None of that was capped by anything,
+# and that is where prod actually wedged: two testers alive for 13h54m and
+# 11h35m, each with an orphaned Chromium tree and a `node step-b2.mjs` stuck
+# since minutes after the agent finished. The comment on MAX_LIFETIME said it
+# stopped the runner camping on the pod for an hour. It did not; it only
+# stopped the model doing so.
+#
+# Kills the process GROUP, not just this shell. Chromium spawns a tree of
+# renderers and helpers, and TERMing only the script leaves that tree parented
+# to init and holding the pod's memory until the pod itself is replaced. The
+# runner is setsid'd by the spawner, so the group is its own and nothing else
+# is in the blast radius.
+MAX_RUN_SECONDS="${TESTER_MAX_RUN:-$(( ${MAX_LIFETIME_SECONDS:-3600} * 2 ))}"
+MAIN_PID=$$
+RUN_PGID="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+(
+  sleep "$MAX_RUN_SECONDS"
+  echo "[tester] MAX_RUN ($MAX_RUN_SECONDS s) reached — terminating the whole run" >> "$LOG_FILE"
+  kill -TERM "$MAIN_PID" 2>/dev/null
+  # Long enough for the EXIT trap to release the slot and drop the lock, so
+  # the next tick finds neither held.
+  sleep 20
+  [ -n "$RUN_PGID" ] && kill -KILL -"$RUN_PGID" 2>/dev/null
+) &
+RUN_WATCHER_PID=$!
 
 exec >> "$LOG_FILE" 2>&1
 
@@ -307,13 +358,22 @@ echo "[scan-switches] SAST=$(_onoff "$SAST_ON")  pen-test=$(_onoff "$PENTEST_ON"
 
 # ---- workspace setup ----------------------------------------------
 
+# Asked of the forge, not spelled here — see the same change in the fixer.
+# Hardcoding github.com meant a GitLab deployment cloned nothing at all.
+CLONE_URL="$(forge-cli --repo "$REPO" clone-url 2>/dev/null || true)"
+if [ -z "$CLONE_URL" ]; then
+  echo "[tester] no clone url for $REPO — is a forge credential configured? — exit"
+  exit 0
+fi
 if [ ! -d "$PROJECT_DIR/.git" ]; then
   echo "[tester] cloning $REPO into $PROJECT_DIR (shallow)"
-  if ! git clone --quiet --depth 50 "https://github.com/$REPO.git" "$PROJECT_DIR"; then
+  if ! git clone --quiet --depth 50 "$CLONE_URL" "$PROJECT_DIR"; then
     echo "[tester] clone failed — exit"
     exit 0
   fi
 fi
+# Existing checkouts carry the old credential-less URL; repair every run.
+git -C "$PROJECT_DIR" remote set-url origin "$CLONE_URL" 2>/dev/null || true
 cd "$PROJECT_DIR"
 git fetch --quiet origin "$DEFAULT_BRANCH" --depth 50 2>/dev/null || git fetch --quiet origin "$DEFAULT_BRANCH"
 git checkout --quiet --force "$DEFAULT_BRANCH" 2>/dev/null || git checkout --quiet -b "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH"

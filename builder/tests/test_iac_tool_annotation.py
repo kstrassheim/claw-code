@@ -25,14 +25,15 @@ import subprocess
 import tempfile
 import unittest
 
-from harness import BUILDER
+from harness import BUILDER, bash_path, sandbox_root
 
-LIB = os.path.join(BUILDER, "project-kind.sh")
+LIB = bash_path(os.path.join(BUILDER, "project-kind.sh"))
 
 
 def detect(files):
     """Run the real detector over a throwaway tree. Returns PROJECT_ANNOTATIONS."""
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(dir=sandbox_root()) as _d:
+        d, d_sh = _d, bash_path(_d)
         for rel, body in files.items():
             path = os.path.join(d, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -40,7 +41,7 @@ def detect(files):
                 fh.write(body)
         r = subprocess.run(
             ["bash", "-c",
-             f'. "{LIB}"; detect_project_annotations_from_dir "{d}"; '
+             f'. "{LIB}"; detect_project_annotations_from_dir "{d_sh}"; '
              f'printf "%s" "$PROJECT_ANNOTATIONS"'],
             capture_output=True, text=True, timeout=60)
         assert r.returncode == 0, r.stderr
@@ -135,7 +136,8 @@ class SilenceIsNotAnAnswer(unittest.TestCase):
 
 class TheAnnotationRendersSomethingActionable(unittest.TestCase):
     def render(self, files, fn):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory(dir=sandbox_root()) as _d:
+            d, d_sh = _d, bash_path(_d)
             for rel, body in files.items():
                 path = os.path.join(d, rel)
                 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -143,7 +145,7 @@ class TheAnnotationRendersSomethingActionable(unittest.TestCase):
                     fh.write(body)
             r = subprocess.run(
                 ["bash", "-c",
-                 f'. "{LIB}"; detect_project_annotations_from_dir "{d}"; {fn}'],
+                 f'. "{LIB}"; detect_project_annotations_from_dir "{d_sh}"; {fn}'],
                 capture_output=True, text=True, timeout=60)
             return r.stdout
 
@@ -246,14 +248,15 @@ class TheAnnotationNeverReframesThePrompt(unittest.TestCase):
     """The whole reason this is not a kind."""
 
     def test_detecting_an_annotation_leaves_the_kinds_alone(self):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory(dir=sandbox_root()) as _d:
+            d, d_sh = _d, bash_path(_d)
             os.makedirs(os.path.join(d, "frontend"))
             with open(os.path.join(d, "main.tf"), "w") as fh:
                 fh.write(TF)
             r = subprocess.run(
                 ["bash", "-c",
-                 f'. "{LIB}"; detect_project_kinds_from_dir "{d}"; '
-                 f'detect_project_annotations_from_dir "{d}"; '
+                 f'. "{LIB}"; detect_project_kinds_from_dir "{d_sh}"; '
+                 f'detect_project_annotations_from_dir "{d_sh}"; '
                  f'printf "%s|%s" "$PROJECT_KINDS" "$(kind_count)"'],
                 capture_output=True, text=True, timeout=60)
             kinds, count = r.stdout.split("|")

@@ -34,7 +34,7 @@ import urllib.parse
 
 from forge import (  # noqa: F401 - the shared vocabulary
     DELIVERED, FAILED, GREEN, NONE, PENDING, REVOKED,
-    Forge, ForgeError, RateLimited, _http,
+    Forge, ForgeError, RateLimited, _http, _with_credential,
     AZDO,
 )
 
@@ -444,6 +444,34 @@ class AzureDevOpsForge(Forge):
 
     def accessible_repos(self, limit: int) -> list[str]:
         return sorted(k for k in self._repo_index() if "/" in k)[:limit]
+
+    def clone_url(self, repo: str) -> str:
+        """`https://pat:<token>@dev.azure.com/<org>/<project>/_git/<repo>`.
+
+        Not built by the shared helper: this is the one host whose git URL is
+        not `<base>/<repo>.git`. The project is a path segment of its own, the
+        literal `_git` sits between it and the repository, and there is no
+        `.git` suffix — a URL in the shared shape is a 404 here.
+
+        Any non-empty username works with a PAT as the password; `pat` is
+        used rather than an empty one because a URL with no user half at all
+        makes git ask for one, which is the failure this exists to prevent.
+        """
+        project, _, name = str(repo or "").strip("/").partition("/")
+        if not project or not name:
+            return ""
+        base = self.url.rstrip("/")
+        if not base:
+            return ""
+        scheme, _, host = base.partition("://")
+        if not host:
+            scheme, host = "https", base
+        path = (f"{urllib.parse.quote(project, safe='')}/_git/"
+                f"{urllib.parse.quote(name, safe='')}")
+        if not self.token:
+            return f"{scheme}://{host}/{path}"
+        return (f"{scheme}://pat:{urllib.parse.quote(self.token, safe='')}"
+                f"@{host}/{path}")
 
     def default_branch_head(self, repo: str) -> tuple[str, str]:
         path = self._git(repo)

@@ -22,9 +22,9 @@ import subprocess
 import tempfile
 import unittest
 
-from harness import BUILDER
+from harness import BUILDER, bash_path, sandbox_root
 
-RENDER = os.path.join(BUILDER, "mermaid-render")
+RENDER = bash_path(os.path.join(BUILDER, "mermaid-render"))
 
 
 def render(args="", setting=None, source="graph TD\n  A-->B\n"):
@@ -35,7 +35,7 @@ def render(args="", setting=None, source="graph TD\n  A-->B\n"):
     one external command keeps every line of the wrapper's own logic under
     test — the argument parsing, the setting, the extension.
     """
-    with tempfile.TemporaryDirectory() as home:
+    with tempfile.TemporaryDirectory(dir=sandbox_root()) as home:
         os.makedirs(os.path.join(home, ".openclaw"), exist_ok=True)
         if setting is not None:
             with open(os.path.join(home, ".openclaw", ".chart-format"), "w") as fh:

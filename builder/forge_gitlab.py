@@ -15,7 +15,7 @@ import urllib.parse
 
 from forge import (  # noqa: F401 - the shared vocabulary
     DELIVERED, FAILED, GREEN, NONE, PENDING, REVOKED,
-    Forge, ForgeError, RateLimited, _http,
+    Forge, ForgeError, RateLimited, _http, _with_credential,
     GITLAB,
 )
 
@@ -347,6 +347,11 @@ class GitLabForge(Forge):
             if path:
                 out.append(str(path))
         return out[:limit]
+
+    def clone_url(self, repo: str) -> str:
+        # `oauth2` is GitLab's own name for the user half when the password is
+        # a token; any other username is rejected even with a valid token.
+        return _with_credential(self.url, "oauth2", self.token, repo)
 
     def default_branch_head(self, repo: str) -> tuple[str, str]:
         project = self._project(repo)

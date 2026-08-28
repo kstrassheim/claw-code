@@ -49,6 +49,90 @@ TMP_ROOT = os.environ.get(
 BUILDER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fakes")
 
+
+def bash_path(path: str) -> str:
+    """A path spelled the way the bash on THIS machine reads it.
+
+    `BUILDER` and the sandbox directories are native paths, and on Windows a
+    native path is not something bash can open: it reads `C:\\...` as a
+    relative name and the backslashes as escape characters. The failure is
+    quiet in the worst way —
+
+        /bin/bash: C:\\projects\\...\\project-kind.sh: No such file or directory
+        /bin/bash: detect_project_annotations_from_dir: command not found
+
+    — because the missing `.` source leaves the FUNCTION undefined, the
+    caller's `$PROJECT_ANNOTATIONS` is simply empty, and the assertion fails
+    reporting a wrong answer rather than a path that does not exist.
+
+    The prefix is ASKED of bash rather than assumed, because which bash wins
+    is not knowable from here. On a machine with both WSL and Git for Windows
+    installed, `subprocess` resolves a bare `bash` through the system PATH and
+    System32 comes first, so the tests run under WSL — which mounts the drive
+    at /mnt/c and cannot see either `C:/...` or Git Bash's `/c/...`. Guessing
+    a prefix gets one of the two wrong, and gets it wrong silently: the source
+    fails, the functions are never defined, and the assertion reports an empty
+    answer.
+
+    So it is probed once: bash is asked for `pwd` in the repository root, and
+    every path under the repository is expressed relative to that.
+
+    On Linux there is no drive letter, the probe returns the path it was
+    given, and this is the identity function.
+    """
+    p = os.path.abspath(path)
+    if os.name != "nt":
+        return p.replace("\\", "/")
+    root_native, root_bash = _bash_root()
+    if root_bash:
+        try:
+            rel = os.path.relpath(p, root_native).replace("\\", "/")
+        except ValueError:      # different drive - no relative path exists
+            rel = ""
+        if rel and not rel.startswith(".."):
+            return f"{root_bash}/{rel}"
+    # Outside the repository, or the probe failed: the Git Bash spelling is
+    # the better of the two guesses, since that is the shell a developer runs.
+    q = p.replace("\\", "/")
+    return "/" + q[0].lower() + q[2:] if len(q) > 1 and q[1] == ":" else q
+
+
+_BASH_ROOT: tuple[str, str] | None = None
+
+
+def _bash_root() -> tuple[str, str]:
+    """(repo root as this OS spells it, repo root as bash spells it)."""
+    global _BASH_ROOT
+    if _BASH_ROOT is None:
+        native = os.path.dirname(BUILDER)
+        seen = ""
+        try:
+            out = subprocess.run(["bash", "-c", "pwd"], cwd=native,
+                                 capture_output=True, text=True, timeout=30)
+            if out.returncode == 0:
+                seen = out.stdout.strip()
+        except Exception:  # noqa: BLE001 - no bash at all is "cannot translate"
+            seen = ""
+        _BASH_ROOT = (native, seen)
+    return _BASH_ROOT
+
+
+def sandbox_root() -> str:
+    """TMP_ROOT, created if it is not there yet.
+
+    For the tests that build a throwaway tree at MODULE level rather than in
+    `ShellTestCase.setUp`, which is where TMP_ROOT is otherwise created.
+
+    They must not reach for `tempfile.TemporaryDirectory()` with no `dir`:
+    that lands in the system temp directory, which — per the note on TMP_ROOT
+    above — bash cannot see in the sandbox this repo is developed in. The
+    symptom is not a missing directory but a shell unit that runs, finds
+    nothing, and returns the empty string, so the assertion fails on a
+    plausible-looking wrong ANSWER instead of on a broken path.
+    """
+    os.makedirs(TMP_ROOT, exist_ok=True)
+    return TMP_ROOT
+
 if BUILDER not in sys.path:
     sys.path.insert(0, BUILDER)
 
