@@ -26,7 +26,7 @@ covers GitLab-specific tools, auth, and shortcuts.
 
 In the current claw-code build, **neither** the `glab` CLI nor the
 GitLab MCP servers are baked into the image, and no GitLab tokens
-are sealed into `openclaw-secrets`. This document describes the
+are sealed into `claw-code-secrets`. This document describes the
 target shape of GitLab support — it tells you what the MCP names
 will be once the build wires them, and what envs you will need.
 

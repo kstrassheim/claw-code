@@ -13,7 +13,7 @@ The image ships **`aws` CLI v2** (pinned via `AWS_CLI_VERSION` in
 the repo's `VERSIONS` file) plus a thin **`mcp.servers.aws`**
 wrapper. **No credentials are sealed into the pod in this revision**
 — every `aws ...` call will fail with `Unable to locate credentials`
-until a human seals real IAM access keys into `openclaw-secrets`.
+until a human seals real IAM access keys into `claw-code-secrets`.
 
 When that happens, the chart will mount:
 

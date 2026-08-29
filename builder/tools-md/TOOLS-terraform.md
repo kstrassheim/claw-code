@@ -20,7 +20,7 @@ You have:
   helpers. Check the live `listTools` for current surface.
 
 Providers you can talk to depend on which credentials the operator
-has sealed into `openclaw-secrets`:
+has sealed into `claw-code-secrets`:
 
 | Provider     | How auth works                                                                                                  |
 |--------------|------------------------------------------------------------------------------------------------------------------|

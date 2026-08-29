@@ -19,7 +19,7 @@ shortcuts.
 
 - **`GITHUB_TOKEN`** — bot account's classic PAT (`repo`,
   `workflow`, `read:org`), exposed via the pod's env from the
-  sealed `openclaw-secrets` Secret. The token is referenced by
+  sealed `claw-code-secrets` Secret. The token is referenced by
   the baked-in `~/.gitconfig` credential helper so
   `git push https://github.com/...` works even though the
   `exec` tool strips `GITHUB_TOKEN` from the child env.
