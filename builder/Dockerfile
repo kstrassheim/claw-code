@@ -919,6 +919,30 @@ COPY --chmod=0755 telegram-notify       /usr/local/bin/telegram-notify
 COPY --chmod=0755 mermaid-render        /usr/local/bin/mermaid-render
 COPY --chmod=0644 mermaid-theme.json    /usr/local/share/mermaid-theme.json
 
+# Entra / Azure identity, as the BOT account. All five were installed here
+# until the forge adoption rewrote this file and dropped the COPY lines; the
+# scripts stayed in the repository, installed nowhere, and the agent lost the
+# ability to sign in at all. Nothing failed loudly — `entra-totp` was simply
+# not on PATH, so no MFA code could be produced.
+#
+# entra-totp turns $ENTRA_TOTP_SEED into a 6-digit code (python3-pyotp is
+# installed with the az CLI above).
+COPY --chmod=0755 entra-totp            /usr/local/bin/entra-totp
+# az-login-bot + az-browser-sink: the ALWAYS-interactive login
+# (authorization-code flow with a localhost callback). The sink captures the
+# authorize URL to a file for the agent's browser plugin instead of launching
+# a browser in this headless pod.
+COPY --chmod=0755 az-login-bot          /usr/local/bin/az-login-bot
+COPY --chmod=0755 az-browser-sink       /usr/local/bin/az-browser-sink
+# aks-login: kubectl against ANOTHER project's AKS cluster as the bot, into an
+# isolated kubeconfig so the pod keeps its own in-cluster identity.
+COPY --chmod=0755 aks-login             /usr/local/bin/aks-login
+# The policy wrapper, and the reason the destination is `az` rather than
+# `az-wrapper`: it shadows /usr/bin/az by PATH precedence. In a headless pod a
+# plain `az login` silently falls back to DEVICE CODE, which is forbidden
+# here, and documentation alone does not stop an agent from typing `az login`.
+COPY --chmod=0755 az-wrapper            /usr/local/bin/az
+
 # The skills lockdown, run as root by the fix-perms init container.
 COPY --chmod=0755 lock-skill-dirs.sh    /usr/local/bin/lock-skill-dirs
 
