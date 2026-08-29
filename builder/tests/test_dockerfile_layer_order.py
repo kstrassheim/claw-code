@@ -117,5 +117,37 @@ class EveryVersionArgIsPinnedInVersions(unittest.TestCase):
                          f"ARGs with no pin in VERSIONS: {missing}")
 
 
+# Observed, not guessed: 96 instructions build, 101 do not. The image is a
+# single stage, so its instruction layers stack on top of the base image's
+# and overlayfs refuses at 128. Set at the count that is known to work.
+MAX_LAYERS = 96
+
+LAYER = re.compile(r"^(RUN|COPY|ADD)\b")
+
+
+class TheLayerBudget(unittest.TestCase):
+    """Overlayfs stops at 128, and this image is one stage.
+
+    Adding five COPY lines took it from 96 instructions to 101 and the build
+    died in CI with `max depth exceeded` — after five minutes, during export,
+    with nothing in the message naming the Dockerfile. Nothing about that
+    error tells you the fix is to merge COPY lines.
+
+    Files that keep their own name can share one COPY with a directory
+    destination; only a rename needs a line of its own. That is why several
+    COPYs here list many sources.
+    """
+
+    def test_the_image_stays_under_the_depth_limit(self):
+        count = sum(1 for l in lines() if LAYER.match(l))
+        self.assertLessEqual(count, MAX_LAYERS, (
+            f"{count} layer-producing instructions, budget is {MAX_LAYERS}. "
+            "Overlayfs refuses beyond 128 counting the base image's own "
+            "layers, and the build fails late with 'max depth exceeded'. "
+            "Merge COPY lines that share a mode and a destination directory "
+            "— `COPY --chmod=0755 a b c /usr/local/bin/` — rather than "
+            "raising this number."))
+
+
 if __name__ == "__main__":
     unittest.main()

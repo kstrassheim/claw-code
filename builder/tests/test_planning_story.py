@@ -282,12 +282,26 @@ class TheWiring(unittest.TestCase):
             return f.read()
 
     def test_the_command_ships_in_the_image(self):
-        m = re.search(r"COPY --chmod=(\d+) planning-story\s",
-                      self.read("Dockerfile"))
+        # Read every source on the line, not just the first. Files that keep
+        # their own name share one COPY with a directory destination — the
+        # image is a single stage and overlayfs stops at 128 layers — so a
+        # regex anchored on `--chmod=NNN planning-story` finds nothing the
+        # moment planning-story stops being the first source, and reports a
+        # CLI that ships perfectly well as missing.
+        mode = None
+        for line in self.read("Dockerfile").splitlines():
+            if not line.startswith("COPY "):
+                continue
+            flags = re.findall(r"--chmod=(\d+)", line)
+            sources = [t for t in line.split()[1:-1] if not t.startswith("--")]
+            if "planning-story" in sources:
+                mode = flags[0] if flags else ""
+                break
         self.assertIsNotNone(
-            m, "planning-story is not installed by the Dockerfile — the "
-               "`command -v` guard at both call sites would skip it silently")
-        self.assertEqual(m.group(1), "0755",
+            mode, "planning-story is not installed by the Dockerfile — the "
+                  "`command -v` guard at both call sites would skip it "
+                  "silently")
+        self.assertEqual(mode, "0755",
                          "planning-story is a CLI and must ship executable")
 
     def test_estimation_records_the_story_it_sized(self):
