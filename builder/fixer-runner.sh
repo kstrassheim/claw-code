@@ -2,10 +2,11 @@
 # fixer-runner: backgrounded subprocess inside the openclaw container.
 # Holds a per-repo lock, manages a shared git checkout under
 # ~/.openclaw/projects/<repo>/, and runs `openclaw agent --local`
-# in a poll loop: agent does one turn at a time, the wrapper checks
-# the issue for new @-mention comments every POLL_INTERVAL, reacts
-# :+1: to each, and re-invokes the agent with the comment as the
-# next turn's user message (same --session-id so context persists).
+# in a turn loop: agent does one turn at a time, the wrapper reads any
+# @-mention comments that have arrived, reacts :+1: to each, and
+# re-invokes the agent with the comment as the next turn's user message
+# (same --session-id so context persists). With nothing left to react
+# to it EXITS rather than waiting — see the poll loop for why.
 #
 # Strict one-PR-per-issue: on startup we look up any existing open PR
 # linked to this issue (PR body contains "closes/fixes/resolves #<n>"
@@ -26,7 +27,6 @@
 # Optional env:
 #   FIXER_BOT_LOGIN         — bot's GH login. If unset, resolved from
 #                             $GITHUB_TOKEN at startup via /user.
-#   FIXER_POLL_INTERVAL     — seconds between comment polls (default 300)
 #   FIXER_MAX_LIFETIME      — overall wall-clock cap, seconds (default 6h)
 #   STORY_POINTS            — the issue's size, passed by the spawner from the
 #                             plan. Picks solver vs solver.small. Absent means
@@ -128,7 +128,6 @@ else
     exit 1
   fi
 fi
-POLL_INTERVAL="${FIXER_POLL_INTERVAL:-300}"
 
 # The story's SIZE, resolved once, here, because two things read it: how long
 # this run may take, and which model implements it.
@@ -346,7 +345,25 @@ mkdir -p "$LOG_DIR" "$LOCK_ROOT" "$ISSUE_STATE_DIR" \
 # re-spawning us, so a plain mkdir-or-abort here would deadlock the repo
 # forever. Reclaim the lock when it's stale: older than the TTL, or its owner
 # PID is no longer alive in this pod.
-LOCK_TTL="${FIXER_LOCK_TTL:-${HEARTBEAT_TTL_SECONDS:-3600}}"
+# THE TTL MUST OUTLIVE THE RUN IT GUARDS.
+#
+# It was a flat hour while a solver is allowed six, so a fixer that ran longer
+# than an hour had its lock declared stale and taken by a fresh spawn WHILE IT
+# WAS STILL RUNNING:
+#
+#   reclaiming stale lock for <repo> (age=3906s owner=1687); proceeding with #149
+#
+# Two runners then worked the same issue, each holding one of the few global
+# agent slots. Observed with four alive at once and only one doing anything.
+#
+# The age test exists for a lock orphaned by SIGKILL or a pod restart, where
+# no exit trap ran — but age cannot tell "orphaned" from "still working", so
+# it must sit beyond any legitimate run. Derived from the lifetime this run
+# was actually granted (autoruntime makes that vary by story size) plus an
+# hour, so retuning one cannot silently invalidate the other. The PID check
+# below stays the real signal: a dead owner is reclaimed at once, whatever
+# its age.
+LOCK_TTL="${FIXER_LOCK_TTL:-$(( ${MAX_LIFETIME_SECONDS:-21600} + 3600 ))}"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   lock_age=$(( $(date +%s) - $(stat -c %Y "$LOCK_DIR" 2>/dev/null || date +%s) ))
   lock_pid="$(awk 'NR==1{print $1}' "$LOCK_DIR/owner" 2>/dev/null || true)"
@@ -3483,27 +3500,27 @@ while :; do
     break
   fi
 
-  echo "[poll] sleeping $POLL_INTERVAL s (last_seen=$LAST_SEEN_ID)"
-  sleep "$POLL_INTERVAL"
-
-  # Re-check before doing more work.
-  CUR_ISSUE_STATE="$(fetch_issue_state 2>/dev/null || echo open)"
-  if [ "$CUR_ISSUE_STATE" = "closed" ]; then
-    echo "[$(date -Iseconds)] issue #$ISSUE_NUM closed during sleep — wiping state and exiting"
-    WIPE_FULL_STATE=1
-    break
-  fi
-  CUR_PRS="$(fetch_open_prs_for_issue 2>/dev/null || echo '[]')"
-  CUR_PR_COUNT="$(echo "$CUR_PRS" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')"
-  if [ "$CUR_PR_COUNT" -ge 1 ]; then
-    echo "[$(date -Iseconds)] open PR appeared during sleep — exiting (cursor preserved)"
-    break
-  fi
-
+  # NOTHING TO REACT TO MEANS GO, NOT WAIT.
+  #
+  # This used to sleep five minutes and look again, for as long as the run
+  # was allowed to live. A solver with nothing to do therefore sat for up to
+  # solver.lifetime — six hours — holding this repository's lock AND one of
+  # the few global agent slots, while doing nothing at all. Observed with four
+  # runners alive, one working: every slot taken, and every fresh spawn
+  # yielding with "no agent slot free" and zero model calls.
+  #
+  # Waiting bought responsiveness to an @-mention arriving mid-run. This bot
+  # is automatic and nobody holds live conversations with it on the change
+  # request, so that was latency nobody was waiting on, paid for in the
+  # scarcest resource the pod has.
+  #
+  # Exiting costs nothing: the cursor is preserved, the planner re-picks this
+  # issue on its next tick, and a mention posted in the meantime is read then
+  # — the same path that already handles every mention arriving between runs.
   NEW_JSON="$(fetch_new_mentions "$LAST_SEEN_ID" 2>/dev/null || echo '[]')"
   if [ -z "$NEW_JSON" ] || [ "$NEW_JSON" = "[]" ]; then
-    echo "[poll] no new @-mention comments"
-    continue
+    echo "[poll] nothing to react to — exiting so the slot is free (cursor preserved; the next tick retries)"
+    break
   fi
 
   while read -r cid; do
