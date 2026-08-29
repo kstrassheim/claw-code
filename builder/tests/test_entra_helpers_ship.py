@@ -41,13 +41,29 @@ HELPERS = {
 
 
 def copied() -> dict:
-    """{source: destination} for every COPY line in the Dockerfile."""
+    """{source basename: destination path} for every COPY in the Dockerfile.
+
+    Multi-source form is the normal one here rather than an edge case: this
+    image is a single stage and overlayfs stops at 128 layers, so files that
+    keep their name share one COPY. A parser that assumed two tokens would
+    read `COPY a b c /usr/local/bin/` as "a lands at b" and quietly report
+    every file but the last as unshipped.
+
+    A destination ending in `/` is a directory: each source keeps its own
+    basename under it. Otherwise the COPY is a rename and there is exactly
+    one source.
+    """
     with open(DOCKERFILE, encoding="utf-8") as f:
         text = f.read()
     out = {}
-    for src, dst in re.findall(
-            r"^COPY\s+(?:--\S+\s+)*(\S+)\s+(\S+)\s*$", text, re.MULTILINE):
-        out[os.path.basename(src)] = dst
+    for line in re.findall(r"^COPY\s+(.*?)\s*$", text, re.MULTILINE):
+        parts = [t for t in line.split() if not t.startswith("--")]
+        if len(parts) < 2:
+            continue
+        *sources, dest = parts
+        for src in sources:
+            base = os.path.basename(src)
+            out[base] = dest + base if dest.endswith("/") else dest
     return out
 
 

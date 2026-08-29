@@ -909,14 +909,10 @@ COPY --chmod=0644 project-kind.sh        /usr/local/bin/project-kind.sh
 COPY --chmod=0644 project-instructions.sh /usr/local/bin/project-instructions.sh
 
 # Planning / reporting surface.
-COPY --chmod=0755 planning              /usr/local/bin/planning
-COPY --chmod=0755 planning-record       /usr/local/bin/planning-record
-COPY --chmod=0755 planning-story        /usr/local/bin/planning-story
-COPY --chmod=0755 record-deliveries     /usr/local/bin/record-deliveries
+COPY --chmod=0755 planning planning-record planning-story record-deliveries /usr/local/bin/
 
 # Notification and rendering helpers.
-COPY --chmod=0755 telegram-notify       /usr/local/bin/telegram-notify
-COPY --chmod=0755 mermaid-render        /usr/local/bin/mermaid-render
+COPY --chmod=0755 telegram-notify mermaid-render /usr/local/bin/
 COPY --chmod=0644 mermaid-theme.json    /usr/local/share/mermaid-theme.json
 
 # Entra / Azure identity, as the BOT account. All five were installed here
@@ -927,16 +923,16 @@ COPY --chmod=0644 mermaid-theme.json    /usr/local/share/mermaid-theme.json
 #
 # entra-totp turns $ENTRA_TOTP_SEED into a 6-digit code (python3-pyotp is
 # installed with the az CLI above).
-COPY --chmod=0755 entra-totp            /usr/local/bin/entra-totp
-# az-login-bot + az-browser-sink: the ALWAYS-interactive login
-# (authorization-code flow with a localhost callback). The sink captures the
+# az-login-bot + az-browser-sink are the ALWAYS-interactive login
+# (authorization-code flow with a localhost callback); the sink captures the
 # authorize URL to a file for the agent's browser plugin instead of launching
-# a browser in this headless pod.
-COPY --chmod=0755 az-login-bot          /usr/local/bin/az-login-bot
-COPY --chmod=0755 az-browser-sink       /usr/local/bin/az-browser-sink
-# aks-login: kubectl against ANOTHER project's AKS cluster as the bot, into an
-# isolated kubeconfig so the pod keeps its own in-cluster identity.
-COPY --chmod=0755 aks-login             /usr/local/bin/aks-login
+# a browser in this headless pod. aks-login is kubectl against ANOTHER
+# project's AKS cluster as the bot, into an isolated kubeconfig so the pod
+# keeps its own in-cluster identity.
+#
+# One layer, not four: this image is one stage and overlayfs stops at 128
+# layers. Adding five here is what first exceeded it.
+COPY --chmod=0755 entra-totp az-login-bot az-browser-sink aks-login /usr/local/bin/
 # The policy wrapper, and the reason the destination is `az` rather than
 # `az-wrapper`: it shadows /usr/bin/az by PATH precedence. In a headless pod a
 # plain `az login` silently falls back to DEVICE CODE, which is forbidden
