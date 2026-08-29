@@ -809,6 +809,34 @@ def main() -> int:
             held = {id(i) for i in parked}
             workable = [i for i in workable if id(i) not in held]
 
+        # `next sprint`: a human deferred the IMPLEMENTATION. The label was
+        # read by the estimate runner and by nothing else, so the planner
+        # spawned a fixer for a deferred issue exactly as if the label were
+        # not there — the one thing the label exists to prevent.
+        #
+        # Sizing is deliberately NOT deferred, which is why this drops only
+        # issues that already have a number. The size is what the next
+        # sprint's planning needs in order to decide, and it costs one short
+        # model call — see the same rule stated from the other side in
+        # estimate-runner.sh. So a deferred issue with no estimate still goes
+        # out this tick, as an ESTIMATE; once it has a number it parks here
+        # until a person takes the label off.
+        #
+        # Placed after the On Hold gate so a pending question is still
+        # answered and its label still lifted — that is bookkeeping about a
+        # question already asked — and BEFORE the destructive-work gate,
+        # which posts a comment and parks the issue on a person. Asking a
+        # human to confirm work that is not going to start until next sprint
+        # is noise on the issue and a park nobody asked for.
+        deferred_to_sprint = [
+            i for i in workable
+            if story_estimate.deferred_to_next_sprint(i.get("labels"))
+            and not story_estimate.needs_estimate(i.get("labels"))
+        ]
+        if deferred_to_sprint:
+            put_off = {id(i) for i in deferred_to_sprint}
+            workable = [i for i in workable if id(i) not in put_off]
+
         # Ask about destructive-sounding work BEFORE spawning anything.
         questioned = [i for i in workable
                       if ask_before_spawning(f, repo, i, bot)]
@@ -905,6 +933,7 @@ def main() -> int:
                 "openAssignedCount": len(issues),
                 "notWorkable": dropped_by_status,
                 "onHold": len(parked),
+                "nextSprint": len(deferred_to_sprint),
                 "awaitingConfirmation": len(questioned),
                 "toSpawn": to_spawn,
                 "deferredDueToLimit": deferred,

@@ -45,7 +45,7 @@ class VerdictBlock(ShellTestCase):
         self.env["FAKE_FORGE_LOG"] = "$PWD/forge.log"
         # No verdict comment on the change request yet — the ordinary state at
         # the moment a run finishes.
-        self.fixture("comments_7", [])
+        self.fixture("change-request-comments_7", [])
 
     def _block(self, start, end, name):
         """extract_block always writes to the same path; keep both blocks."""
@@ -132,8 +132,23 @@ class VerdictBlock(ShellTestCase):
         # lookup.
         self.run_verdict()
         self.assertTrue(
-            any(r.startswith("comments") for r in self.requests()),
+            any(r.startswith("change-request-comments")
+                for r in self.requests()),
             self.requests())
+
+    def test_the_verdict_is_looked_for_on_the_change_request(self):
+        # It was looked for with `comments`, which on GitLab reads
+        # /issues/<n>/notes — a DIFFERENT item that merely shares the number.
+        # The wrapper therefore never saw the verdict the agent had just
+        # posted, decided it had not landed, and posted it again from the
+        # summary file: two verdict comments on every GitLab review, and two
+        # things for the solver's merge gate to key on.
+        self.run_verdict()
+        asked = self.requests()
+        self.assertTrue(
+            any(r.startswith("change-request-comments") for r in asked), asked)
+        self.assertFalse(
+            any(r.startswith("comments") for r in asked), asked)
 
     def test_a_provider_outage_is_named_as_such(self):
         # Same silence either way, but the log has to distinguish "the model
@@ -203,7 +218,7 @@ class VerdictBlock(ShellTestCase):
     def test_the_agents_own_comment_is_taken_as_the_verdict(self):
         # The normal path: the agent posted it itself, so the wrapper posts
         # nothing and only submits the review event.
-        self.fixture("comments_7", [{
+        self.fixture("change-request-comments_7", [{
             "author": {"username": "bot"},
             "created_at": "2099-01-01T00:00:00Z",
             "body": "🔎 REVIEW RESULT: APPROVED (sha abc1234)\n\n## Acceptance criteria\n1. ✅",
@@ -215,7 +230,7 @@ class VerdictBlock(ShellTestCase):
         self.assertIn("approved as a formal review", out)
 
     def test_a_verdict_for_another_sha_does_not_count(self):
-        self.fixture("comments_7", [{
+        self.fixture("change-request-comments_7", [{
             "author": {"username": "bot"},
             "created_at": "2099-01-01T00:00:00Z",
             "body": "🔎 REVIEW RESULT: APPROVED (sha 9999999)",
@@ -227,7 +242,7 @@ class VerdictBlock(ShellTestCase):
     def test_a_verdict_from_an_earlier_run_does_not_count(self):
         # Matching any comment for the sha meant an earlier verdict was read
         # back as this run's result, so a head could never be re-reviewed.
-        self.fixture("comments_7", [{
+        self.fixture("change-request-comments_7", [{
             "author": {"username": "bot"},
             "created_at": "1999-01-01T00:00:00Z",
             "body": "🔎 REVIEW RESULT: CHANGES REQUIRED (sha abc1234)",
@@ -246,7 +261,7 @@ class VerdictBlock(ShellTestCase):
         self.assertIn("INCOMPLETE", out)
 
     def test_somebody_elses_comment_is_not_the_bots_verdict(self):
-        self.fixture("comments_7", [{
+        self.fixture("change-request-comments_7", [{
             "user": {"login": "a-human"},
             "created_at": "2099-01-01T00:00:00Z",
             "body": "🔎 REVIEW RESULT: APPROVED (sha abc1234)",

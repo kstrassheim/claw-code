@@ -1,7 +1,14 @@
 #!/bin/bash
 # entra-totp: generates a TOTP code from the ENTRA_TOTP_SEED env var.
 # Used by the az login browser automation to satisfy MS MFA prompts.
+# The agent's exec sandbox strips sensitive env vars, so fall back to the
+# runtime-secrets file written by the write-runtime-secrets initContainer.
 set -euo pipefail
+
+if [ -z "${ENTRA_TOTP_SEED:-}" ] && [ -f "$HOME/.openclaw/.runtime-secrets.env" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.openclaw/.runtime-secrets.env"
+fi
 
 SEED="${ENTRA_TOTP_SEED:?ENTRA_TOTP_SEED not set}"
 python3 -c "import pyotp; print(pyotp.TOTP('$SEED').now())"

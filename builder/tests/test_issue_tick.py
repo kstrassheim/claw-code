@@ -336,6 +336,61 @@ class EstimationRouting(PlannerTestCase):
         self.assertEqual(entry["storyPoints"], 5)
 
 
+class NextSprintDeferral(PlannerTestCase):
+    """`next sprint` parks the implementation. It used to park nothing.
+
+    The label was read by estimate-runner and by no other caller, so the
+    planner spawned a fixer for a deferred issue exactly as if it were not
+    labelled at all — and the bot implemented work a person had explicitly
+    put off.
+    """
+
+    def test_a_sized_deferred_issue_is_not_spawned(self):
+        self.issues = [issue(1, labels=["SP::3", "next sprint"])]
+        self.assertEqual(self.spawned(self.plan()), [])
+
+    def test_the_deferral_is_counted_rather_than_looking_idle(self):
+        # A tick that spawned nothing has to say WHICH gate stopped it.
+        self.issues = [issue(1, labels=["SP::3", "next sprint"])]
+        entry = self.repo_entry(self.plan())
+        self.assertEqual(entry["nextSprint"], 1)
+        self.assertEqual(entry["openAssignedCount"], 0)
+
+    def test_an_unsized_deferred_issue_is_still_estimated(self):
+        # The deferral parks the WORK, not the number: next sprint's planning
+        # needs the size in order to decide. Same rule estimate-runner states
+        # from the other side.
+        self.issues = [issue(1, labels=["next sprint"])]
+        spawn = self.repo_entry(self.plan())["toSpawn"]
+        self.assertEqual([e["issueNumber"] for e in spawn], [1])
+        self.assertIs(spawn[0]["needsEstimate"], True)
+
+    def test_it_is_the_same_instruction_however_it_is_typed(self):
+        for spelling in ("Next Sprint", "next-sprint", "next_sprint",
+                         "NextSprint", "nextsprint", "plan::Next Sprint"):
+            with self.subTest(spelling):
+                self.issues = [issue(1, labels=["SP::3", spelling])]
+                self.assertEqual(self.spawned(self.plan()), [])
+
+    def test_a_similar_label_defers_nothing(self):
+        for spelling in ("sprint", "next", "sprint::4",
+                         "next sprint planning"):
+            with self.subTest(spelling):
+                self.issues = [issue(1, labels=["SP::3", spelling])]
+                self.assertEqual(self.spawned(self.plan()), [1])
+
+    def test_taking_the_label_off_hands_the_issue_back(self):
+        self.issues = [issue(1, labels=["SP::3"])]
+        self.assertEqual(self.spawned(self.plan()), [1])
+
+    def test_a_deferred_issue_does_not_hold_the_repos_slot(self):
+        # MAX_PER_REPO is 1. A deferral that merely ranked last would still
+        # take the slot and stall everything behind it.
+        self.issues = [issue(1, labels=["SP::3", "next sprint"]),
+                       issue(2, labels=["SP::3"])]
+        self.assertEqual(self.spawned(self.plan()), [2])
+
+
 class QueuePublication(PlannerTestCase):
     """The tester holds off while there is anything left to solve."""
 

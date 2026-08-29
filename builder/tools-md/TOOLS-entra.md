@@ -4,7 +4,7 @@
   az CLI, and the workflow for logging into self-hosted
   Entra-protected web apps. None of these are auto-wired in claw-code
   by default — the operator must seal the $ENTRA_* envs into
-  openclaw-secrets to activate them.
+  claw-code-secrets to activate them.
 -->
 
 ---
@@ -41,6 +41,31 @@ exposes browser navigate / type / click / screenshot tools) to drive
 the Microsoft login form yourself, the same way a human would but
 faster.
 
+**Hard rules + misconceptions that have actually derailed this
+workflow — do not repeat them:**
+
+- ⛔ **NEVER use device-code flow.** `az login --use-device-code` is
+  forbidden here, full stop. The login is ALWAYS the interactive
+  authorization-code flow via `az-login-bot` + your browser plugin
+  (see Workflow below). If you catch yourself printing a code like
+  `XXXX-XXXX`, you are in the wrong flow — abort and use
+  `az-login-bot`.
+- ❌ *"Interactive login means the USER clicks and signs in."* NO.
+  **YOU open the authorize URL in YOUR browser plugin and sign in
+  with the BOT account** (`$ENTRA_USERNAME` + `$ENTRA_PASSWORD` +
+  `entra-totp`). The sign-in page does not care who completes it —
+  and here that someone is you.
+- ❌ *"Sign in as the user / report the user's subscriptions."*
+  Impossible and never expected: there are NO user credentials on
+  this pod. **The only Azure identity you can use is the bot
+  account.** When a user says "log in to Azure" or asks "which
+  subscriptions do you have access to", they mean the bot account —
+  proceed with it; don't reinterpret the request as needing the
+  user's identity.
+- ❌ *"Which tenant should I use?"* Never ask. It's
+  `$ENTRA_TENANT_ID` in the runtime-secrets file (`az-login-bot`
+  reads it automatically). Source and go.
+
 ## What is set up for you (env, helpers, persistence)
 
 | Resource                  | What                                                                  |
@@ -53,9 +78,24 @@ faster.
 | `az` (shell cmd)          | Azure CLI. Token cache lives at `~/.azure/`, PVC-backed, persistent across pod restarts |
 | `~/.azure/`               | already-mounted PVC subPath; surviving cache here means after one successful login the bot stays signed in for ~90 days without re-doing the dance |
 
-If any of `$ENTRA_TENANT_ID / USERNAME / PASSWORD / TOTP_SEED` is
-unset, surface that to the user and ask them to seal it — don't
-fall back to interactive flows.
+## ⚠️ Exec sandbox strips these envs — source the secrets file first
+
+Your exec tool strips sensitive env vars: in any shell command you
+run, `$ENTRA_TENANT_ID / USERNAME / PASSWORD / TOTP_SEED` read as
+**EMPTY** (symptom: `az login` resolves the tenant to a garbage
+value and fails with `AADSTS90002`). The values ARE on this pod —
+the `write-runtime-secrets` init step puts them in a 0600 file on
+your workspace. **Prefix every command that needs them:**
+
+```
+. ~/.openclaw/.runtime-secrets.env && az-login-bot
+```
+
+`entra-totp` sources the same file automatically. NEVER ask the
+user for the tenant, username, password or TOTP code — if the file
+is missing or a key is empty, surface *that* to the user and ask
+them to set the CI/CD variable; don't fall back to interactive
+flows or ask the user to click login links.
 
 ## Workflow — `az login` from cold (no cache)
 
@@ -69,47 +109,140 @@ fall back to interactive flows.
 2. If `az account show` errors with *"Please run 'az login' to setup
    account"*, run in your shell:
    ```
-   az login --use-device-code --tenant "$ENTRA_TENANT_ID"
+   az-login-bot
    ```
-   It will block, printing a line like
-   *"To sign in, use a web browser to open the page
-   https://microsoft.com/devicelogin and enter the code XXXX-XXXX
-   to authenticate."*
+   ⛔ **NEVER use `az login --use-device-code` — device codes are
+   forbidden in this deployment. The login is ALWAYS the interactive
+   authorization-code flow.** `az-login-bot` starts `az login`
+   (interactive) in the background with the tenant from the
+   runtime-secrets file; instead of launching a browser (headless
+   pod) it captures the Microsoft authorize URL and prints it. az's
+   localhost callback listener keeps running in the background —
+   your browser plugin runs in the SAME pod, so the redirect lands
+   correctly when you finish the sign-in.
 
-3. **Extract URL and code from the output. Do NOT print them in chat
-   for the user.** Send them to the browser plugin instead.
+   (Enforced at the CLI level too: `az` on this pod is a policy
+   wrapper — ANY `az login ...` invocation is intercepted and
+   redirected to `az-login-bot`, because plain `az login` in a
+   headless pod silently falls back to device code. If you typed
+   `az login` and see "az login is managed on this pod", that is
+   the wrapper doing its job — follow the printed instructions.)
 
-4. Drive the browser plugin through the full dance — exact tool names
-   vary by your runtime, but the conceptual sequence is:
+3. **Take the printed URL. Do NOT send it to the user.** Open it in
+   the browser plugin.
 
-   a. **Navigate** to `https://microsoft.com/devicelogin` (or
-      whatever URL `az` printed).
-   b. **Find the code field** (snapshot or query the page; the field
-      is usually an `<input>` with a placeholder like "Code" or
-      labelled "Enter code").
-   c. **Type** the device code into it. Click **Next**.
-   d. Microsoft account picker page — if a list of recent accounts
-      is shown, click **"Use another account"** (the bot account is
-      typically not in the list). On the resulting input field type
+4. Drive the browser plugin through the Microsoft sign-in — exact
+   tool names vary by your runtime, but the conceptual sequence is:
+
+   a. **Navigate** to the authorize URL from step 2.
+   b. Account picker page — if a list of recent accounts is shown,
+      click **"Use another account"** (the bot account is typically
+      not in the list). On the resulting input field type
       `$ENTRA_USERNAME` (the value, not the literal string). Click
       **Next**.
-   e. Password page — type `$ENTRA_PASSWORD` (the value). Click
+   c. Password page — type `$ENTRA_PASSWORD` (the value). Click
       **Sign in**.
-   f. MFA page expects a 6-digit TOTP code. Run `entra-totp` in a
-      shell, get the 6-digit response, type it into the verification
-      code field, click **Verify**. If Microsoft says "invalid code",
-      wait ~30 seconds, run `entra-totp` again (it produces a new
-      code each 30s window) and retry.
-   g. **"Stay signed in?"** prompt — click **No**. Always No.
+   d. MFA — follow **"MFA — the normal path"** below (password, then
+      a 6-digit code from `entra-totp`). Only if a PASSKEY page
+      actually appears, drop to **"MFA fallback — escaping a passkey
+      prompt"**.
+   e. **"Stay signed in?"** prompt — click **No**. Always No.
       Persisting the session here would tie the login to the
       container as a "trusted device", which we don't want.
-   h. Microsoft confirms "You may close this window".
+   f. Microsoft redirects to `http://localhost:<port>/...` — the
+      background `az login` receives it and the page shows az's
+      "You have logged into Microsoft Azure!" confirmation.
 
-5. The `az login` shell process that was blocking exits 0 and
-   populates `~/.azure/msal_token_cache.json`. The refresh token
-   inside has the MFA claim and is good for ~90 days. From here on
-   `az account show` and any other `az` command works without a
-   re-login until the cache expires.
+## MFA — the normal path
+
+The accounts used here are ordinary Microsoft work or personal
+accounts, and their MFA is the simple one: after the password page
+Microsoft asks for a 6-digit authenticator code and nothing else.
+**This is the expected path — walk it first**, and only drop to the
+fallback below if a passkey page actually appears.
+
+1. **Password page** (step 4c above) — type `$ENTRA_PASSWORD` (the
+   value), click **Sign in**.
+2. **"Enter code"** page (*"Enter the code displayed in the
+   authenticator app"*) — run `entra-totp` in a shell NOW (codes
+   rotate every 30s, so generate it right before typing it, not
+   earlier), type the 6 digits into the Code field, click **Verify**.
+   On "invalid code": wait ~30s, run `entra-totp` again and retry
+   with the fresh code.
+
+If those are the only two pages you see, you are done — carry on at
+step 4e of the workflow above.
+
+## MFA fallback — escaping a passkey prompt
+
+Only relevant if a passkey page actually shows up; if it does not,
+skip this section entirely. Some tenants default to **passkey
+("Face, fingerprint, PIN or security key")**, which can never
+complete in a headless pod, so Microsoft will steer you into a dead
+end unless you actively switch methods.
+
+When it does appear, the password + verification-code path is still
+enabled for these accounts — so if you cannot find the way out, YOU
+are missing the exit; keep working the steps below. NEVER conclude
+"tenant policy forbids password/TOTP", NEVER propose a federated
+"Sign in with GitHub"/"Sign in with GitLab" option, and NEVER ask
+the operator to change Entra configuration.
+
+Take a **fresh browser snapshot after every page change**; the pages
+appear in varying order:
+
+**WebAuthn is DISABLED in this pod's browser** (Chromium launches
+with `--disable-blink-features=WebAuth` via `browser.extraArgs`), so
+the passkey ceremony cannot start: Entra either skips the passkey
+step entirely or fails it instantly onto the error page of step 2.
+The endless "waiting for security key" spinner cannot happen — if
+you still see a passkey page for more than ~30s, snapshot again and
+work the exits below.
+
+1. **FIDO/passkey page** (*"Face, fingerprint, PIN or security
+   key"*, or a spinner waiting for a security key) — exits in
+   priority order:
+   a. Snapshot and look for **"Sign in another way"**,
+      **"Sign-in options"**, **"Cancel"**, or *"Having trouble?"* —
+      scroll down; the link can sit below the fold. Click it.
+   b. If no such control is visible, **WAIT — do not abort.** The
+      WebAuthn attempt times out after ~1-2 minutes in this
+      headless browser and lands on the error page of step 2,
+      which always has the fallback link. Re-snapshot every ~20s
+      until it appears.
+   c. NEVER hand-craft or replay URLs (e.g. a `cancelUrl` scraped
+      from page source) — that produces `AADSTS10040141`. Only
+      click visible controls; if the session is truly wedged,
+      start over cleanly with `az-login-bot`.
+2. **Passkey error page** — *"We couldn't sign you in / Something
+   went wrong when trying to sign in with a passkey"*: click
+   **"Sign in another way"**. NEVER click **"Try again"** — the
+   passkey can never succeed here, it just loops.
+3. **"Verify your identity"** method chooser — the list shows
+   *"Face, fingerprint, PIN or security key"*, *"Use a verification
+   code"*, *"Text +XX..."*: click **"Use a verification code"**.
+   - If *"Use a verification code"* is NOT in the list, expand it
+     via **"More information"** / **"Sign in another way"** — it
+     may be hidden behind the security-key entry at first.
+   - NEVER pick the security-key/passkey entry, NEVER pick Text/SMS
+     (nobody reads that phone).
+
+Once *"Use a verification code"* is selected you are back on the
+ordinary flow — continue with **"MFA — the normal path"** above
+(password page, then `entra-totp`). The two pages can arrive in
+either order.
+
+Note: the *"Sign-in options"* link on the USERNAME page (listing
+passkey + a federated provider) is NOT the method chooser above —
+ignore it, type the username and proceed; the real chooser only
+appears after the passkey step is escaped.
+
+5. The background `az login` process exits 0 and populates
+   `~/.azure/msal_token_cache.json`. The refresh token inside has
+   the MFA claim and is good for ~90 days. Verify with
+   `az account show`; from here on any `az` command works without a
+   re-login until the cache expires (check `~/.openclaw/.az-login.log`
+   if something went wrong).
 
 ## Workflow — self-hosted Entra-protected web apps
 
@@ -126,7 +259,9 @@ click and look at where the URL change happens.
 3. Account picker (if shown) → **"Use another account"** →
    `$ENTRA_USERNAME`.
 4. Password → `$ENTRA_PASSWORD`.
-5. MFA → `entra-totp` → enter code.
+5. MFA → follow **"MFA — the normal path"** above (password, then
+   `entra-totp`); if a passkey page appears, escape it first via
+   **"MFA fallback — escaping a passkey prompt"**.
 6. "Stay signed in?" → **No**.
 7. Microsoft redirects back to the app's `/redirect`-uri, the app's
    `handleRedirectPromise()` callback fires and the session cookie /
@@ -201,8 +336,8 @@ stayed equal, it's redirect (Variant 1).
 
 The TOTP seed + username + password in your env are the *bot's*
 credentials, not the human user's. The user has their own MFA on
-their own Entra account, separate from the bot's. When you do
-`az login --use-device-code`, the URL that comes out is for the
+their own Entra account, separate from the bot's. Whichever login flow
+is used, the URL that comes out is for the
 **identity that completes the login**, and the only identity with
 the bot's password and TOTP seed is **you, via the browser plugin**.
 Asking the human user to enter the code would either:
@@ -240,8 +375,8 @@ list` output (or whatever the original task was).
 | Symptom                                              | Cause / fix                                                                       |
 |------------------------------------------------------|-----------------------------------------------------------------------------------|
 | `AADSTS500011: resource principal not found`        | bot user has no role on any subscription — ask the user to grant RBAC             |
-| `AADSTS50079: user required to use MFA`             | you skipped or fumbled the TOTP step — repeat the device-code dance               |
-| `entra-totp` prints "ENTRA_TOTP_SEED env not set"   | the operator hasn't sealed the seed into `openclaw-secrets` yet — surface to user |
+| `AADSTS50079: user required to use MFA`             | you skipped or fumbled the TOTP step — start over with `az-login-bot`             |
+| `entra-totp` prints "ENTRA_TOTP_SEED env not set"   | the operator hasn't sealed the seed into `claw-code-secrets` yet — surface to user |
 | Microsoft rejects the password repeatedly           | screenshot the page, surface the exact error to user — password may have rotated  |
 | Browser plugin can't find a form selector           | Microsoft occasionally redesigns the login UI. Take a screenshot, describe what you see to the user, ask for selector hints |
 | You're tempted to ask the user to enter the code    | Stop. Go back to rule 2 of "Quick rule reference". Use the browser plugin.        |
