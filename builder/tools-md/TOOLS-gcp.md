@@ -15,7 +15,7 @@ The image ships **`gcloud`** (Google Cloud SDK, pinned via
 pod in this revision** — every `gcloud ...` call will fail with
 `Reauthentication required` / `You do not currently have an active
 account selected` until a human seals real bot credentials into
-`openclaw-secrets`.
+`claw-code-secrets`.
 
 When that happens, the chart will mount one of:
 
