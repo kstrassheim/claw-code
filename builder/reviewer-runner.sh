@@ -255,7 +255,17 @@ submit_review() { # $1 = approve|request-changes  $2 = body
 # reviewing anything — so that head could never be re-reviewed, not even after
 # its state file was cleared.
 fetch_verdict_comment() {
-  "${FORGE[@]}" comments --number "$PR_NUMBER" 2>/dev/null \
+  # `change-request-comments`, NOT `comments` — the same distinction
+  # post_pr_comment makes on the way out, and it was missed on the way back
+  # in. The verdict is POSTED to the change request; asking `comments` for it
+  # reads /issues/<n>/notes on GitLab, i.e. whatever ISSUE happens to carry
+  # the merge request's iid. So the wrapper never saw the agent's own verdict,
+  # concluded the comment had not landed, and posted it a second time from the
+  # summary file — every GitLab review ended with two verdict comments, and
+  # the solver's merge gate had two things to key on. GitHub hid the bug
+  # (there a PR *is* an issue, so both verbs resolve to the same thread);
+  # fixer-runner.sh has always used the correct verb.
+  "${FORGE[@]}" change-request-comments --number "$PR_NUMBER" 2>/dev/null \
   | BOT="$BOT_LOGIN" SHA="$HEAD_SHA" SINCE="${RUN_START_EPOCH:-0}" python3 -c "
 import sys, json, os
 from datetime import datetime

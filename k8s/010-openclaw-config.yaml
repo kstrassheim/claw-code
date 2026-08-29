@@ -155,6 +155,9 @@ data:
           "kimi": { "enabled": true }
         }
       },
+      "browser": {
+        "extraArgs": ["--disable-blink-features=WebAuth"]
+      },
       "mcp": {
         "servers": {
           "github": {

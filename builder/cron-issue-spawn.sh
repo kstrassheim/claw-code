@@ -187,6 +187,10 @@ for r in plan['repos']:
             spawned += 1
 
 deferred = sum(r.get('deferredDueToLimit', 0) for r in plan['repos'])
+# Issues a person put off to the next sprint. Counted here for the same
+# reason the other gates are: a tick that spawned nothing has to say which
+# gate stopped it rather than looking idle.
+next_sprint = sum(r.get('nextSprint', 0) for r in plan['repos'])
 
 # Why a repository was skipped, in the planner's own vocabulary. The three
 # reasons are a contract, not prose: 'allowlist-unavailable' is a fault to
@@ -201,5 +205,6 @@ if plan.get('allowlistAvailable') is False:
 elif denied:
     print(f'not permitted ({len(denied)}): ' + ', '.join(denied[:10]))
 print(f'tick done: spawned={spawned}, deferred_due_to_limit={deferred}, '
+      f'next_sprint={next_sprint}, '
       f'permitted={plan.get(\"allowedProjects\")}')
 "
