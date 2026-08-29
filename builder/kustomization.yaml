@@ -67,6 +67,7 @@ configMapGenerator:
       - tester-runner=tester-runner.sh
       - reviewer-runner=reviewer-runner.sh
       - estimate-runner=estimate-runner.sh
+      - review-verdict=review-verdict
       - tester-upload-screenshots=tester-upload-screenshots.py
       - mermaid-render=mermaid-render
       - agent-limits.sh=agent-limits.sh

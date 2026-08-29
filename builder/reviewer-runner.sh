@@ -139,6 +139,11 @@ REVIEWER_STATE_DIR="$STATE_ROOT/reviewer-state"
 STATE_KEY="${REPO//\//__}__${PR_NUMBER}"
 LAST_REVIEWED_FILE="$REVIEWER_STATE_DIR/$STATE_KEY.last-reviewed-sha"
 ATTEMPTS_FILE="$REVIEWER_STATE_DIR/$STATE_KEY.attempts"
+# Which head this run is reviewing, for `review-verdict` to check a
+# verdict against. A file as well as an env var because the agent posts
+# from inside its own exec sandbox; keyed per change request, so one
+# review cannot be answered by what another left behind.
+REVIEWING_SHA_FILE="$REVIEWER_STATE_DIR/$STATE_KEY.reviewing-sha"
 SUMMARIES_DIR="$STATE_ROOT/reviewer-summaries"
 SUMMARY_FILE="$SUMMARIES_DIR/$STATE_KEY.last-review.md"
 LOCK_TTL="${REVIEWER_LOCK_TTL:-${REVIEWER_TTL_SECONDS:-7200}}"
@@ -188,6 +193,7 @@ echo "$BASHPID $(date -Iseconds) pr=$PR_NUMBER" > "$LOCK_DIR/owner"
 # held — a leaked slot throttles all three subsystems.
 on_exit() {
   command -v release_agent_slot >/dev/null 2>&1 && release_agent_slot
+  rm -f "$REVIEWING_SHA_FILE"
   rm -rf "$LOCK_DIR"
 }
 trap on_exit EXIT
@@ -225,7 +231,13 @@ post_pr_comment() { # $1 = body
   # would have landed on whatever issue happened to carry the merge request's
   # iid — somebody else's work, and the solver would have waited forever for a
   # verdict it could not see.
-  "${FORGE[@]}" comment-on-change-request --number "$PR_NUMBER" --body-file "$_bodyf"
+  #
+  # Through `review-verdict`, not straight to forge-cli: it refuses a verdict
+  # naming a commit this run is not reviewing. The wrapper composes its own
+  # header from $HEAD_SHA so it should never trip the guard — but it posts the
+  # SUMMARY FILE's contents, which is model output, and the point of a guard
+  # is that it does not depend on the writer being careful.
+  review-verdict --repo "$REPO" --number "$PR_NUMBER" --body-file "$_bodyf"
   _rc=$?
   rm -f "$_bodyf"
   return $_rc
@@ -406,6 +418,14 @@ sys.exit(0 if review_subject.already_reviewed(
   echo "[gate] head ${HEAD_SHA:0:8} already reviewed, title and body unchanged — skipping"; exit 0
 fi
 echo "[pr] #$PR_NUMBER '$PR_TITLE' branch=$HEAD_REF → $BASE_REF head=${HEAD_SHA:0:8} author=@$PR_AUTHOR"
+
+# Publish the head under review for `review-verdict`. Written only now, once
+# the gates have passed and this run is really going to review THIS commit —
+# earlier would name a head the run then declined to look at. Removed by the
+# exit trap, so a verdict posted outside a run is not checked against a stale
+# one; the guard passes anything it cannot prove wrong.
+printf '%s' "$HEAD_SHA" > "$REVIEWING_SHA_FILE"
+export REVIEW_HEAD_SHA="$HEAD_SHA"
 
 # Attempt counter per head sha — for the LOG ONLY. There is deliberately no cap
 # and no deadline: an incomplete review never produces a verdict, it just
@@ -805,7 +825,13 @@ one, write the text to a file and hand the file over:
     cat > /tmp/verdict.md <<'EOF'
     <text>
     EOF
-    forge-cli --repo $REPO comment-on-change-request --number $PR_NUMBER --body-file /tmp/verdict.md
+    review-verdict --repo $REPO --number $PR_NUMBER --body-file /tmp/verdict.md
+
+\`review-verdict\` is \`forge-cli comment-on-change-request\` with one check in
+front: it refuses a verdict whose \`(sha ...)\` names a commit other than
+$HEAD_SHA, because such a verdict is about some other review. If it refuses
+yours, do not work around it — re-read the diff for THIS $CR_NOUN and write
+the verdict for \`$HEAD_SHA\`.
 
 Use a FILE, not an argument: your verdict quotes code, and backticks and
 \$(...) in an argument are executed by the shell before they ever reach the

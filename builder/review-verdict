@@ -1,0 +1,112 @@
+#!/bin/bash
+# review-verdict: post a reviewer verdict onto a change request, refusing one
+# that names a commit this run is not reviewing.
+#
+# WHY THIS EXISTS
+# A reviewer posted an APPROVED verdict — twice — that belonged to a DIFFERENT
+# change request in the same repository, reviewed an hour earlier. It carried
+# that other head's sha and that other change's acceptance criteria, about a
+# file the one it landed on does not touch. The agent noticed on its next pass
+# and retracted it in the body of the real verdict, so nothing merged. Had the
+# borrowed verdict been an APPROVED whose sha the solver's merge gate
+# accepted, the gate would have had an approval to act on for code no reviewer
+# had read.
+#
+# The wrapper knows which head it is reviewing. Nothing checked the comment
+# against it on the way out, and a verdict naming a different commit is
+# provably not about this head, whoever wrote it.
+#
+# WHY NOT IN post_pr_comment
+# Because that is not the path the bad comments took. The reviewer posts its
+# verdict TWICE over, from two places: the agent runs forge-cli itself (the
+# prompt tells it to), and the wrapper posts from the summary file when the
+# agent's comment did not land. Guarding only the wrapper would have left the
+# observed failure untouched. Both now go through here.
+#
+# WHY NOT IN forge-cli
+# forge-cli is the generic seam to the code host and knows nothing about
+# reviews, heads or verdicts — putting this there would push reviewer policy
+# into the one file that is meant to be free of it.
+#
+# Not a verdict, or no head to compare against, and this is a pass-through:
+# the guard refuses what it can prove wrong and never invents a reason to
+# block an ordinary comment.
+set -euo pipefail
+
+REPO=""
+NUMBER=""
+BODY_FILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)      REPO="${2:-}";      shift 2 ;;
+    --number)    NUMBER="${2:-}";    shift 2 ;;
+    --body-file) BODY_FILE="${2:-}"; shift 2 ;;
+    *) echo "review-verdict: unexpected argument '$1'" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$REPO" ] || [ -z "$NUMBER" ] || [ -z "$BODY_FILE" ]; then
+  echo "usage: review-verdict --repo <owner/name> --number <n> --body-file <path>" >&2
+  exit 2
+fi
+if [ ! -f "$BODY_FILE" ]; then
+  echo "review-verdict: no such body file: $BODY_FILE" >&2
+  exit 2
+fi
+
+# The head this run is reviewing. The environment is the normal source; the
+# state file is there because the agent reaches this through its own exec
+# sandbox, which does not have to hand every variable through. Both are
+# written by reviewer-runner, and the file is keyed per change request, so a
+# review cannot be answered by whatever a neighbouring one left behind.
+EXPECTED="${REVIEW_HEAD_SHA:-}"
+if [ -z "$EXPECTED" ]; then
+  _key="${REPO//\//__}__${NUMBER}"
+  _f="${HOME:-/home/node}/.openclaw/reviewer-state/${_key}.reviewing-sha"
+  [ -f "$_f" ] && EXPECTED="$(cat "$_f" 2>/dev/null || true)"
+fi
+
+MARKER="🔎 REVIEW RESULT:"
+FIRST="$(head -n 1 "$BODY_FILE" 2>/dev/null || true)"
+
+case "$FIRST" in
+  "$MARKER"*)
+    # THE SAME SHAPE THE SOLVER READS, and deliberately not a stricter one.
+    #
+    # The header is written by a model from a prompt template. The template
+    # says `(sha <head_sha>)`, and what actually lands is as often
+    # ``(sha `abc123…`)`` — markdown code, or quotes, or `sha:` — which is why
+    # the solver's own parser accepts all of them (see
+    # test_verdict_sha_parsing, and the deadlock that taught it). A guard that
+    # matched only the bare form would find no sha in the common case, treat
+    # the verdict as unlabelled and wave it through: enforcement that quietly
+    # switches itself off for most real verdicts.
+    #
+    # Seven characters is the floor, so prose like "(sha beefed)" is not read
+    # as a commit.
+    CLAIMED="$(FIRST="$FIRST" python3 -c "
+import os, re
+m = re.search(r'\(\s*sha[:\s]+[\x60\'\"]*([0-9a-fA-F]{7,40})[\x60\'\"]*\s*\)',
+              os.environ['FIRST'], re.IGNORECASE)
+print(m.group(1) if m else '')
+" 2>/dev/null || true)"
+    if [ -n "$EXPECTED" ] && [ -n "$CLAIMED" ]; then
+      # Either may be abbreviated — the wrapper writes the full sha, a model
+      # writing its own header often writes seven characters — so agreement is
+      # one being a prefix of the other, not string equality.
+      case "$EXPECTED" in
+        "$CLAIMED"*) ;;
+        *) case "$CLAIMED" in
+             "$EXPECTED"*) ;;
+             *)
+               echo "review-verdict: REFUSED — this verdict names sha ${CLAIMED}, but this run is reviewing ${EXPECTED}." >&2
+               echo "review-verdict: a verdict about another commit is not about this change request; nothing was posted." >&2
+               exit 1 ;;
+           esac ;;
+      esac
+    fi
+    ;;
+esac
+
+exec forge-cli --repo "$REPO" comment-on-change-request \
+     --number "$NUMBER" --body-file "$BODY_FILE"

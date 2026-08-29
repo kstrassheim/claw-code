@@ -256,15 +256,31 @@ class CommentsGoWhereTheyBelong(unittest.TestCase):
             ["hello"])
 
     def test_the_reviewer_posts_its_verdict_on_the_change_request(self):
+        # The verdict now goes out through `review-verdict`, which refuses one
+        # naming a commit the run is not reviewing and then hands off to
+        # forge-cli. The property this pins is unchanged — the verdict must
+        # reach the CHANGE REQUEST and never the issue that happens to share
+        # its number — so the check follows the indirection rather than
+        # dropping to "something, somewhere, posts a comment".
         import os
-        path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "reviewer-runner.sh")
-        with open(path, encoding="utf-8") as fh:
-            src = fh.read()
-        self.assertNotIn('comment --number "$PR_NUMBER"', src,
+        builder = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        with open(os.path.join(builder, "reviewer-runner.sh"),
+                  encoding="utf-8") as fh:
+            runner = fh.read()
+        self.assertNotIn('comment --number "$PR_NUMBER"', runner,
                          "the verdict uses the ISSUE verb with a PR number")
-        self.assertIn('comment-on-change-request --number "$PR_NUMBER"', src)
+        self.assertIn('review-verdict --repo "$REPO" --number "$PR_NUMBER"',
+                      runner)
+
+        with open(os.path.join(builder, "review-verdict"),
+                  encoding="utf-8") as fh:
+            guard = fh.read()
+        self.assertIn("comment-on-change-request", guard)
+        # The guard is the last hop, so the issue verb must not appear here
+        # either: routing through it would otherwise be a way to reintroduce
+        # exactly the bug this test was written for.
+        self.assertNotIn("forge-cli --repo \"$REPO\" comment ", guard)
 
     def test_the_review_request_is_posted_on_the_change_request(self):
         import os

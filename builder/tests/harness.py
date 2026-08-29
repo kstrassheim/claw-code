@@ -184,7 +184,8 @@ class ShellTestCase(unittest.TestCase):
         for f in ("agent-limits", "agent-limits.sh",
                   "agent-models", "agent-models.sh", "agent-slot.sh",
                   "agent-thinking", "agent-thinking.sh",
-                  "security-level", "mermaid-render", "telegram-notify"):
+                  "security-level", "mermaid-render", "telegram-notify",
+                  "review-verdict"):
             src = os.path.join(BUILDER, f)
             if os.path.exists(src):
                 _install(src, os.path.join(self.bin, f))
