@@ -475,7 +475,57 @@ if store.write(doc):
 " 2>&1 | grep -E '^\[planning\]' || true
 }
 
+# Commit what the agent left behind, so the next run can carry on with it.
+#
+# The wrapper never used to commit at all — that was entirely the agent's job,
+# and an agent that ran out of quota, or hit its lifetime cap, mid-edit left
+# changes that the next run's `clean -fdx` erased without trace. Two issues
+# spent 258 and 89 model calls in one evening and produced nothing at all.
+#
+# This is a safety net and says so in the message: it is not a substitute for
+# the agent committing its own work with a real description. It only fires
+# when the tree is dirty on OUR branch, so a completed run that already
+# committed and pushed reaches this as a no-op.
+#
+# The identity is passed inline because the pod has no global one — the agent
+# sets it per repository, and on a fresh clone that has not happened yet, which
+# would make the commit fail exactly when it is most needed.
+autosave_wip() {
+  [ -d "$PROJECT_DIR/.git" ] || return 0
+  [ -n "${BRANCH:-}" ] || return 0
+  [ "$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$BRANCH" ] || return 0
+  git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | grep -q . || return 0
+  git -C "$PROJECT_DIR" add -A 2>/dev/null || return 0
+  git -C "$PROJECT_DIR" \
+      -c "user.name=${BOT_LOGIN:-claw-code}" \
+      -c "user.email=${BOT_LOGIN:-claw-code}@users.noreply.github.com" \
+      commit --quiet --no-verify \
+      -m "WIP (autosaved): issue #$ISSUE_NUM run ended before the agent committed" \
+      2>/dev/null \
+    || { echo "[autosave] nothing could be committed — the next run starts from the last commit"; return 0; }
+  echo "[autosave] committed the work in progress on $BRANCH"
+
+  # AND PUSH IT. A commit that exists only in this pod is one `clean -fdx` or
+  # one replaced pod away from gone, and the checkout is shared: the next
+  # issue in this repository works the same tree on its own branch. Pushing
+  # makes the work outlive both, and it is visible to a person instead of
+  # sitting in a volume nobody can read.
+  #
+  # Never forced. If the remote has moved — someone pushed to this branch, or
+  # a pull request is open on it — the right outcome is to leave their commits
+  # alone and keep ours locally, which the resume below still finds.
+  if git -C "$PROJECT_DIR" push --quiet origin "HEAD:$BRANCH" 2>/dev/null; then
+    echo "[autosave] pushed $BRANCH — the work is safe off this pod"
+  else
+    echo "[autosave] could not push $BRANCH (remote moved, or no credential) — kept locally"
+  fi
+}
+
 on_exit() {
+  # Before anything else: a later step in this trap must not be the reason
+  # work is lost.
+  [ "$WIPE_FULL_STATE" = "1" ] || autosave_wip
+
   record_delivery || true
 
   # Never fatal — planning-record always exits 0, and it is called with `|| true`
@@ -706,8 +756,13 @@ most_recent_comment_id() {
 # a FIRST run of an issue the planner already asked about — see the cursor
 # block below for why anchoring at the newest note swallows the answer.
 ask_note_id() {
-  BOT="$BOT_LOGIN" "${FORGE[@]}" comments --number "$ISSUE_NUM" 2>/dev/null \
-  | python3 -c "
+  # BOT goes on the PYTHON, not on forge-cli. Each side of a pipe is its own
+  # command, so a prefix on the left is an environment forge-cli never reads
+  # and python never sees: `os.environ.get('BOT')` came back empty, every
+  # author comparison failed, and this returned 0 for every issue that had an
+  # ask sitting right there in its history.
+  "${FORGE[@]}" comments --number "$ISSUE_NUM" 2>/dev/null \
+  | BOT="$BOT_LOGIN" python3 -c "
 import json, os, sys
 sys.path.insert(0, os.environ.get('PYTHONPATH','').split(os.pathsep)[0])
 import lexical_guard
@@ -733,8 +788,14 @@ print(lexical_guard.ask_note_id(json.load(sys.stdin), os.environ.get('BOT','')) 
 # history means the confirmation gate still runs, which is the safe direction
 # for a guard about destructive changes.
 lexical_ask_answered() {
-  BOT="$BOT_LOGIN" "${FORGE[@]}" comments --number "$ISSUE_NUM" 2>/dev/null \
-  | python3 -c "
+  # BOT on the PYTHON side — see ask_note_id above. With the prefix on
+  # forge-cli this answered "no" for every issue, whatever the history said,
+  # so the solver re-asked a question the planner had already asked and a
+  # person had already answered. Observed on two issues in one evening: the
+  # planner asked, the human replied "its ok continue", the solver posted the
+  # same question again and re-parked the issue On Hold.
+  "${FORGE[@]}" comments --number "$ISSUE_NUM" 2>/dev/null \
+  | BOT="$BOT_LOGIN" python3 -c "
 import json, os, sys
 sys.path.insert(0, os.environ.get('PYTHONPATH','').split(os.pathsep)[0])
 import lexical_guard
@@ -2222,8 +2283,48 @@ if [ -n "$EXISTING_PR_BRANCH" ] && git ls-remote --heads origin "$EXISTING_PR_BR
   git branch -D "$EXISTING_PR_BRANCH" 2>/dev/null || true
   git checkout --quiet -b "$EXISTING_PR_BRANCH" "origin/$EXISTING_PR_BRANCH"
   echo "[checkout] resumed existing branch $EXISTING_PR_BRANCH from origin"
+elif git show-ref --verify --quiet "refs/heads/$BRANCH" \
+     && [ "$(git rev-list --count "origin/$DEFAULT_BRANCH..$BRANCH" 2>/dev/null || echo 0)" -gt 0 ]; then
+  # WORK THAT IS ONLY LOCAL IS STILL WORK.
+  #
+  # The branch below used to run unconditionally whenever no pull request was
+  # open: reset --hard, clean -fdx, branch -D. So a run that committed but died
+  # before pushing — the lifetime cap, a quota 403, a pod restart — had its
+  # commits deleted by the NEXT run, which then started the same issue from
+  # nothing. It is not hypothetical: `Fix /ws/worldline-status role check
+  # (issue #124)`, a real fix with tests, was found dangling in the checkout
+  # while #124 was still open, and #141 had four separate attempts discarded
+  # the same way. Each one cost a full agent run and left no trace in the
+  # issue.
+  #
+  # A branch ahead of the default branch is resumed instead. The working tree
+  # is left alone, so uncommitted edits survive too, and the agent continues
+  # from where it stopped rather than re-deriving it.
+  git checkout --quiet "$BRANCH"
+  echo "[checkout] resumed local branch $BRANCH — $(git rev-list --count "origin/$DEFAULT_BRANCH..$BRANCH") commit(s) not yet pushed"
+  # SAVE WHAT THE LAST RUN LEFT LOOSE, BEFORE TOUCHING ANYTHING.
+  #
+  # The exit trap normally does this, but a run killed outright — SIGKILL, the
+  # node going away — never reaches its trap, so its edits are still sitting
+  # here uncommitted. Committing and pushing them now means this run continues
+  # from a branch that is safe on the remote rather than from a tree that the
+  # next mishap erases. Same branch, same issue: this is a rescue of the
+  # previous attempt, not a fresh start.
+  autosave_wip
+elif git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q . \
+     && [ "$(git rev-list --count "origin/$DEFAULT_BRANCH..origin/$BRANCH" 2>/dev/null || echo 0)" -gt 0 ]; then
+  # The branch is not here but it IS on the remote — this pod was replaced, or
+  # another issue's run cleaned the shared checkout around it. That is exactly
+  # what the autosave pushes for, so pick it back up rather than starting the
+  # issue again from nothing.
+  git checkout --quiet "$DEFAULT_BRANCH"
+  git branch -D "$BRANCH" 2>/dev/null || true
+  git checkout --quiet -b "$BRANCH" "origin/$BRANCH"
+  echo "[checkout] resumed $BRANCH from origin — $(git rev-list --count "origin/$DEFAULT_BRANCH..$BRANCH") commit(s) from an earlier run"
 else
-  # Fresh branch off default
+  # Fresh branch off default. Reached when the branch does not exist, or
+  # exists with nothing on it — so there is nothing to lose by resetting, and
+  # a poisoned tree still gets a clean start.
   git checkout --quiet "$DEFAULT_BRANCH"
   git reset --hard --quiet "origin/$DEFAULT_BRANCH"
   git clean -fdx --quiet
