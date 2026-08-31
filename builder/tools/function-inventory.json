@@ -63,8 +63,6 @@
     "fixer-runner.sh:pr_head_sha",
     "fixer-runner.sh:pr_merge_facts",
     "fixer-runner.sh:react_to_comment",
-    "fixer-runner.sh:record_delivery",
-    "fixer-runner.sh:review_wait_expired",
     "fixer-runner.sh:reviewer_enabled",
     "fixer-runner.sh:wipe_issue_state",
     "fixer-runner.sh:yield_if_awaiting_human",

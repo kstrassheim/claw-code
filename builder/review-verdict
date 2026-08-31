@@ -1,6 +1,10 @@
 #!/bin/bash
-# review-verdict: post a reviewer verdict onto a change request, refusing one
-# that names a commit this run is not reviewing.
+# review-verdict: post a reviewer verdict onto a change request — once —
+# refusing one that names a commit this run is not reviewing.
+#
+# Two guards, both about a verdict that is not what it claims to be: one
+# refuses a verdict about ANOTHER commit, the other refuses a SECOND copy of
+# this run's own. Each is documented at the code that implements it.
 #
 # WHY THIS EXISTS
 # A reviewer posted an APPROVED verdict — twice — that belonged to a DIFFERENT
@@ -28,9 +32,9 @@
 # reviews, heads or verdicts — putting this there would push reviewer policy
 # into the one file that is meant to be free of it.
 #
-# Not a verdict, or no head to compare against, and this is a pass-through:
-# the guard refuses what it can prove wrong and never invents a reason to
-# block an ordinary comment.
+# Not a verdict, no head to compare against, or no way to tell what this run
+# has already posted, and this is a pass-through: the guards refuse what they
+# can prove wrong and never invent a reason to block an ordinary comment.
 set -euo pipefail
 
 REPO=""
@@ -104,6 +108,106 @@ print(m.group(1) if m else '')
                exit 1 ;;
            esac ;;
       esac
+    fi
+    ;;
+esac
+
+# -- the same verdict, twice ---------------------------------------------
+#
+# WHY THIS EXISTS
+# On one change request both verdicts landed TWICE: two comments two seconds
+# apart, then another pair the same way. Each pair was byte-identical — 11526
+# and 8897 bytes — so they were not two reviews, and the per-repo lock in
+# reviewer-runner rules out two runs. The wrapper was not
+# the second poster either: its "wrapper posted the … verdict" line is absent
+# from the whole log. The agent simply ran this command twice on the same
+# --body-file, once with the exec reported as failed while the note had in
+# fact landed, and once with nothing reported at all.
+#
+# Nothing on the path was idempotent: the sha guard above proves a verdict
+# is about the right commit and then posts it, however many times it is asked
+# to. So ask the change request what is already on it.
+#
+# SCOPED TO THIS RUN, and unusable without that scope. "A verdict for this sha
+# already exists" is the wrong question — reviewer-runner is explicit that a
+# head must stay re-reviewable once its state file is cleared, and an earlier
+# run's verdict must never stand in for this one's. The question is whether
+# THIS run already posted, so the window starts when the run published the
+# head it is reviewing. No window, no dedupe: the guard goes quiet rather than
+# suppressing a verdict it cannot prove is a repeat.
+_run_start_epoch() {
+  case "${REVIEW_RUN_START_EPOCH:-}" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s' "$REVIEW_RUN_START_EPOCH"; return 0 ;;
+  esac
+  # Same file the head is read from above, for the same reason: the agent
+  # reaches this through an exec sandbox that need not carry the environment.
+  # reviewer-runner writes it when the run commits to a head and deletes it on
+  # exit, so its mtime IS this run's start and it is absent between runs.
+  _sf="${HOME:-/home/node}/.openclaw/reviewer-state/${REPO//\//__}__${NUMBER}.reviewing-sha"
+  [ -f "$_sf" ] || return 0
+  stat -c %Y "$_sf" 2>/dev/null || true
+}
+
+case "$FIRST" in
+  "$MARKER"*)
+    SINCE="$(_run_start_epoch)"
+    if [ -n "$SINCE" ] && [ "$SINCE" != "0" ]; then
+      # Exit 0 from the reader means "already there". Anything else — a fetch
+      # that failed, a payload that did not parse, no match — means post, so
+      # every failure mode of this guard ends with the verdict on the change
+      # request rather than silently dropped.
+      if forge-cli --repo "$REPO" change-request-comments --number "$NUMBER" 2>/dev/null \
+         | MARKER="$MARKER" SHA="${CLAIMED:-}" SINCE="$SINCE" \
+           BOT="${REVIEWER_BOT_LOGIN:-}" python3 -c '
+import json, os, re, sys
+from datetime import datetime
+
+marker = os.environ["MARKER"]
+sha    = os.environ.get("SHA", "")
+bot    = os.environ.get("BOT", "").lower()
+try:
+    since = float(os.environ.get("SINCE") or 0)
+except ValueError:
+    sys.exit(1)
+
+def created(s):
+    try:
+        return datetime.fromisoformat((s or "").strip().replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if not isinstance(rows, list):
+    sys.exit(1)
+
+for c in reversed(rows):
+    if not isinstance(c, dict):
+        continue
+    body = (c.get("body") or "").strip()
+    if not body.startswith(marker):
+        continue
+    if created(c.get("createdAt")) < since:
+        continue
+    if bot and ((c.get("author") or {}).get("username", "").lower()) != bot:
+        continue
+    # Same reading of the header as the guard above, including the forms a
+    # model actually writes, so a repeat cannot slip through on backticks.
+    if sha:
+        m = re.search(r"\(\s*sha[:\s]+[\x60\x27\x22]*([0-9a-fA-F]{7,40})[\x60\x27\x22]*\s*\)",
+                      body.splitlines()[0], re.IGNORECASE)
+        got = m.group(1) if m else ""
+        if not got or not (got.startswith(sha) or sha.startswith(got)):
+            continue
+    sys.exit(0)
+sys.exit(1)
+'; then
+        echo "review-verdict: this verdict is already on $REPO #$NUMBER — not posting it a second time." >&2
+        exit 0
+      fi
     fi
     ;;
 esac

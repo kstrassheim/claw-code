@@ -325,6 +325,11 @@ if [ -z "$BOT_LOGIN" ]; then
   echo "FATAL: could not resolve bot identity from \$GITHUB_TOKEN /user — aborting"
   exit 1
 fi
+# Published for `review-verdict`, which needs an author to recognise this
+# run's own verdict when it checks whether one is already posted. Writing back
+# the variable it was read from is a no-op when it was already set, and gives
+# the resolved identity when it was not.
+export REVIEWER_BOT_LOGIN="$BOT_LOGIN"
 
 if ! PR_JSON="$("${FORGE[@]}" change-request --number "$PR_NUMBER")"; then
   echo "FATAL: could not fetch $CR_NOUN #$PR_NUMBER"; exit 1
@@ -901,6 +906,10 @@ echo "[agent] invoking reviewer agent (session $SESSION_ID, attempt $((ATTEMPTS 
 # Only a verdict comment posted from here on counts as THIS run's result. Taken
 # 5s in the past to absorb small clock skew between this pod and GitHub.
 RUN_START_EPOCH="$(( $(date +%s) - 5 ))"
+# Same window for `review-verdict`'s repeat check, so the wrapper and the
+# agent agree on what "this run" means. The agent's exec sandbox need not
+# carry it — that path falls back to the reviewing-sha file's mtime.
+export REVIEW_RUN_START_EPOCH="$RUN_START_EPOCH"
 # The reviewer drives a browser (local site, debug UI) and the openclaw agent
 # process routinely fails to exit after the turn is done. Run it in its own
 # process group and stop the whole group once the turn-end line appears in the

@@ -43,9 +43,11 @@
 #                             agent (default 4). After that the human is asked.
 #   REVIEW_WAIT_TTL         — seconds an awaiting-review marker stays believed
 #                             (default 7200). Past it the wait is treated as
-#                             never having happened and the review is
-#                             re-requested — a reviewer that never delivers
-#                             must not wedge the issue forever.
+#                             never having happened, so a reviewer that never
+#                             delivers cannot wedge the issue forever: the
+#                             planner stops ranking on the marker and the log
+#                             says the wait is stale. The request note itself
+#                             is NOT re-posted — see request_self_review.
 set -uo pipefail
 
 REPO="$1"
@@ -260,9 +262,11 @@ CI_FP_FILE="$ISSUE_STATE_DIR/${REPO//\//__}-${ISSUE_NUM}.ci-fingerprint"
 # first BECAUSE the solver is waiting, and every tick spends zero model calls
 # to discover the same nothing. REVIEW_WAIT_TTL is the bound on that wait. Past
 # it the marker is ignored — by the planner when it ranks, and here when the
-# gate decides whether to ask again — so the fixer re-checks the pull request
-# and re-requests the review instead of waiting on a promise nobody is left
-# to keep.
+# gate decides whether the wait is still worth believing — so the fixer
+# re-checks the pull request instead of parking on a promise nobody is left to
+# keep. What it does NOT do is re-post the request note: there is no reviewer
+# to re-ask (it finds the change by authorship), so a second note is a second
+# note and nothing else. See request_self_review.
 AWAITING_REVIEW_MARKER="$STATE_ROOT/issue-markers/${REPO//\//__}-${ISSUE_NUM}.awaiting-review"
 REVIEW_WAIT_TTL="${REVIEW_WAIT_TTL:-7200}"
 # Present ⟺ the fixer is waiting on a PERSON: a sign-off it asked for, or an
@@ -1285,6 +1289,11 @@ for c in reversed(cs if isinstance(cs, list) else []):
 # somebody else's business, so the wait needs a bound: past REVIEW_WAIT_TTL
 # the marker is treated as if it were never written. Missing marker counts as
 # expired — there is nothing to wait on.
+#
+# What expiry MEANS here is now log-only: it says the wait is long enough to
+# be worth reporting, not that the request should be repeated (see
+# request_self_review). The planner keeps its own reading of the same marker
+# and the same TTL — that one still governs ranking, and is untouched.
 review_wait_expired() {
   [ -f "$AWAITING_REVIEW_MARKER" ] || return 0
   local age mtime
@@ -1292,6 +1301,17 @@ review_wait_expired() {
   case "$mtime" in ''|*[!0-9]*) return 0 ;; esac
   age=$(( $(date +%s) - mtime ))
   [ "$age" -ge "${REVIEW_WAIT_TTL:-7200}" ]
+}
+
+# How long the current wait has run, in whole seconds — for the log line, so
+# it reports the real age instead of "over $TTL". 0 when there is no marker
+# or its mtime is unreadable, which reads correctly as "no wait recorded".
+review_wait_age() {
+  local mtime
+  [ -f "$AWAITING_REVIEW_MARKER" ] || { echo 0; return 0; }
+  mtime="$(stat -c %Y "$AWAITING_REVIEW_MARKER" 2>/dev/null || echo 0)"
+  case "$mtime" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+  echo $(( $(date +%s) - mtime ))
 }
 
 # Ask the pr-reviewer for a review of the CURRENT head: request the bot as
@@ -1335,14 +1355,31 @@ request_self_review() { # $1 = pr number, $2 = head sha
   # The reviewer does not need it either way — it finds the work by
   # authorship. The note is for the person reading the pull request.
   [ -f "$AWAITING_REVIEW_MARKER" ] && requested="$(cat "$AWAITING_REVIEW_MARKER" 2>/dev/null)"
-  if [ "$requested" = "$sha" ] && ! review_wait_expired; then
-    echo "[review-gate] review of ${sha:0:8} already requested — waiting for the verdict"
-    return 0
-  fi
   if [ "$requested" = "$sha" ]; then
-    # Same sha, but the wait has outlived REVIEW_WAIT_TTL. Nothing is coming:
-    # ask again rather than wait on a promise nobody is left to keep.
-    echo "[review-gate] the review of ${sha:0:8} has been pending for over ${REVIEW_WAIT_TTL}s — asking again"
+    # ONE NOTE PER SHA, HOWEVER LONG THE WAIT RUNS.
+    #
+    # Past REVIEW_WAIT_TTL this used to post the note AGAIN — "ask again
+    # rather than wait on a promise nobody is left to keep". But re-asking
+    # asks nobody anything. Read the paragraph above: no reviewer is
+    # requested, the reviewer finds this change by AUTHORSHIP, and this note
+    # exists for the person reading the pull request. Re-posting it moves
+    # nothing on the reviewer's side; it only reprints a comment.
+    #
+    # On one stalled change request that cost nine identical notes, one
+    # every two hours from 20:29 to 12:50, while the reviewer was failing on
+    # an exhausted model quota. Not one of them made a review happen, and the
+    # nine together buried the one that was worth reading.
+    #
+    # So the note stays at one per sha, and a wait past the TTL is reported
+    # HERE, in the log, where whoever is looking into the stall is reading.
+    # The marker is deliberately not touched: its mtime is how long the wait
+    # has run, and the planner ranks on it (see the TTL block near the top).
+    if review_wait_expired; then
+      echo "[review-gate] the review of ${sha:0:8} has been pending for $(review_wait_age)s (TTL ${REVIEW_WAIT_TTL}s) — the reviewer picks this up by authorship, so there is nothing to ask again; not re-posting the note"
+    else
+      echo "[review-gate] review of ${sha:0:8} already requested — waiting for the verdict"
+    fi
+    return 0
   fi
   # ON THE PULL REQUEST, where its ANSWER lands. The verdict is posted to the
   # pull request and nowhere else (reviewer-runner: "Verdict lands ON THE PULL

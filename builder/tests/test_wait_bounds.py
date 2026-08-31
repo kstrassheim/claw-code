@@ -101,7 +101,13 @@ class WaitBlock(RunnerBlock):
 
 
 class ReviewWaitTtl(WaitBlock):
-    """A wait on somebody else's verdict has to have an end."""
+    """A wait on somebody else's verdict has to have an end.
+
+    The end is a change of STATE, not a repeated comment: past the TTL the
+    planner stops ranking on the marker and the log says the wait is stale.
+    The request note itself stays at one per head — see
+    test_one_review_note_per_head for why one is the right number.
+    """
 
     def gate(self, **env):
         return self.sh(self.preamble()
@@ -141,23 +147,39 @@ class ReviewWaitTtl(WaitBlock):
         self.assertIn("already requested", out, out + err)
         self.assertEqual(len(self.review_requests_posted()), 1)
 
-    def test_a_wait_older_than_the_ttl_is_asked_again(self):
-        # THE DEADLOCK. A reviewer that crashed, was suspended mid-run, or
-        # simply never posted its verdict leaves a marker that would otherwise
-        # be believed forever — and the solver would wait on it forever,
-        # spending nothing, every five minutes. Past the TTL the wait is
-        # treated as if it had never happened.
+    def test_a_wait_older_than_the_ttl_is_NOT_asked_again(self):
+        # THE NINE NOTES. This used to post the request a second time, and a
+        # third, once per TTL for as long as the reviewer stayed stuck —
+        # nine identical notes about one commit, between 20:29 and 12:50.
+        #
+        # Re-asking never broke the deadlock it was written for, because it
+        # asks nobody: no reviewer is requested (the host refuses the change's
+        # own author), the reviewer finds the work by AUTHORSHIP, and the note
+        # is for the person reading the pull request. What actually bounds the
+        # wait is the PLANNER's reading of the same marker and the same TTL —
+        # which is untouched, and is why this can be one note per head.
         self.request()
         self.age_the_marker(7201)
         rc, out, err = self.request()
-        self.assertIn("pending for over", out, out + err)
-        self.assertEqual(len(self.review_requests_posted()), 2)
+        self.assertIn("not re-posting", out, out + err)
+        self.assertEqual(len(self.review_requests_posted()), 1)
+
+    def test_the_stale_wait_is_still_reported(self):
+        # Silence would be the other failure: whoever is looking into a stall
+        # needs to see that the solver has been waiting a long time. It goes
+        # in the log, where it costs nobody a scroll past nine comments.
+        self.request()
+        self.age_the_marker(7201)
+        rc, out, err = self.request()
+        self.assertIn("pending for 720", out, out + err)
 
     def test_the_ttl_is_overridable(self):
         self.request(ttl=60)
         self.age_the_marker(90)
         rc, out, _ = self.request(ttl=60)
-        self.assertIn("pending for over", out)
+        self.assertIn("pending for", out)
+        self.assertIn("(TTL 60s)", out)
+        self.assertEqual(len(self.review_requests_posted()), 1)
 
     def test_a_wait_younger_than_the_ttl_is_still_a_wait(self):
         self.request(ttl=600)
@@ -166,10 +188,10 @@ class ReviewWaitTtl(WaitBlock):
         self.assertIn("already requested", out)
         self.assertEqual(len(self.review_requests_posted()), 1)
 
-    def test_the_re_request_records_the_same_head_again(self):
-        # Re-asking must leave the marker pointing at the head it is waiting
-        # on, or the next tick has nothing to compare against and asks again
-        # immediately — trading one deadlock for a comment every five minutes.
+    def test_a_stale_wait_still_names_the_head_it_is_waiting_on(self):
+        # The marker must keep pointing at the head, or the next tick has
+        # nothing to compare against and posts again — a comment every five
+        # minutes instead of every two hours.
         self.request()
         self.age_the_marker(7201)
         self.request()
