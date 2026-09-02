@@ -308,6 +308,63 @@ class Notes(unittest.TestCase):
             f.comments("g/app", 5)
 
 
+class BranchNaming(unittest.TestCase):
+    """`<iid>-<slug>`, because nothing else shows up on the issue.
+
+    GitLab lists a branch under **Related branches** only when the name
+    starts with the issue's iid. The inherited `issue-<n>-fix` does not, so
+    the solver's branches were invisible on the issue until a merge request
+    existed — which is the whole bug this class pins.
+    """
+
+    def name(self, number, title=""):
+        f, t = gl()
+        out = f.branch_for_issue(number, title)
+        # Naming is arithmetic on a string, not a question for the host. A
+        # call here would be one request per issue on every tick.
+        self.assertEqual(t.calls, [], t.calls)
+        return out
+
+    def test_the_number_comes_first_because_that_is_the_link(self):
+        self.assertEqual(self.name(42, "Disable the send button"),
+                         "42-disable-the-send-button")
+
+    def test_punctuation_and_case_become_one_separator(self):
+        self.assertEqual(self.name(7, "Fix: the API's 500s (again!)"),
+                         "7-fix-the-api-s-500s-again")
+
+    def test_a_title_that_slugs_to_nothing_still_names_the_issue(self):
+        # `<iid>-` alone is legal and reads like a mistake. Anything the
+        # slug cannot transliterate lands here, not only an empty title.
+        for title in ("", "   ", "!!!", "—", "問題"):
+            with self.subTest(title=title):
+                self.assertEqual(self.name(9, title), "9-fix")
+
+    def test_a_long_title_is_cut_without_a_trailing_separator(self):
+        # The cut can land on a separator, and `40-a-very-...-` is a name
+        # git accepts and a person reads as truncated-and-broken.
+        name = self.name(40, "A very long issue title that will certainly "
+                             "run past the limit")
+        self.assertLessEqual(len(name) - len("40-"), 40)
+        self.assertFalse(name.endswith("-"), name)
+        self.assertTrue(name.startswith("40-a-very-long-issue-title"), name)
+
+    def test_the_title_is_optional(self):
+        # `forge-cli branch-name` defaults `--title` to empty, and the
+        # runner passes whatever the issue had.
+        self.assertEqual(self.name(3), "3-fix")
+
+    def test_a_legacy_branch_is_still_found_for_its_issue(self):
+        # Branches named before this change keep their name — the runner
+        # reads it off the merge request rather than guessing — so the
+        # lookup must not have learned to expect the new prefix. It asks
+        # the host which merge requests relate to the issue, and the
+        # `Closes #<iid>` in the description is what answers.
+        f, _ = gl({"/related_merge_requests": [
+            {"iid": 7, "state": "opened", "source_branch": "issue-5-fix"}]})
+        self.assertEqual(f.open_change_requests_for_issue("g/app", 5), [7])
+
+
 class ChangeRequests(unittest.TestCase):
     def test_the_head_and_the_branches_travel_together(self):
         f, _ = gl({"/merge_requests/7": {

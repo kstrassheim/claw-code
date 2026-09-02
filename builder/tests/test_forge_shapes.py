@@ -396,6 +396,36 @@ class RequestsCarryTheirCredentials(unittest.TestCase):
         self.assertEqual(seen["url"], "https://ghe.internal/api/v3/user")
 
 
+class NamingABranchIsTheHostsDecision(unittest.TestCase):
+    """One host differs, and the runner must not be the one that knows it.
+
+    A branch name is vocabulary, like `change_request_noun`. GitHub links a
+    change request to its issue by the closing keyword in the body, so the
+    name is free there; GitLab links by the name itself and only when it
+    starts with the iid. The solver spelled the GitHub convention for both.
+    """
+
+    def test_only_gitlab_has_its_own_branch_convention(self):
+        # Asserted on the classes rather than on instances: an override
+        # added to a second host by copy-paste is exactly the regression
+        # this catches, and it would not need a request to happen.
+        overrides = [f.__name__ for f in (forge.GitHubForge, forge.GitLabForge,
+                                          forge.GiteaForge,
+                                          forge.AzureDevOpsForge)
+                     if f.branch_for_issue is not forge.Forge.branch_for_issue]
+        self.assertEqual(overrides, ["GitLabForge"], overrides)
+
+    def test_the_inherited_name_is_the_one_that_was_always_used(self):
+        # Changing this would break `open_change_requests_for_issue`, which
+        # matches the prefix, and every branch already open under it.
+        self.assertEqual(github().branch_for_issue(42, "Add login"),
+                         "issue-42-fix")
+
+    def test_the_hosts_disagree_and_that_is_the_point(self):
+        self.assertNotEqual(github().branch_for_issue(42, "Add login"),
+                            gitlab().branch_for_issue(42, "Add login"))
+
+
 class ChoosingBetweenHosts(unittest.TestCase):
     """`Forges` — `__len__`, `__bool__`, `remember` and the routing."""
 

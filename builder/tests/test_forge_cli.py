@@ -259,5 +259,41 @@ class AskingWhoTheHumanIs(CliTestCase):
         self.assertIn("owner", err)
 
 
+class AskingWhatToCallABranch(CliTestCase):
+    """`branch-name` is how the shell learns the host's convention.
+
+    The solver spelled `issue-<n>-fix` itself, for every host. GitLab links a
+    branch to its issue by the LEADING number and by nothing else, so on that
+    host the bot's branches never appeared on the issue at all. The name is
+    the forge's answer now, the same way `noun` is.
+    """
+
+    def test_the_name_goes_to_stdout_as_a_bare_word(self):
+        # Read straight into `BRANCH="$(...)"` and then handed to `git
+        # checkout -b`. JSON-quoting it would create a branch called `"..."`.
+        rc, out, err = self.run_cli("--repo", REPO, "branch-name",
+                                    "--number", "42",
+                                    "--title", "Add login")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "issue-42-fix" + chr(10))
+        self.assertEqual(err, "")
+
+    def test_the_title_is_optional_because_a_host_may_not_want_it(self):
+        rc, out, err = self.run_cli("--repo", REPO, "branch-name",
+                                    "--number", "42")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "issue-42-fix" + chr(10))
+
+    def test_a_title_of_shell_metacharacters_is_never_executed(self):
+        # The title comes off an issue anybody can open, and it reaches this
+        # as an argv element rather than through a shell.
+        self.forge.branch_for_issue = lambda n, t="": f"{n}-{t}"
+        rc, out, err = self.run_cli("--repo", REPO, "branch-name",
+                                    "--number", "9",
+                                    "--title", "$(touch /tmp/pwned)")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "9-$(touch /tmp/pwned)" + chr(10))
+
+
 if __name__ == "__main__":
     unittest.main()

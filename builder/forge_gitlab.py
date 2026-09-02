@@ -479,6 +479,30 @@ class GitLabForge(Forge):
 
     # -- change requests ------------------------------------------------
 
+    #: How much of the title a branch name carries. GitLab's own "Create
+    #: branch" button truncates too; the tail is decoration and the leading
+    #: number is the part that does the work.
+    _SLUG_CHARS = 40
+
+    def branch_for_issue(self, number: int, title: str = "") -> str:
+        """`<iid>-<slug>`, because that is what GitLab links to the issue.
+
+        GitLab shows a branch under **Related branches** on an issue only
+        when the branch name STARTS WITH the issue's iid — that is what its
+        own "Create branch" button produces, and it is the only signal it
+        keys off. The inherited `issue-<n>-fix` does not start with the
+        number, so the bot's branches never appeared on the issue at all, and
+        a branch pushed before the merge request exists was invisible.
+
+        The trailing slug is cosmetic: it matches what a person pressing the
+        button would get. A title that slugs to nothing (punctuation only, a
+        script this cannot transliterate) falls back to `<iid>-fix` rather
+        than leaving a bare `<iid>-`, which is a legal but confusing name.
+        """
+        slug = re.sub(r"[^a-z0-9]+", "-", str(title or "").lower())
+        slug = slug.strip("-")[:self._SLUG_CHARS].rstrip("-")
+        return f"{int(number)}-{slug or 'fix'}"
+
     def open_change_requests_for_issue(self, repo: str,
                                        number: int) -> list[int]:
         rows = self._get(

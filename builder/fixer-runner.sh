@@ -2284,7 +2284,17 @@ else
   EXISTING_PR_NUMBER=""
   EXISTING_PR_BRANCH=""
   EXISTING_PR_URL=""
-  BRANCH="issue-$ISSUE_NUM-fix"
+  # What a fresh branch is called is the FORGE's question, not this script's.
+  # GitHub links a branch to an issue by the closing keyword in the change
+  # request; GitLab links it by the branch name itself, and only when the
+  # name starts with the issue number. This file spelled the GitHub
+  # convention for both, so on GitLab no branch ever appeared on its issue.
+  BRANCH="$("${FORGE[@]}" branch-name --number "$ISSUE_NUM" \
+              --title "$ISSUE_TITLE" 2>/dev/null || true)"
+  # Never left empty. Everything below — the checkout, `git branch -D`, the
+  # push — takes $BRANCH unquoted-empty as "the current branch", so a
+  # forge-cli that failed to answer would reset and force the wrong ref.
+  [ -n "$BRANCH" ] || BRANCH="issue-$ISSUE_NUM-fix"
   echo "[pr] no open PR linked to issue #$ISSUE_NUM yet; will work on fresh branch '$BRANCH'"
 fi
 

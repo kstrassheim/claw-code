@@ -10,7 +10,8 @@
     GitHub                       GitLab
     ------                       ------
     pull request (PR)            merge request (MR)
-    `feature/issue-<n>`          `feature/issue-<n>`           (same)
+    `feature/issue-<n>`          `<iid>-<slug>`   (NOT the same —
+                                 GitLab links by the leading number)
     `Closes #<n>` (body)         `Closes #<n>` (description)   (same)
     CodeQL (default check)       SAST / your .gitlab-ci.yml
     `request_copilot_review`     `approve_merge_request` (etc.)
@@ -41,6 +42,11 @@ gets its own dedicated cycle through Steps 2.5–7. Period.
   `-clean`, `-v2`, `-fix`, `-rebase`, `-and-<other>`,
   `-with-<feature>`, `-X-Y` variants. If something's wrong on
   the branch, fix it on that branch — don't open a sibling.
+  **On GitLab the name is `<issue-iid>-<slug>` instead** — see the
+  branch-naming rule in the GitLab section. That host links a branch to
+  its issue by the LEADING number, so a `feature/`-prefixed name is
+  never linked. Everything else in this rule still holds: one branch,
+  one issue, no variants.
 - ONE open PR/MR per ISSUE. Never open a second for an issue that
   already has one.
 

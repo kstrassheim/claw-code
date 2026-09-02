@@ -211,6 +211,12 @@ def main(argv=None) -> int:
     sub.add_parser("owner", help="the one human this repository escalates to")
     sub.add_parser("noun", help="what a person calls a change here")
 
+    p = sub.add_parser("branch-name",
+                       help="what to call a fresh branch for one issue")
+    p.add_argument("--number", required=True, type=int)
+    p.add_argument("--title", default="",
+                   help="the issue title, for hosts that slug it")
+
     args = ap.parse_args(argv)
 
     forges = forge.configured()
@@ -316,6 +322,13 @@ def main(argv=None) -> int:
             # waiting to happen, and every line this bot writes is read by
             # somebody who uses one word or the other.
             _out(f.change_request_noun)
+            return 0
+
+        if args.verb == "branch-name":
+            # Asked rather than spelled, because each host links a branch to
+            # an issue by its own naming rule and a runner that knows one of
+            # them silently gets the other wrong.
+            _out(f.branch_for_issue(args.number, args.title))
             return 0
 
         if args.verb == "owner":

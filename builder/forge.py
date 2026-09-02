@@ -490,6 +490,22 @@ class Forge(abc.ABC):
 
     # -- change requests ------------------------------------------------
 
+    def branch_for_issue(self, number: int, title: str = "") -> str:
+        """What to call a fresh branch for one issue.
+
+        A branch name is HOST VOCABULARY, the same kind of thing as
+        `change_request_noun`, because each host decides for itself which
+        names it will link back to the issue. The runner used to spell one
+        convention for both hosts, which meant the other host silently got a
+        name it does nothing with.
+
+        This default — `issue-<n>-fix` — is what every host except GitLab
+        uses, so a forge that has no opinion inherits it and needs no edit.
+        `title` is offered to hosts whose convention includes a slug; the
+        default ignores it.
+        """
+        return f"issue-{int(number)}-fix"
+
     @abc.abstractmethod
     def open_change_requests_for_issue(self, repo: str,
                                        number: int) -> list[int]:

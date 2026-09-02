@@ -66,7 +66,7 @@ CI is red, walk it through using the MCP's pipeline tools
 versions; expected pattern below):
 
 1. **List pipelines on the MR's source branch** —
-   `list_pipelines project_id=<n> ref="feature/issue-<n>"`.
+   `list_pipelines project_id=<n> ref="<n>-<slug>"`.
    Pick the latest by `created_at` DESC.
 2. **List jobs in that pipeline** —
    `list_pipeline_jobs project_id=<n> pipeline_id=<m>`. Filter
@@ -97,13 +97,24 @@ note id:
 | Step 1: find assigned issues  | `mcp.servers.gitlab_<cloud|local>.list_issues assignee_id=<me> state="opened"`                 |
 | Step 1: re-verify state       | `mcp.servers.gitlab_*.get_issue project_id=<n> issue_iid=<i>`                                  |
 | Step 1.5: react 👍             | `mcp.servers.gitlab_*.award_emoji` on the note id                                              |
-| Step 4: open MR               | `mcp.servers.gitlab_*.create_merge_request source_branch=feature/issue-<n> target_branch=main` |
-| Step 4: poll pipeline         | `list_pipelines ref=feature/issue-<n>` → `list_pipeline_jobs`                                  |
+| Step 4: open MR               | `mcp.servers.gitlab_*.create_merge_request source_branch=<n>-<slug> target_branch=main` |
+| Step 4: poll pipeline         | `list_pipelines ref=<n>-<slug>` → `list_pipeline_jobs`                                  |
 | Step 4: read failing job log  | `get_job_log` (or `get_job_trace`) `job_id=<k>`                                                |
 | Step 5: address review        | `list_merge_request_notes` + `create_merge_request_note`                                       |
 | Step 6: squash-merge          | `mcp.servers.gitlab_*.accept_merge_request squash=true`                                        |
-| Step 6: delete branch         | `mcp.servers.gitlab_*.delete_branch project_id=<n> branch="feature/issue-<n>"`                 |
+| Step 6: delete branch         | `mcp.servers.gitlab_*.delete_branch project_id=<n> branch="<n>-<slug>"`                 |
 | Step 2.5: list bot's branches | `mcp.servers.gitlab_*.list_branches project_id=<n>` + filter to your username                  |
+
+**Branch naming — this is how GitLab links a branch to its issue.** Name the
+branch `<issue-iid>-<short-slug>` (e.g. `42-disable-the-send-button`). GitLab
+keys its **Related branches** section off the **leading issue number** and
+nothing else, so a branch that starts with the iid shows up on the issue as
+soon as it is pushed, and the merge request opened from it inherits that link.
+A name that does not start with the number — `feature/issue-<n>`,
+`issue-<n>-fix` — is never linked, no matter what it says afterwards. **This
+overrides the generic `feature/issue-<number>` rule in the gitflow section
+above: on GitLab, and only on GitLab, the number comes first.** Put
+`Closes #<iid>` in the MR description as well, so the merge closes the issue.
 
 ## Working copies
 
