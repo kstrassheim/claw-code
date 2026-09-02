@@ -12,6 +12,7 @@ import base64
 import json
 import re
 import urllib.parse
+from datetime import datetime, timezone
 
 from forge import (  # noqa: F401 - the shared vocabulary
     DELIVERED, FAILED, GREEN, NONE, PENDING, REVOKED,
@@ -32,6 +33,31 @@ from forge import (  # noqa: F401 - the shared vocabulary
 _PIPELINE_PASSING = frozenset({"success", "skipped", "manual_success"})
 _PIPELINE_FAILING = frozenset({"failed", "canceled", "cancelled", "manual",
                                "scheduled"})
+
+# The system note the host writes when somebody approves a merge request.
+#
+# `unapproved this merge request` must NOT match this, and does not: there is
+# no word boundary between `un` and `approved`, so `\b` refuses it. Getting
+# that wrong would read a WITHDRAWN approval as a fresh one.
+_APPROVED_NOTE = re.compile(r"\bapproved this merge request\b", re.I)
+
+
+def _moment(value):
+    """An ISO-8601 timestamp as a comparable instant, or None.
+
+    None for anything unreadable, and callers treat that as "no answer" — the
+    times being compared here decide whether code merges, so a value nobody
+    can parse must not become one that happens to sort correctly.
+    """
+    try:
+        at = datetime.fromisoformat(str(value or "").strip()
+                                    .replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    # A naive timestamp compared against an aware one raises. The host always
+    # sends an offset; this only keeps a malformed one from taking the process
+    # down.
+    return at.replace(tzinfo=timezone.utc) if at.tzinfo is None else at
 
 
 class GitLabForge(Forge):
@@ -551,11 +577,34 @@ class GitLabForge(Forge):
         return out
 
     def review_verdicts(self, repo: str, number: int) -> list[dict]:
-        """Who approved this merge request.
+        """Who approved this merge request, and which commit they approved.
 
         Approvals are the only structured verdict here — there is no
         "changes requested" state — so a rejection travels as an ordinary
         note and is read through `change_request_comments`.
+
+        WHICH COMMIT, WHEN THE HOST WILL NOT SAY
+        `/approvals` carries a `sha` on some GitLab versions and not on
+        others. Where it does not, every approval used to come out with
+        `sha: ""` — and `approval_release.sha_match` rejects an empty side by
+        construction, so the approval was read and then discarded. The effect
+        was total: the review BUTTON, which the bot's own approval request
+        calls the way to sign off, released nothing at all on this host.
+
+        Seen in the field on a self-hosted host: the autonomous review
+        approved a head, a person clicked Approve, `approved_by` carried
+        their name, and the issue sat `On Hold` — the merge gate waiting for
+        a sign-off that was already sitting in the payload it was reading.
+
+        The host does record WHEN, in the system note it writes on approval.
+        An approval later than the head commit is an approval OF that head:
+        anything newer than the head would itself be the head. So the
+        timestamp answers the question the missing sha was for.
+
+        A stale approval — given to a commit that a later push replaced —
+        comes out with no sha, exactly as before, and stays unread. That is
+        the direction to fail in: the reviewer who is ignored asks again, and
+        nothing merges on a sign-off nobody gave to this code.
         """
         try:
             raw = self._get(
@@ -563,16 +612,95 @@ class GitLabForge(Forge):
                 "/approvals")
         except Exception:  # noqa: BLE001
             return []
-        sha = (raw or {}).get("sha") or ""
-        out = []
-        for who in (raw or {}).get("approved_by") or []:
-            user = (who or {}).get("user") or {}
-            out.append({
-                "author": user.get("username") or "",
-                "verdict": "approved",
-                "body": "",
-                "sha": sha,
-            })
+        raw = raw if isinstance(raw, dict) else {}
+        approvers = []
+        for who in raw.get("approved_by") or []:
+            name = ((who or {}).get("user") or {}).get("username") or ""
+            if name:
+                approvers.append(name)
+        # Nobody has approved, so there is nothing to date. The early return
+        # matters: this is the common case, on every tick of every issue, and
+        # the dating below costs three requests.
+        if not approvers:
+            return []
+
+        sha = raw.get("sha") or ""
+        dated = {} if sha else self._approved_head(repo, number, approvers)
+        return [{"author": name,
+                 "verdict": "approved",
+                 "body": "",
+                 "sha": sha or dated.get(name, "")}
+                for name in approvers]
+
+    def _approved_head(self, repo: str, number: int,
+                       approvers) -> dict[str, str]:
+        """The head sha each approval belongs to, where that can be shown.
+
+        A name missing from the result means "could not be established" — an
+        approval older than the head, an unreadable timestamp, a request that
+        failed. Every one of those leaves the approval unusable rather than
+        attributing it to a commit nobody looked at.
+        """
+        head = str((self.change_request(repo, number) or {}).get("headSha")
+                   or "")
+        if not head:
+            return {}
+        # The head's own timestamp, not the merge request's `updated_at`:
+        # editing the description moves that, and an approval is not made
+        # stale by a typo fix in the body.
+        head_at = _moment(self._commit_date(repo, head))
+        if head_at is None:
+            return {}
+        wanted = set(approvers)
+        out = {}
+        for who, when in self._approved_at(repo, number).items():
+            if who not in wanted:
+                continue
+            at = _moment(when)
+            if at is not None and at >= head_at:
+                out[who] = head
+        return out
+
+    def _commit_date(self, repo: str, sha: str) -> str:
+        """When the commit was made.
+
+        The bot commits and pushes in the same run, so for the heads this
+        gates on, the committer date IS when the branch moved. A force-push
+        BACKWARDS to an older commit is the one case this reads generously —
+        rare, and it takes a human doing it by hand to reach.
+        """
+        try:
+            row = self._get(
+                f"/projects/{self._project(repo)}/repository/commits/"
+                f"{urllib.parse.quote(sha, safe='')}")
+        except Exception:  # noqa: BLE001
+            return ""
+        return (row or {}).get("committed_date") or "" \
+            if isinstance(row, dict) else ""
+
+    def _approved_at(self, repo: str, number: int) -> dict[str, str]:
+        """When each person's newest approval was recorded, by username.
+
+        Read from the system notes, which are the only place the host writes
+        the time of an approval down. Ascending order means a later approval
+        overwrites an earlier one, which is what "newest" needs.
+        """
+        try:
+            rows = self._get(
+                f"/projects/{self._project(repo)}/merge_requests/{number}"
+                "/notes",
+                {"per_page": "100", "sort": "asc", "order_by": "created_at"})
+        except Exception:  # noqa: BLE001
+            return {}
+        out: dict[str, str] = {}
+        for r in rows if isinstance(rows, list) else []:
+            if not isinstance(r, dict) or not r.get("system"):
+                continue
+            if not _APPROVED_NOTE.search(str(r.get("body") or "")):
+                continue
+            who = ((r.get("author") or {}).get("username") or "")
+            if who:
+                out[who] = str(r.get("created_at") or "")
         return out
 
     def merge(self, repo: str, number: int, squash: bool = True,

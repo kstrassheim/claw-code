@@ -40,6 +40,39 @@ def gl(routes=None):
     return forge.GitLabForge(BASE, "token", transport=t), t
 
 
+# One merge request, one head, one approval — the shape a merge request has
+# when the button releases nothing.
+HEAD = "75f2eeae8e93c9f1650ee3519d642fe375a781b7"
+HEAD_AT = "2026-08-31T18:58:45.000+02:00"
+
+
+def system_note(who, body, at):
+    return {"id": 1, "system": True, "body": body,
+            "author": {"username": who}, "created_at": at}
+
+
+def approval_routes(*, sha="", approved_by=("owner",), notes=None,
+                    approved_at="2026-09-01T13:17:48+02:00"):
+    """Routes for a merge request whose approval has to be dated.
+
+    Keys are deliberately long: FakeTransport matches a route as a SUBSTRING,
+    longest first, and `/merge_requests/7` is a substring of both
+    `/merge_requests/7/approvals` and `/merge_requests/7/notes`.
+    """
+    if notes is None:
+        notes = [system_note(who, "approved this merge request", approved_at)
+                 for who in approved_by]
+    payload = {"approved_by": [{"user": {"username": w}} for w in approved_by]}
+    if sha:
+        payload["sha"] = sha
+    return {
+        "/merge_requests/7/approvals": payload,
+        "/merge_requests/7/notes": notes,
+        "/repository/commits/": {"id": HEAD, "committed_date": HEAD_AT},
+        "/merge_requests/7": {"iid": 7, "state": "opened", "sha": HEAD},
+    }
+
+
 def issue_row(iid=4, *, path="group/sub/app", **kw):
     row = {
         "iid": iid,
@@ -311,6 +344,13 @@ class ChangeRequests(unittest.TestCase):
         self.assertEqual(f.review_verdicts("g/app", 7), [
             {"author": "owner", "verdict": "approved", "body": "", "sha": "abc"}])
 
+    def test_an_approval_with_no_sha_is_dated_against_the_head(self):
+        # See ApprovalsWithoutASha for what this is about.
+        f, _ = gl(approval_routes(approved_at="2026-09-01T13:17:48+02:00"))
+        self.assertEqual(f.review_verdicts("g/app", 7), [
+            {"author": "owner", "verdict": "approved", "body": "",
+             "sha": HEAD}])
+
     def test_a_merge_squashes_and_removes_the_branch(self):
         f, t = gl()
         self.assertTrue(f.merge("g/app", 7))
@@ -319,6 +359,154 @@ class ChangeRequests(unittest.TestCase):
         self.assertTrue(url.endswith("/merge_requests/7/merge"), url)
         self.assertEqual(fields, {"squash": "true",
                                   "should_remove_source_branch": "true"})
+
+
+class ApprovalsWithoutASha(unittest.TestCase):
+    """The review button, on a host that will not say what was approved.
+
+    `/approvals` carries a `sha` on some GitLab versions and not on others.
+    Where it does not, every approval came out with `sha: ""`, and
+    `approval_release.sha_match` rejects an empty side by construction — so
+    the approval was read and then thrown away. The button is what the bot's
+    own approval request tells people to use, and on this host it released
+    nothing at all.
+
+    Found in the field on a self-hosted host: the autonomous review
+    approved a head, a person clicked Approve, `approved_by` carried their
+    name, and the issue sat `On Hold` for hours with the sign-off sitting in
+    the payload the merge gate was reading.
+
+    The host does write down WHEN, in a system note. An approval later than
+    the head commit is an approval of that head — anything newer than the head
+    would itself be the head — so the timestamp answers what the missing sha
+    was for.
+
+    Everything that cannot be shown fails toward NOT approved. An ignored
+    reviewer asks again; a misread one finds code merged on a sign-off they
+    never gave it.
+    """
+
+    def test_the_button_now_reaches_the_merge_gate(self):
+        # `_approved_head` ties the approval to the commit under review.
+        f, _ = gl(approval_routes(approved_at="2026-09-01T13:17:48+02:00"))
+        self.assertEqual(f.review_verdicts("g/app", 7)[0]["sha"], HEAD)
+
+    def test_an_approval_older_than_the_head_stays_unusable(self):
+        # A push replaced the code after the sign-off. This is the case the
+        # sha check exists for, and it must survive the fix for the other one.
+        f, _ = gl(approval_routes(approved_at="2026-08-30T09:00:00+02:00"))
+        self.assertEqual(f.review_verdicts("g/app", 7)[0]["sha"], "")
+
+    def test_an_approval_at_the_very_moment_of_the_head_counts(self):
+        f, _ = gl(approval_routes(approved_at=HEAD_AT))
+        self.assertEqual(f.review_verdicts("g/app", 7)[0]["sha"], HEAD)
+
+    def test_offsets_are_compared_as_instants_not_as_strings(self):
+        # `_moment` parses; it does not compare text. 12:30+01:00 is 13:30 UTC — later than the head at 16:58+02:00?  No:
+        # it is 11:30 UTC against 14:58 UTC. Compared as text the tz-less
+        # prefix would say otherwise, which is why these are parsed.
+        f, _ = gl(approval_routes(approved_at="2026-09-01T12:30:00+01:00"))
+        self.assertEqual(f.review_verdicts("g/app", 7)[0]["sha"], HEAD)
+
+    def test_a_withdrawn_approval_is_not_read_as_a_fresh_one(self):
+        # "unapproved this merge request" contains "approved this merge
+        # request". A substring match would date a withdrawal as a sign-off.
+        f, _ = gl(approval_routes(
+            notes=[system_note("owner", "unapproved this merge request",
+                               "2026-09-01T13:17:48+02:00")]))
+        self.assertEqual(f.review_verdicts("g/app", 7)[0]["sha"], "")
+
+    def test_the_newest_approval_by_that_person_is_the_one_dated(self):
+        f, _ = gl(approval_routes(notes=[
+            system_note("owner", "approved this merge request",
+                        "2026-08-30T09:00:00+02:00"),
+            system_note("owner", "approved this merge request",
+                        "2026-09-01T13:17:48+02:00")]))
+        self.assertEqual(f.review_verdicts("g/app", 7)[0]["sha"], HEAD)
+
+    def test_each_approver_is_dated_on_their_own_note(self):
+        f, _ = gl(approval_routes(
+            approved_by=["owner", "latecomer"],
+            notes=[system_note("owner", "approved this merge request",
+                               "2026-08-30T09:00:00+02:00"),
+                   system_note("latecomer", "approved this merge request",
+                               "2026-09-01T13:17:48+02:00")]))
+        got = {r["author"]: r["sha"] for r in f.review_verdicts("g/app", 7)}
+        self.assertEqual(got, {"owner": "", "latecomer": HEAD})
+
+    def test_a_human_comment_saying_approved_is_not_an_approval(self):
+        # Only SYSTEM notes record the act. Anything a person types is prose,
+        # and prose is read by approval_release, not here.
+        f, _ = gl(approval_routes(notes=[
+            dict(system_note("owner", "approved this merge request",
+                             "2026-09-01T13:17:48+02:00"), system=False)]))
+        self.assertEqual(f.review_verdicts("g/app", 7)[0]["sha"], "")
+
+    def test_a_payload_that_still_carries_a_sha_is_believed(self):
+        # Other GitLab versions do send one. Where the host answers the
+        # question itself, nothing here second-guesses it — and nothing is
+        # fetched to do so.
+        f, t = gl(approval_routes(sha="fromthehost",
+                                  approved_at="2026-09-01T13:17:48+02:00"))
+        self.assertEqual(f.review_verdicts("g/app", 7)[0]["sha"], "fromthehost")
+        self.assertFalse([u for u in t.urls() if "/notes" in u], t.urls())
+
+    def test_nobody_has_approved_and_nothing_is_fetched(self):
+        # The common case, on every tick of every issue. Dating costs three
+        # requests and there is nothing here to date.
+        f, t = gl(approval_routes(approved_by=[]))
+        self.assertEqual(f.review_verdicts("g/app", 7), [])
+        self.assertEqual([u for u in t.urls() if "/notes" in u], [])
+        self.assertEqual([u for u in t.urls() if "/commits/" in u], [])
+
+
+class ApprovalDatingFailsTowardParked(unittest.TestCase):
+    """Every way the dating can fail leaves the approval unusable.
+
+    Not a style preference: this decides whether code merges. An approval that
+    cannot be tied to the commit under review is one the merge gate must not
+    act on, whatever went wrong.
+    """
+
+    def check_unusable(self, routes):
+        f, _ = gl(routes)
+        rows = f.review_verdicts("g/app", 7)
+        self.assertEqual(rows[0]["author"], "owner")
+        self.assertEqual(rows[0]["verdict"], "approved")
+        self.assertEqual(rows[0]["sha"], "")
+
+    def test_no_head_on_the_merge_request(self):
+        r = approval_routes(approved_at="2026-09-01T13:17:48+02:00")
+        r["/merge_requests/7"] = {"iid": 7, "state": "opened"}
+        self.check_unusable(r)
+
+    def test_the_commit_cannot_be_read(self):
+        # `_commit_date` swallows the error and answers "" — no date, no
+        # dating, no approval.
+        r = approval_routes(approved_at="2026-09-01T13:17:48+02:00")
+        r["/repository/commits/"] = forge.ForgeError("GitLab 500")
+        self.check_unusable(r)
+
+    def test_the_commit_has_no_date(self):
+        r = approval_routes(approved_at="2026-09-01T13:17:48+02:00")
+        r["/repository/commits/"] = {"id": HEAD}
+        self.check_unusable(r)
+
+    def test_the_notes_cannot_be_read(self):
+        # `_approved_at` is where the time comes from; without it there is
+        # nothing to compare the head against.
+        r = approval_routes(approved_at="2026-09-01T13:17:48+02:00")
+        r["/merge_requests/7/notes"] = forge.ForgeError("GitLab 500")
+        self.check_unusable(r)
+
+    def test_an_unparseable_timestamp(self):
+        # `_moment` returns None rather than guessing at an ordering.
+        self.check_unusable(approval_routes(approved_at="last tuesday"))
+
+    def test_no_approval_note_at_all(self):
+        # `approved_by` says so and no note records it — an older host, or a
+        # note that has been redacted. Nothing to date it against.
+        self.check_unusable(approval_routes(notes=[]))
 
 
 class Addressing(unittest.TestCase):
