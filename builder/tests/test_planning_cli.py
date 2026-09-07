@@ -187,10 +187,69 @@ class DeferringToTheNextSprint(CliTestCase):
                                          {"name": "bug"}]),
             ["next-sprint"])
 
-    def test_clearing_does_nothing_without_a_token(self):
-        # A rollover must never depend on GitHub being reachable.
-        with temp_env(GITHUB_TOKEN=None):
+    def test_clearing_does_nothing_without_a_forge(self):
+        # A rollover must never depend on a code host being reachable, or on
+        # one being configured at all.
+        with temp_env(GITHUB_TOKEN=None, GITLAB_URL=None,
+                      GITLAB_API_TOKEN=None, GITEA_URL=None,
+                      GITEA_API_TOKEN=None, AZDO_ORG=None, AZDO_ORG_URL=None,
+                      AZDO_API_TOKEN=None):
             self.assertEqual(self.cli.clear_next_sprint_labels(), 0)
+
+    def test_the_label_is_cleared_on_a_host_that_is_not_github(self):
+        # The regression this pins: clearing went straight to api.github.com
+        # and read GITHUB_TOKEN, so on a GitLab-only deployment it returned 0
+        # on every rollover. The deferral never expired — the label read "next
+        # sprint" for as many sprints as the issue lived, and nothing anywhere
+        # said why the issue was no longer being picked up.
+        f = self.host(labels=["Next Sprint", "bug"])
+        self.assertEqual(self.cli.clear_next_sprint_labels(), 1)
+        # Removed by its LITERAL spelling: a host deletes the label it was
+        # named, so "nextsprint" would leave "Next Sprint" sitting there.
+        self.assertEqual(f.writes_of("unlabel"), ["Next Sprint"])
+        self.assertEqual([w[1:3] for w in f.writes],
+                         [("group/app", 126)])
+
+    def test_a_scoped_label_is_recognised_and_removed_whole(self):
+        f = self.host(labels=["Sprint::Next Sprint"])
+        self.assertEqual(self.cli.clear_next_sprint_labels(), 1)
+        self.assertEqual(f.writes_of("unlabel"), ["Sprint::Next Sprint"])
+
+    def test_an_issue_without_the_label_is_not_written_to(self):
+        # Every open assigned issue is read on every rollover. Writing to the
+        # ones that were never deferred would stamp their timelines weekly.
+        f = self.host(labels=["bug"])
+        self.assertEqual(self.cli.clear_next_sprint_labels(), 0)
+        self.assertEqual(f.writes, [])
+
+    def test_a_refused_write_is_not_counted_and_does_not_raise(self):
+        # Best-effort: the sprint has already rolled over by the time this
+        # runs, so a host that refuses the write must not take the rollover
+        # down with it. The label is cleared by the next rollover instead.
+        f = self.host(labels=["next sprint"])
+        f.writes_fail = True
+        self.assertEqual(self.cli.clear_next_sprint_labels(), 0)
+
+    def test_a_host_that_cannot_be_listed_does_not_raise(self):
+        f = self.host(labels=["next sprint"])
+        f.raises["assigned_open_issues"] = RuntimeError("host is down")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.cli.clear_next_sprint_labels(), 0)
+
+    def host(self, *, labels):
+        """A GitLab-only deployment holding one assigned open issue."""
+        import forge
+        import fakeforge
+
+        f = fakeforge.FakeForge(forge.GITLAB, noun="merge request")
+        f.issues = [{"forge": forge.GITLAB, "repo": "group/app",
+                     "number": 126, "title": "t", "state": "open",
+                     "labels": list(labels)}]
+        forges = forge.Forges([f])
+        old = forge.configured
+        forge.configured = lambda *a, **kw: forges
+        self.addCleanup(setattr, forge, "configured", old)
+        return f
 
 
 class TheRolloverTick(unittest.TestCase):

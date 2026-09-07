@@ -41,6 +41,7 @@ sys.path.insert(0, "/usr/local/bin")
 
 import planning_docs as docs        # noqa: E402
 import planning_store as store      # noqa: E402
+import story_estimate               # noqa: E402
 
 try:
     import story_points as sp       # noqa: E402
@@ -764,87 +765,70 @@ def cmd_chart(args) -> int:
     return 0
 
 
-# The spellings people and models actually write for "not this sprint". The
-# label is matched loosely and REMOVED by its literal name — see
-# next_sprint_labels.
-_NEXT_SPRINT = ("nextsprint", "next-sprint", "next sprint")
-
-
-def next_sprint_labels(labels) -> list[str]:
-    """The labels on an issue that mean "defer this to the next sprint".
-
-    Returns the EXACT spellings found, because GitHub deletes a label by its
-    literal name: sending "nextsprint" would not remove a label written
-    "Next Sprint", and the deferral would quietly become permanent.
-    """
-    out = []
-    for label in labels or []:
-        name = str(label if isinstance(label, str) else label.get("name", ""))
-        squashed = name.lower().replace("_", "-").strip()
-        # A scoped label such as `sprint::next sprint` carries the meaning in
-        # its value half.
-        squashed = squashed.rsplit("::", 1)[-1].strip()
-        if squashed.replace("-", " ") in ("next sprint", "nextsprint") \
-                or squashed in _NEXT_SPRINT:
-            out.append(name)
-    return out
+# The deferral label is recognised by `story_estimate`, which every other
+# reader of it already uses — the estimate runner and the planner tick. This
+# command used to carry its OWN spellings list, so a label the tick honoured
+# was not necessarily one the rollover would clear, and the two drifted apart
+# silently. One matcher, so "deferred" means the same thing on both sides of
+# a boundary.
+next_sprint_labels = story_estimate.next_sprint_labels
 
 
 def clear_next_sprint_labels() -> int:
     """Remove the next-sprint label from the bot's ASSIGNED open issues.
 
+    HOST-AGNOSTIC, WHICH IS THE WHOLE POINT
+    This used to call api.github.com directly and read GITHUB_TOKEN. On a
+    deployment whose issues live anywhere else that token is unset, so the
+    function returned 0 on every rollover and the deferral quietly became
+    permanent: the label said "next sprint" for as many sprints as the issue
+    survived, and nothing anywhere said why the issue was never picked up.
+    Going through `forge` means the label is cleared on whichever hosts this
+    deployment actually has credentials for — all of them, in the same pass.
+
     Scoped to assignments deliberately. The label on somebody else's backlog
     item is their planning note, not an instruction to this bot, and stripping
     it repository-wide would edit issues nobody asked us to touch.
 
-    Best-effort throughout: a sprint must roll over even when GitHub is down.
+    Best-effort throughout: a sprint must roll over even when a host is down.
     A label that failed to clear costs one sprint of deferral and is corrected
     on the next rollover; a rollover that aborted half-way would leave the
     marker and the store disagreeing about which sprint is running.
     """
-    import urllib.parse
-    import urllib.request
-
-    token = os.environ.get("GITHUB_TOKEN", "")
-    base = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
-    if not token:
+    try:
+        import forge
+    except ImportError:                 # pragma: no cover
         return 0
 
-    def api(path, method="GET"):
-        req = urllib.request.Request(
-            base + path, method=method, headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            })
-        with urllib.request.urlopen(req, timeout=20) as r:
-            body = r.read()
-            return json.loads(body) if body else {}
+    forges = forge.configured()
+    if not forges:
+        return 0
 
-    cleared = 0
     try:
-        issues = api("/issues?filter=assigned&state=open&per_page=100")
+        by_repo = forges.assigned_open_issues()
     except Exception as e:  # noqa: BLE001
         sys.stderr.write(f"[planning] could not list issues to clear the "
                          f"next-sprint label: {str(e)[:100]}\n")
         return 0
 
-    for issue in issues if isinstance(issues, list) else []:
-        present = next_sprint_labels(issue.get("labels") or [])
-        if not present:
-            continue
-        repo = (issue.get("repository") or {}).get("full_name")
-        number = issue.get("number")
-        if not (repo and number):
-            continue
-        for name in present:
-            try:
-                api(f"/repos/{repo}/issues/{number}/labels/"
-                    + urllib.parse.quote(name, safe=""), method="DELETE")
-                cleared += 1
-            except Exception as e:  # noqa: BLE001
-                sys.stderr.write(f"[planning] could not clear the next-sprint "
-                                 f"label on {repo}#{number}: {str(e)[:80]}\n")
+    cleared = 0
+    for repo, issues in by_repo.items():
+        for issue in issues:
+            present = next_sprint_labels(issue.get("labels") or [])
+            number = issue.get("number")
+            if not (present and repo and number):
+                continue
+            # `of` reads the stamp discovery put on the issue, so an issue
+            # found on one host is never written back to another.
+            f = forges.of(issue)
+            for name in present:
+                try:
+                    if f.remove_label(repo, number, name):
+                        cleared += 1
+                except Exception as e:  # noqa: BLE001
+                    sys.stderr.write(f"[planning] could not clear the "
+                                     f"next-sprint label on {repo}#{number}: "
+                                     f"{str(e)[:80]}\n")
     return cleared
 
 
