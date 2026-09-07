@@ -403,3 +403,156 @@ class BothAsksCarryTheSameMarker(unittest.TestCase):
             self.assertEqual(
                 lexical_guard.ask_note_id([note(body, "bot", 42)], "bot"), 42,
                 f"not recognised as an ask: {body[:60]!r}")
+
+
+ESCALATION = ("⚠️ PR #203 is still failing after 4 fix attempts on `de36477`. "
+              "I could not get the checks green on my own.\n\n"
+              "@someone — could you take a look? Reply here and @-mention "
+              "`@bot` and I will try again.")
+
+
+class TheAnchorIsTheNewestAsk(unittest.TestCase):
+    """A reply answers the question that was open when it was written.
+
+    The bot asks more than once over an issue's life, and only the guard's ask
+    carries a marker — the CI-red escalation and the merge-approval request do
+    not. Anchoring on the marker alone therefore pins the wait to the FIRST
+    question forever, and the answer to that one goes on releasing every park
+    that comes after it.
+
+    Observed on an issue: the guard asked on the 29th, the filer answered on
+    the 31st, the solver escalated a red pipeline that evening. From then on the
+    planner released the park every five minutes on the strength of the 31st's
+    reply and the solver re-parked it ten seconds later, all night — three
+    hundred label events on a question nobody had answered.
+    """
+
+    def setUp(self):
+        self.h = load("heartbeat-issue-tick")
+        self.forge = fakeforge.FakeForge(identity="bot")
+        self.h.FORGES = forge.Forges([self.forge])
+
+    def release(self, notes, labels=("On Hold",)):
+        self.forge.notes[5] = list(notes)
+        issue = {"number": 5, "labels": list(labels)}
+        return self.h.release_hold(self.forge, "o/r", issue, "bot")
+
+    def test_an_escalation_after_the_answer_is_a_wait_of_its_own(self):
+        self.assertFalse(self.release([
+            note(ASK, "bot", 1),
+            note("@bot please continue, there is nothing wrong", "human", 2),
+            note("Starting work on issue #66.", "bot", 3),
+            note(ESCALATION, "bot", 4),
+        ]))
+        self.assertEqual(self.forge.writes_of("unlabel"), [])
+
+    def test_answering_the_escalation_releases_it(self):
+        self.assertTrue(self.release([
+            note(ASK, "bot", 1),
+            note("@bot please continue, there is nothing wrong", "human", 2),
+            note(ESCALATION, "bot", 3),
+            note("@bot the runner was out of disk, try again", "human", 4),
+        ]))
+        self.assertEqual(self.forge.writes_of("unlabel"), ["On Hold"])
+
+    def test_an_ordinary_bot_note_does_not_swallow_the_answer(self):
+        # The other direction, and the one that costs a deadlock: a progress
+        # note names nobody, asks nothing, and must not move the anchor past a
+        # reply that has already been given.
+        self.assertTrue(self.release([
+            note(ASK, "bot", 1),
+            note("@bot go ahead", "human", 2),
+            note("Starting work on issue #66 — switching to `issue-66-fix`.",
+                 "bot", 3),
+        ]))
+
+    def test_the_bot_naming_only_itself_is_not_a_new_question(self):
+        # Every ask closes by saying how to answer it. Reading that as a fresh
+        # question would make each ask its own successor, and no reply could
+        # ever be newer than the wait it answers.
+        self.assertTrue(self.release([
+            note(ASK, "bot", 1),
+            note("@bot go ahead", "human", 2),
+            note("Working on it — reply and @-mention `@bot` to interrupt.",
+                 "bot", 3),
+        ]))
+
+
+class WhatCountsAsAskingAPerson(unittest.TestCase):
+    """`asks_a_person` — the marker every park note shares.
+
+    Only the lexical guard stamps `ASK_MARKER`. What the escalation, the
+    merge-approval request and the guard's ask all do is NAME the person being
+    waited on, so that is what the anchor reads.
+    """
+
+    def setUp(self):
+        self.h = load("heartbeat-issue-tick")
+
+    def asks(self, body):
+        return self.h.asks_a_person(body, "bot")
+
+    def test_naming_a_person_is_an_ask(self):
+        self.assertTrue(self.asks("@someone — could you take a look?"))
+
+    def test_naming_only_the_bot_is_not(self):
+        self.assertTrue(not self.asks("reply and @-mention `@bot` to interrupt"))
+
+    def test_the_word_mention_is_not_a_name(self):
+        # `@-mention` is prose. Matching it would make every ask an ask of
+        # somebody called "-mention".
+        self.assertTrue(not self.asks("please @-mention me when it is green"))
+
+    def test_a_note_that_names_nobody_is_not(self):
+        self.assertTrue(not self.asks("Opened PR #203 for this issue."))
+
+    def test_trailing_punctuation_does_not_hide_the_bots_own_name(self):
+        self.assertTrue(not self.asks("ping @bot."))
+
+
+class WhereTheOpenWaitStarted(unittest.TestCase):
+    """`park_anchor` — the note a reply has to be newer than.
+
+    Exercised directly as well as through `release_hold`, because the three
+    answers it can give fail in three different ways: the wrong ask reads a
+    stale reply as an answer, no ask at all leaves a solver-side park unliftable,
+    and None on a park the bot did put there strands the issue.
+    """
+
+    def setUp(self):
+        self.h = load("heartbeat-issue-tick")
+
+    def anchor(self, notes):
+        rows = [(n["id"], n["author"]["username"].lower(), n["body"])
+                for n in notes]
+        return self.h.park_anchor(rows, notes, "bot")
+
+    def test_the_newest_ask_wins_over_the_guards_marker(self):
+        # The escalation carries no ASK_MARKER; it is still the open question.
+        self.assertEqual(self.anchor([
+            note(ASK, "bot", 1),
+            note("@bot go ahead", "human", 2),
+            note(ESCALATION, "bot", 3),
+        ]), 3)
+
+    def test_the_guards_marker_counts_when_it_is_the_newest(self):
+        self.assertEqual(self.anchor([
+            note(ESCALATION, "bot", 1),
+            note("@bot fixed the runner", "human", 2),
+            note(ASK, "bot", 3),
+        ]), 3)
+
+    def test_a_park_with_no_ask_anchors_on_the_bots_last_word(self):
+        # The solver's `park` posts prose that names nobody.
+        self.assertEqual(self.anchor([
+            note("I need a decision before I continue.", "bot", 4),
+        ]), 4)
+
+    def test_a_progress_note_does_not_become_the_anchor(self):
+        self.assertEqual(self.anchor([
+            note(ASK, "bot", 1),
+            note("Opened PR #203 for this issue.", "bot", 2),
+        ]), 1)
+
+    def test_a_park_the_bot_never_asked_for_has_no_anchor(self):
+        self.assertIsNone(self.anchor([note("@bot do this", "human", 1)]))

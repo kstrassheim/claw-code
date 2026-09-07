@@ -370,6 +370,73 @@ def on_hold_label_name(issue: dict) -> str:
     return ""
 
 
+# An @-mention of an account, as every host spells it. The first character has
+# to be alphanumeric so the `@-mention` in the bot's own prose ("reply and
+# @-mention me") is not read as the name of a person.
+_MENTION = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def asks_a_person(body: str, bot: str) -> bool:
+    """True when this note of the bot's puts something to a HUMAN.
+
+    Every park the bot enters is announced by a note that names the person it
+    is waiting on: the lexical guard's confirmation, the CI-red escalation,
+    the merge-approval request. An @-mention of anybody but the bot is that
+    name, and it is the one marker all of them share — only the guard's ask
+    carries `lexical_guard.ASK_MARKER`.
+
+    The bot's own login does not count. Every ask ends by telling the reader
+    how to answer it — "reply and @-mention `@bot`" — and counting that would
+    make every ask a question the bot had put to itself.
+    """
+    bot = str(bot or "").lower()
+    for who in _MENTION.findall(str(body or "")):
+        if who.strip("._-").lower() != bot:
+            return True
+    return False
+
+
+def park_anchor(rows, notes, bot: str):
+    """The id of the note where the wait that is OPEN began, or None.
+
+    A release is "somebody answered after this", so the anchor decides WHICH
+    question an answer is read against — and the bot asks more than one over
+    an issue's life. Only the newest is still waiting.
+
+    THE NEWEST ASK, NOT THE FIRST ONE. This used to be the lexical guard's ask
+    whenever the guard had ever asked, and the bot's last word only when it
+    had not. That is right exactly until the bot asks again by some other
+    route, because no other ask carries the guard's marker. Observed on an
+    issue where the guard asked, the filer answered, the work ran, and the
+    solver then escalated a red pipeline — a second question, two days
+    later. The anchor stayed on the guard's ask, the August answer to *that*
+    counted as the answer to the escalation, and the planner released the park
+    on every tick while the solver, reading the same thread and finding the
+    escalation unanswered, re-parked it ten seconds later: a pair of label
+    events every five minutes for fifteen hours, on a question nobody had
+    replied to. It is the bug `lexical_guard.ask_note_id` documents, seen
+    from the other side.
+
+    So: the newest note in which the bot asked A PERSON something, whichever
+    kind of ask it was. The guard's marker still counts alongside the mention,
+    because it is the more reliable of the two and costs nothing to keep.
+
+    A park with no ask at all still anchors on the bot's last word: the
+    solver's `park` posts prose that names nobody, and that park is the bot's
+    to lift. None when the bot never spoke — a label a human put on by hand is
+    a human's to take off.
+    """
+    guard = lexical_guard.ask_note_id(notes, bot)
+    asked = [nid for nid, author, body in rows
+             if author == bot and asks_a_person(body, bot)]
+    open_ask = [nid for nid in (guard, max(asked) if asked else None)
+                if nid is not None]
+    if open_ask:
+        return max(open_ask)
+    mine = [nid for nid, author, _ in rows if author == bot]
+    return max(mine) if mine else None
+
+
 def _release_pr_park(f: forge.Forge, repo: str, number: int, name: str,
                      kind: str, ask: dict, notes, bot: str):
     """Lift a pull-request park, or None to fall through to the reply rule.
@@ -475,14 +542,12 @@ def release_hold(f: forge.Forge, repo: str, issue: dict, bot: str) -> bool:
                           or "")).lower(),
                      str(note.get("body") or "")))
 
-    # Where the wait started. The ASK note when the guard asked; otherwise the
-    # bot's newest note, which is where a solver-side park (fixer-runner's
-    # `park`) put the question. Without an anchor the bot never spoke, so
-    # this is not its park to lift.
-    anchor = lexical_guard.ask_note_id(notes, bot)
-    if anchor is None:
-        mine = [nid for nid, author, _ in rows if author == bot]
-        anchor = max(mine) if mine else None
+    # Where the wait that is still open started — the bot's NEWEST ask, not
+    # its first. See park_anchor: anchoring on an older question reads its
+    # answer as the answer to a later one, which releases a park the solver
+    # then puts straight back. Without an anchor the bot never spoke, so this
+    # is not its park to lift.
+    anchor = park_anchor(rows, notes, bot)
     if anchor is None:
         return False
 
