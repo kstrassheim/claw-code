@@ -199,7 +199,30 @@ class TheMechanismActuallyWorks(unittest.TestCase):
         cf = os.path.join(self.dir, "kids")
         out = self._run(f"""
             set -uo pipefail
-            alive() {{ n=0; for p in $(cat {cf!r}); do [ -d "/proc/$p" ] && n=$((n+1)); done; echo "$n"; }}
+            alive() {{
+              n=0
+              for p in $(cat {cf!r}); do
+                [ -r "/proc/$p/stat" ] || continue
+                # A ZOMBIE IS NOT ALIVE. `[ -d /proc/$p ]` alone counts one:
+                # the signal landed and the process is dead, but nobody has
+                # reaped it, so the directory stays. Whether that happens is a
+                # property of the HOST, not of the code under test — under an
+                # init that reaps (tini in the runtime image) the entry
+                # vanishes, and under a CI runner whose PID 1 does not, it
+                # lingers. Counting it made this test pass in one environment
+                # and fail in the other while the mechanism worked identically
+                # in both. What matters here is that nothing is still running
+                # and holding the port; state Z holds nothing.
+                # Fields after the LAST `)` are state, ppid, pgrp — the comm
+                # in between may contain spaces and parentheses, which is why
+                # this is not `cut -f3`.
+                case "$(awk '{{ sub(/^.*\\) /, ""); print $1 }}' "/proc/$p/stat" 2>/dev/null)" in
+                  Z) continue ;;
+                esac
+                n=$((n+1))
+              done
+              echo "$n"
+            }}
             setsid --wait sh -c 'echo $$ >"$1"; shift; exec "$@"' sh {pf!r} \\
               sh -c 'sleep 60 >/dev/null 2>&1 & echo $! >>{cf!r}
                      sleep 60 >/dev/null 2>&1 & echo $! >>{cf!r}
@@ -211,7 +234,18 @@ class TheMechanismActuallyWorks(unittest.TestCase):
             kill -TERM "-$pgid" 2>/dev/null && echo sent
             sleep 1
             echo "after=$(alive)"
-            kill -0 "-$pgid" 2>/dev/null || echo "group-gone"
+            # "gone" means NO LIVE MEMBER REMAINS — which is the property of
+            # kill_agent_group. Whether the kernel has torn the group down as
+            # well depends on the host: a zombie is still a member, so under an
+            # init that does not reap, `kill -0` on the group keeps answering
+            # long after every member is dead. Asserting the bare `kill -0`
+            # failure tested the reaper, not this code, and split the result
+            # across environments.
+            if kill -0 "-$pgid" 2>/dev/null && [ "$(alive)" != "0" ]; then
+              echo "group-alive"
+            else
+              echo "group-gone"
+            fi
         """)
         # The leak, reproduced: the agent is gone, its two children are not.
         self.assertIn("before=2", out, out)
