@@ -408,6 +408,89 @@ wipe_issue_state() {
   echo "[cleanup] wiped local state for $REPO#$ISSUE_NUM (cursor + ci-fingerprint + lexical-asked + session files)"
 }
 
+# -- the agent's process group -----------------------------------------
+#
+# WHAT LEAKED WITHOUT THIS
+# The agent starts servers to test against. On a frontend repository that is
+# `npm run test:frontend`, which becomes cross-env, which becomes vite holding
+# a port. Those are the AGENT's children, not this script's, and nothing was
+# ending them: when the agent went away they reparented to PID 1 and stayed
+# until the pod was replaced. Five were found alive in prod after one day of
+# runs on one repository — ~1.7GB resident, every one still holding port 5175.
+#
+# The memory is not the expensive part. They all want the SAME port, so the
+# first survivor keeps it and a later run cannot bind: the agent then tests
+# against a server still serving a PREVIOUS attempt's code, and is told
+# convincingly that its own edits changed nothing. A wrong answer, not an
+# error, which is the expensive kind.
+#
+# WHY A PROCESS GROUP AND NOT `pkill vite`
+# The checkout is shared. The tester may be running against the same tree in
+# the same moment, so killing by process name would take out somebody else's
+# server. A group holds exactly this turn's descendants and nothing else.
+#
+# WHY THE SIGNAL IS SPELLED `kill -TERM "-$pgid"`
+# NOT `kill -TERM -- "-$pgid"`. The `--` form is what one reaches for, and
+# dash rejects it outright — `kill: Illegal number: -` — so the signal is
+# never sent and the leak is silent. `kill -s TERM "-$pgid"` fails there too
+# (`Illegal option -8`). Only this spelling works in both shells; verified in
+# the runtime image against bash and dash before it was written here.
+#
+# WHY `--wait`
+# Bare `setsid` forks only when its caller is already a process group leader,
+# and when it does fork it returns 0 IMMEDIATELY — the agent's real exit code
+# lost, and the poll loop reading success from a turn still running. In a
+# pipeline it happens not to be a leader today, so bare setsid does preserve
+# the status; `--wait` means that is guaranteed rather than incidental. The
+# flag is probed once, because a setsid too old to have it must degrade to
+# the old behaviour instead of failing every turn.
+SETSID_BIN="$(command -v setsid 2>/dev/null || true)"
+SETSID_WAIT=""
+if [ -n "$SETSID_BIN" ] && "$SETSID_BIN" --wait true >/dev/null 2>&1; then
+  SETSID_WAIT="--wait"
+fi
+AGENT_PGID=""
+AGENT_PGID_FILE="$(mktemp 2>/dev/null || echo "/tmp/agent-pgid.$$")"
+
+kill_agent_group() {
+  local pgid="${AGENT_PGID:-}" own i
+  case "$pgid" in ""|*[!0-9]*) return 0 ;; esac
+  [ "$pgid" -gt 1 ] 2>/dev/null || return 0
+
+  # NEVER our own group. If setsid was missing the agent ran in THIS one, and
+  # killing it would kill the runner in the middle of its own exit trap —
+  # losing the autosave, the delivery record and the slot release. A leaked
+  # dev server is a far cheaper failure than that.
+  # /proc before `ps`: procps is not a base package everywhere this can run,
+  # and a guard that silently evaluates to empty is not a guard. Fields after
+  # the LAST `)` are state, ppid, pgrp — the comm in between may itself hold
+  # spaces and parentheses, which is why this is not `cut -f5`.
+  own=""
+  if [ -r /proc/self/stat ]; then
+    own="$(awk '{ sub(/^.*\) /, ""); print $3 }' /proc/self/stat 2>/dev/null | tr -d ' ')"
+  fi
+  [ -n "$own" ] || own="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  [ -n "$own" ] && [ "$pgid" = "$own" ] && { AGENT_PGID=""; return 0; }
+  [ "$pgid" = "$$" ] && { AGENT_PGID=""; return 0; }
+
+  kill -0 "-$pgid" 2>/dev/null || { AGENT_PGID=""; return 0; }
+  echo "[cleanup] stopping the agent's process group ($pgid)"
+  kill -TERM "-$pgid" 2>/dev/null || true
+
+  # A dev server asked to stop needs a moment to release its port; one that
+  # refuses must not hold the exit open. Five seconds, then insist.
+  i=0
+  while [ "$i" -lt 20 ] && kill -0 "-$pgid" 2>/dev/null; do
+    sleep 0.25
+    i=$((i + 1))
+  done
+  if kill -0 "-$pgid" 2>/dev/null; then
+    kill -KILL "-$pgid" 2>/dev/null || true
+    echo "[cleanup] agent process group ($pgid) needed SIGKILL"
+  fi
+  AGENT_PGID=""
+}
+
 # -- exit bookkeeping --------------------------------------------------
 #
 # Three things happen here, in this order, and the order matters.
@@ -530,6 +613,13 @@ on_exit() {
   # work is lost.
   [ "$WIPE_FULL_STATE" = "1" ] || autosave_wip
 
+  # Then the agent's leftovers. After the autosave deliberately — the group
+  # holds servers, not work, so there is nothing in it to save, and the one
+  # ordering that would matter is the one where this ran first and failed.
+  # A run that ended between turns reaches the trap with a group still up;
+  # every other path has already cleaned it in run_agent_turn.
+  kill_agent_group
+
   record_delivery || true
 
   # Never fatal — planning-record always exits 0, and it is called with `|| true`
@@ -549,7 +639,7 @@ on_exit() {
   if [ "$WIPE_FULL_STATE" = "1" ]; then
     wipe_issue_state
   fi
-  rm -f "${AGENT_TURN_OUT:-}" 2>/dev/null
+  rm -f "${AGENT_TURN_OUT:-}" "${AGENT_PGID_FILE:-}" 2>/dev/null
   rm -rf "$LOCK_DIR"
 }
 trap on_exit EXIT
@@ -3583,13 +3673,36 @@ agent_error_is_fatal() { # $1 = file holding the turn's output
 run_agent_turn() { # $1 = out file, $2 = prompt
   local out="$1" prompt="$2" rc
   set +e
-  openclaw agent --local \
-    "${AGENT_MODEL_ARGS[@]}" \
-    --timeout "$AGENT_TURN_TIMEOUT" \
-    --session-id "$SESSION_ID" \
-    --message "$prompt" 2>&1 | tee -a "$out"
-  rc=${PIPESTATUS[0]}
+  : > "$AGENT_PGID_FILE"
+  if [ -n "$SETSID_BIN" ]; then
+    # `setsid` puts the agent in a NEW process group, so everything it starts
+    # is reachable as one. The `sh -c` wrapper publishes that group's id —
+    # its own pid, which `exec` then keeps as it becomes the agent — because
+    # a process in the middle of a pipeline has no $! to ask for.
+    "$SETSID_BIN" $SETSID_WAIT sh -c 'echo $$ >"$1"; shift; exec "$@"' sh "$AGENT_PGID_FILE" \
+      openclaw agent --local \
+        "${AGENT_MODEL_ARGS[@]}" \
+        --timeout "$AGENT_TURN_TIMEOUT" \
+        --session-id "$SESSION_ID" \
+        --message "$prompt" 2>&1 | tee -a "$out"
+    rc=${PIPESTATUS[0]}
+  else
+    # No setsid: run exactly as before rather than not running. The agent
+    # shares this script's group, kill_agent_group refuses to signal it, and
+    # the leak stays — which is today's behaviour, not a new failure.
+    openclaw agent --local \
+      "${AGENT_MODEL_ARGS[@]}" \
+      --timeout "$AGENT_TURN_TIMEOUT" \
+      --session-id "$SESSION_ID" \
+      --message "$prompt" 2>&1 | tee -a "$out"
+    rc=${PIPESTATUS[0]}
+  fi
   set -e
+  AGENT_PGID="$(tr -d ' \n' < "$AGENT_PGID_FILE" 2>/dev/null || true)"
+  # EVERY turn, not only the last. A run has several, and a server left
+  # behind by turn 2 holds its port for the rest of the run — which is the
+  # same wrong-answer problem as leaking it between runs, only faster.
+  kill_agent_group
   return "$rc"
 }
 
