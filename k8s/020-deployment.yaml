@@ -232,6 +232,57 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+        # Upstream releases can require a state-DB / session-store migration
+        # (v2026.10.x refuses to start with "state database schema migration
+        # required (audit-events-v2)" and exits 78), so run the safe,
+        # non-interactive doctor repairs on every start. A no-op when nothing
+        # is pending. After render-config, so it sees the config the gateway
+        # will run with; with the main container's env and mounts, because
+        # doctor persists enabled:false for any skill whose key it cannot see.
+        - name: migrate-state
+          image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:PLACEHOLDER_IMAGE_TAG
+          imagePullPolicy: IfNotPresent
+          command: ["node", "/app/openclaw.mjs", "doctor", "--fix", "--non-interactive"]
+          envFrom:
+            - configMapRef:
+                name: claw-code-tools-md
+            - configMapRef:
+                name: claw-code-config
+            - secretRef:
+                name: claw-code-secrets
+          env:
+            - name: PATH
+              value: "/opt/claw-scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          volumeMounts:
+            - name: claw-scripts
+              mountPath: /opt/claw-scripts
+            - name: workspace
+              mountPath: /home/node/.openclaw
+            - name: tools-md
+              mountPath: /home/node/.openclaw/workspace/TOOLS.md
+              subPath: TOOLS.md
+            - name: skill-developer
+              mountPath: /home/node/.openclaw/workspace/skills/developer/SKILL.md
+              subPath: SKILL.md
+            - name: skill-tester
+              mountPath: /home/node/.openclaw/workspace/skills/tester/SKILL.md
+              subPath: SKILL.md
+            - name: skill-reviewer
+              mountPath: /home/node/.openclaw/workspace/skills/reviewer/SKILL.md
+              subPath: SKILL.md
+            - name: skill-projects
+              mountPath: /home/node/.openclaw/workspace/skills/projects/SKILL.md
+              subPath: SKILL.md
+            - name: skill-planning
+              mountPath: /home/node/.openclaw/workspace/skills/planning/SKILL.md
+              subPath: SKILL.md
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1500m
+              memory: 2Gi
       containers:
         - name: claw-code
           image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:PLACEHOLDER_IMAGE_TAG

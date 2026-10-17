@@ -216,7 +216,7 @@ RUN apt-get update \
 # Invoked as `python3 -m pip`, not `pip`: Debian's packaging has moved which of
 # pip / pip3 / neither ends up on PATH more than once, and the module form is
 # the spelling that has always worked.
-ARG PYMONGO_VERSION=4.17.0
+ARG PYMONGO_VERSION=4.19.0
 USER root
 RUN set -eu; \
     apt-get update; \
@@ -457,8 +457,12 @@ RUN ARCH=$(dpkg --print-architecture) \
       "bandit==${BANDIT_VERSION}" \
       "pip-audit==${PIP_AUDIT_VERSION}" \
  && python3 -m venv /opt/semgrep-venv \
+ # pydantic is capped because semgrep-mcp pins mcp==1.12.2, which imports the
+ # private pydantic._internal._typing_extra.eval_type_backport that 2.14
+ # removed. Unbounded, a rebuild resolves 2.14 and semgrep-mcp dies on import,
+ # which the `test -x` guard below cannot see.
  && /opt/semgrep-venv/bin/pip install --no-cache-dir \
-      "semgrep-mcp==${SEMGREP_MCP_VERSION}" \
+      "semgrep-mcp==${SEMGREP_MCP_VERSION}" "pydantic<2.14" \
  # security-mcp shells out to these by bare name, and TOOLS-security.md
  # documents them as CLI fallbacks, so they must resolve on PATH.
  && ln -sf /opt/security-venv/bin/semgrep    /usr/local/bin/semgrep \
@@ -495,6 +499,7 @@ RUN ARCH=$(dpkg --print-architecture) \
  # call of the first review that needed it.
  && /usr/local/bin/semgrep --version \
  && test -x /opt/semgrep-venv/bin/semgrep-mcp \
+ && /opt/semgrep-venv/bin/python -c "import semgrep_mcp.server" \
  # No pipes in these: `cmd | head` reports HEAD's exit status, so a scanner
  # that failed to install would still pass the guard.
  && /usr/local/bin/bandit --version \
