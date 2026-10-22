@@ -274,20 +274,26 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Ensure openclaw-base is mirrored from GHCR into ACR
+        # The bridge release rides along: the bridge-state initContainer pulls
+        # it from the same ACR, and this runs before the build's
+        # skip-if-present guard, so it is mirrored even by a run that rebuilds
+        # nothing.
         run: |
           set -euo pipefail
-          OPENCLAW_UPSTREAM=$(grep '^OPENCLAW_UPSTREAM=' VERSIONS | cut -d= -f2)
-          SRC_TAG="${OPENCLAW_UPSTREAM#v}"
-          if az acr repository show \
-               --name clwcodecodevdev2 \
-               --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}" >/dev/null 2>&1; then
-            echo "openclaw/openclaw-base:${OPENCLAW_UPSTREAM} already present in ACR — skipping import"
-          else
-            az acr import \
-              --name clwcodecodevdev2 \
-              --source "ghcr.io/openclaw/openclaw:${SRC_TAG}" \
-              --image "openclaw/openclaw-base:${OPENCLAW_UPSTREAM}"
-          fi
+          for KEY in OPENCLAW_UPSTREAM OPENCLAW_BRIDGE; do
+            TAG=$(grep "^${KEY}=" VERSIONS | cut -d= -f2)
+            test -n "$TAG" || { echo "::error::no ${KEY} in /VERSIONS"; exit 1; }
+            if az acr repository show \
+                 --name clwcodecodevdev2 \
+                 --image "openclaw/openclaw-base:${TAG}" >/dev/null 2>&1; then
+              echo "openclaw/openclaw-base:${TAG} already present in ACR — skipping import"
+            else
+              az acr import \
+                --name clwcodecodevdev2 \
+                --source "ghcr.io/openclaw/openclaw:${TAG#v}" \
+                --image "openclaw/openclaw-base:${TAG}"
+            fi
+          done
 
       - name: Read version pins from /VERSIONS
         id: version
@@ -644,7 +650,12 @@ jobs:
           TAG="$(grep '^OPENCLAW_VERSION=' VERSIONS | cut -d= -f2)"
           [ -n "$TAG" ] || { echo "::error::OPENCLAW_VERSION missing from VERSIONS"; exit 1; }
           sed -i "s|PLACEHOLDER_IMAGE_TAG|${TAG}|g" k8s/*.yaml
-          echo ">> images pinned to ${TAG}"
+          # The upstream bridge release bridge-state runs, mirrored by the
+          # build job as openclaw-base:<tag>.
+          BRIDGE="$(grep '^OPENCLAW_BRIDGE=' VERSIONS | cut -d= -f2)"
+          [ -n "$BRIDGE" ] || { echo "::error::OPENCLAW_BRIDGE missing from VERSIONS"; exit 1; }
+          sed -i "s|PLACEHOLDER_BRIDGE_TAG|${BRIDGE}|g" k8s/*.yaml
+          echo ">> images pinned to ${TAG}, bridge ${BRIDGE}"
           echo ">> workload identity ${CLIENT_ID}, planning store ${ENDPOINT}"
 
       - name: Assemble TOOLS.md and stamp content checksums into the pod template

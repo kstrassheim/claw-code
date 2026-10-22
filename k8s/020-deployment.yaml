@@ -165,6 +165,90 @@ spec:
               mountPath: /opt/claw-scripts
             - name: workspace
               mountPath: /home/node/.openclaw
+        # State from before July 2026 has to pass through the upstream bridge
+        # release (OPENCLAW_BRIDGE in /VERSIONS) before 2026.10.x opens it:
+        # 2026.10 refuses the retired plugin / workspace JSON state outright,
+        # and its doctor upgrades the SQLite schemas BEFORE refusing, after
+        # which the bridge can no longer open them — migrate-state then loops
+        # on the refusal for as long as anyone lets it.
+        #
+        # Keyed to the shared-state schema, not to a marker file: below what
+        # the bridge itself writes, the state predates it; at or above, there
+        # is nothing to bridge and this exits at once — every start after the
+        # first, and on a fresh PVC (no database at all).
+        #
+        # BEFORE render-config, deliberately: the bridge reads the config the
+        # old release wrote, and render-config then lays the current template
+        # over the migrated state.
+        - name: bridge-state
+          image: clwcodecodevdev2.azurecr.io/openclaw/openclaw-base:PLACEHOLDER_BRIDGE_TAG
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              STATE_DB=/home/node/.openclaw/state/openclaw.sqlite
+              CFG=/home/node/.openclaw/openclaw.json
+              # The shared-state schema the bridge release writes (2026.9.5
+              # refuses anything newer than 17). Recheck when OPENCLAW_BRIDGE
+              # moves.
+              BRIDGE_SCHEMA=17
+              if [ ! -f "$STATE_DB" ] || [ ! -f "$CFG" ]; then
+                echo "no openclaw state on the PVC - nothing to bridge"
+                exit 0
+              fi
+              V=$(node -e '
+                const { DatabaseSync } = require("node:sqlite");
+                const db = new DatabaseSync(process.argv[1], { readOnly: true });
+                console.log(db.prepare("PRAGMA user_version").get().user_version);
+              ' "$STATE_DB")
+              if [ "$V" -ge "$BRIDGE_SCHEMA" ]; then
+                echo "shared state is at schema $V - already past the bridge"
+                exit 0
+              fi
+              echo "shared state is at schema $V (< $BRIDGE_SCHEMA) - bridging with $(node /app/openclaw.mjs --version)"
+              node /app/openclaw.mjs doctor --fix --non-interactive
+          envFrom:
+            - configMapRef:
+                name: claw-code-tools-md
+            - configMapRef:
+                name: claw-code-config
+            - secretRef:
+                name: claw-code-secrets
+          env:
+            - name: PATH
+              value: "/opt/claw-scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          volumeMounts:
+            - name: claw-scripts
+              mountPath: /opt/claw-scripts
+            - name: workspace
+              mountPath: /home/node/.openclaw
+            - name: tools-md
+              mountPath: /home/node/.openclaw/workspace/TOOLS.md
+              subPath: TOOLS.md
+            - name: skill-developer
+              mountPath: /home/node/.openclaw/workspace/skills/developer/SKILL.md
+              subPath: SKILL.md
+            - name: skill-tester
+              mountPath: /home/node/.openclaw/workspace/skills/tester/SKILL.md
+              subPath: SKILL.md
+            - name: skill-reviewer
+              mountPath: /home/node/.openclaw/workspace/skills/reviewer/SKILL.md
+              subPath: SKILL.md
+            - name: skill-projects
+              mountPath: /home/node/.openclaw/workspace/skills/projects/SKILL.md
+              subPath: SKILL.md
+            - name: skill-planning
+              mountPath: /home/node/.openclaw/workspace/skills/planning/SKILL.md
+              subPath: SKILL.md
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1500m
+              memory: 2Gi
         # Reads the canonical template from /template, decides whether
         # MiniMax is reachable based on $MINIMAX_API_KEY, strips it with
         # jq if not, and writes the rendered result back into the live
