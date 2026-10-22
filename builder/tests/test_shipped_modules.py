@@ -24,14 +24,24 @@ DOCKERFILE = os.path.join(BUILDER, "Dockerfile")
 ENTRY_POINTS = ("heartbeat-issue-tick.py", "reviewer-tick.py",
                 "tester-tick.py")
 
-_COPY = re.compile(r"^COPY\b.*?\s(\S+\.py)\s+/usr/local/bin/", re.MULTILINE)
+_COPY = re.compile(r"^COPY\s+(.*?)\s*$", re.MULTILINE)
 
 
 def shipped() -> set[str]:
-    """Module names the image installs, without the extension."""
+    """Module names the image installs, without the extension.
+
+    Every source on the line, not just the last: modules that keep their name
+    share one COPY with a directory destination, to stay inside the layer
+    budget.
+    """
     with open(DOCKERFILE, encoding="utf-8") as f:
         text = f.read()
-    return {os.path.basename(m)[:-3] for m in _COPY.findall(text)}
+    out = set()
+    for line in _COPY.findall(text):
+        *sources, dest = [t for t in line.split() if not t.startswith("--")]
+        if dest.startswith("/usr/local/bin/"):
+            out |= {os.path.basename(s)[:-3] for s in sources if s.endswith(".py")}
+    return out
 
 
 def local_imports(path: str) -> set[str]:

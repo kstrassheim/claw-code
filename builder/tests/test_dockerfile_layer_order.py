@@ -117,10 +117,15 @@ class EveryVersionArgIsPinnedInVersions(unittest.TestCase):
                          f"ARGs with no pin in VERSIONS: {missing}")
 
 
-# Observed, not guessed: 96 instructions build, 101 do not. The image is a
-# single stage, so its instruction layers stack on top of the base image's
-# and overlayfs refuses at 128. Set at the count that is known to work.
-MAX_LAYERS = 96
+# Observed, not guessed: on the 26-layer v2026.7.1-2 base, 96 instructions
+# built and 101 did not. The image is a single stage, so its instruction
+# layers stack on top of the base image's, and the depth limit is on the SUM.
+# So this budget is the known-good total (96 + 26 = 122) minus the CURRENT
+# base's own layers — 41 for v2026.10.4, which takes a daemon-loaded build to
+# `max depth exceeded` at 95 instructions. Recount when OPENCLAW_UPSTREAM moves:
+# the arm64 manifest of ghcr.io/openclaw/openclaw:<tag> lists them.
+BASE_LAYERS = 41
+MAX_LAYERS = 122 - BASE_LAYERS
 
 LAYER = re.compile(r"^(RUN|COPY|ADD)\b")
 

@@ -4,13 +4,17 @@
 
 # Upstream openclaw base image (FROM in builder/Dockerfile).
 # Tag matches https://github.com/openclaw/openclaw releases.
+# Its layer count eats into the Dockerfile's layer budget: when this moves,
+# update BASE_LAYERS in builder/tests/test_dockerfile_layer_order.py, or a
+# daemon-loaded build fails late with `max depth exceeded` (v2026.10.4 went
+# from 26 to 41).
 OPENCLAW_UPSTREAM=v2026.10.4
 
 # The tag this project's OWN image is published under, and the thing the build
 # skips on. Bump the trailing .N for any change to builder/ that must reach the
 # cluster; leave it alone and the deploy reuses the image already in ACR
 # instead of rebuilding it.
-OPENCLAW_VERSION=v2026.10.4.2
+OPENCLAW_VERSION=v2026.10.4.3
 
 # Tools baked into the openclaw image.
 GH_CLI_VERSION=2.102.0

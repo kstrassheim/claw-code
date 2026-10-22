@@ -130,12 +130,17 @@ class SourceLibPrefersTheLibrary(unittest.TestCase):
         # libraries 0644. This is the line that would silently break it.
         with open(os.path.join(BUILDER, "Dockerfile"), encoding="utf-8") as f:
             dockerfile = f.read()
+        # Any source on the line, not just the first: the libraries share one
+        # COPY to stay inside the layer budget.
+        modes = {}
+        for m in re.finditer(r"^COPY --chmod=(\d+) (.*?)\s*$", dockerfile, re.M):
+            for src in m.group(2).split()[:-1]:
+                modes[src] = m.group(1)
         for lib in ("agent-limits.sh", "agent-models.sh",
                     "agent-thinking.sh", "agent-slot.sh"):
             with self.subTest(lib=lib):
-                m = re.search(rf"COPY --chmod=(\d+) {re.escape(lib)}\s", dockerfile)
-                self.assertIsNotNone(m, f"{lib} is not installed by the Dockerfile")
-                self.assertEqual(m.group(1), "0644",
+                self.assertIn(lib, modes, f"{lib} is not installed by the Dockerfile")
+                self.assertEqual(modes[lib], "0644",
                                  f"{lib} must ship non-executable, or a runner "
                                  f"may source it as a CLI")
 

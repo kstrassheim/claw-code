@@ -862,8 +862,7 @@ COPY --chmod=0755 estimate-runner.sh       /usr/local/bin/estimate-runner
 # The verdict poster, guarded: it refuses a verdict naming a commit the
 # run is not reviewing. Both posters go through it — the agent and the
 # wrapper's fallback.
-COPY --chmod=0755 review-verdict           /usr/local/bin/review-verdict
-COPY --chmod=0755 forge-cli                /usr/local/bin/forge-cli
+COPY --chmod=0755 review-verdict forge-cli /usr/local/bin/
 
 # Shared Python modules. Installed FLAT and extension-less alongside the
 # scripts because that is how they are imported at runtime — by bare name,
@@ -874,48 +873,29 @@ COPY --chmod=0755 forge-cli                /usr/local/bin/forge-cli
 # A module that is merged but not listed here is deployed and then absent:
 # the code that imports it raises ImportError on every tick, in a CronJob log
 # nobody reads. `test_shipped_modules` exists to fail the build instead.
+#
+# Several modules to a line, not one each: this image is one stage, and the
+# openclaw v2026.10.4 base alone brings 41 layers. One COPY per module is what
+# pushes a daemon-loaded build past Docker's depth limit — see TheLayerBudget.
+#
 # The code-host seam. Every planner and every runner asks its questions
 # through this, so a build without it is a build where nothing can talk to
 # anything.
-COPY --chmod=0644 forge.py              /usr/local/bin/forge.py
-COPY --chmod=0644 forge_github.py       /usr/local/bin/forge_github.py
-COPY --chmod=0644 forge_gitlab.py       /usr/local/bin/forge_gitlab.py
-COPY --chmod=0644 forge_gitea.py        /usr/local/bin/forge_gitea.py
-COPY --chmod=0644 forge_azdo.py         /usr/local/bin/forge_azdo.py
-COPY --chmod=0644 issue_status.py       /usr/local/bin/issue_status.py
-COPY --chmod=0644 issue_priority.py     /usr/local/bin/issue_priority.py
-COPY --chmod=0644 story_points.py       /usr/local/bin/story_points.py
-COPY --chmod=0644 story_estimate.py     /usr/local/bin/story_estimate.py
-COPY --chmod=0644 approval_release.py   /usr/local/bin/approval_release.py
-COPY --chmod=0644 lexical_guard.py      /usr/local/bin/lexical_guard.py
-COPY --chmod=0644 review_subject.py     /usr/local/bin/review_subject.py
-COPY --chmod=0644 security_reports.py   /usr/local/bin/security_reports.py
-COPY --chmod=0644 queue_state.py        /usr/local/bin/queue_state.py
-COPY --chmod=0644 delivering_pr.py      /usr/local/bin/delivering_pr.py
-COPY --chmod=0644 project_allowlist.py  /usr/local/bin/project_allowlist.py
-COPY --chmod=0644 planning_docs.py      /usr/local/bin/planning_docs.py
-COPY --chmod=0644 planning_store.py     /usr/local/bin/planning_store.py
-COPY --chmod=0644 sprint_current.py     /usr/local/bin/sprint_current.py
-COPY --chmod=0644 sprint_schedule.py    /usr/local/bin/sprint_schedule.py
+COPY --chmod=0644 forge.py forge_github.py forge_gitlab.py forge_gitea.py forge_azdo.py /usr/local/bin/
+COPY --chmod=0644 issue_status.py issue_priority.py story_points.py story_estimate.py approval_release.py /usr/local/bin/
+COPY --chmod=0644 lexical_guard.py review_subject.py security_reports.py queue_state.py delivering_pr.py /usr/local/bin/
+COPY --chmod=0644 project_allowlist.py planning_docs.py planning_store.py sprint_current.py sprint_schedule.py /usr/local/bin/
 
 # Runtime controls. The `.sh` halves are SOURCED by the runners and must sit
 # next to the CLI that shares their name — agent-models sources
 # agent-models.sh from its own directory, exactly as the tests arrange it.
-COPY --chmod=0755 agent-limits          /usr/local/bin/agent-limits
-COPY --chmod=0644 agent-limits.sh       /usr/local/bin/agent-limits.sh
-COPY --chmod=0755 agent-models          /usr/local/bin/agent-models
-COPY --chmod=0644 agent-models.sh       /usr/local/bin/agent-models.sh
-COPY --chmod=0755 agent-thinking        /usr/local/bin/agent-thinking
-COPY --chmod=0644 agent-thinking.sh     /usr/local/bin/agent-thinking.sh
-COPY --chmod=0644 agent-slot.sh         /usr/local/bin/agent-slot.sh
-COPY --chmod=0755 security-level        /usr/local/bin/security-level
-COPY --chmod=0755 llm-quota             /usr/local/bin/llm-quota
+COPY --chmod=0755 agent-limits agent-models agent-thinking security-level llm-quota /usr/local/bin/
+COPY --chmod=0644 agent-limits.sh agent-models.sh agent-thinking.sh agent-slot.sh /usr/local/bin/
 
 # Permission boundary. Nothing the bot does autonomously touches a repository
 # outside this list.
 COPY --chmod=0755 project-allow          /usr/local/bin/project-allow
-COPY --chmod=0644 project-kind.sh        /usr/local/bin/project-kind.sh
-COPY --chmod=0644 project-instructions.sh /usr/local/bin/project-instructions.sh
+COPY --chmod=0644 project-kind.sh project-instructions.sh /usr/local/bin/
 
 # Planning / reporting surface.
 COPY --chmod=0755 planning planning-record planning-story record-deliveries /usr/local/bin/
