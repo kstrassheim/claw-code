@@ -137,7 +137,7 @@ class SourceLibPrefersTheLibrary(unittest.TestCase):
             for src in m.group(2).split()[:-1]:
                 modes[src] = m.group(1)
         for lib in ("agent-limits.sh", "agent-models.sh",
-                    "agent-thinking.sh", "agent-slot.sh"):
+                    "agent-thinking.sh", "agent-slot.sh", "agent-state.sh"):
             with self.subTest(lib=lib):
                 self.assertIn(lib, modes, f"{lib} is not installed by the Dockerfile")
                 self.assertEqual(modes[lib], "0644",

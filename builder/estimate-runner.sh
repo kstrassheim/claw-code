@@ -87,6 +87,7 @@ trap on_exit EXIT
 . "$LIB_DIR/agent-models.sh"
 . "$LIB_DIR/agent-thinking.sh"
 . "$LIB_DIR/agent-limits.sh"
+. "$LIB_DIR/agent-state.sh"
 AGENT_MODEL="$(agent_model planning)"
 agent_model_note planning "$AGENT_MODEL"
 AGENT_ARGS=()
@@ -258,7 +259,10 @@ unknown if there is one>
 Write the file. Do not reply with the estimate only in chat."
 
 echo "[agent] one turn on the planning model, timeout=${AGENT_TURN_TIMEOUT}s"
-timeout "$((AGENT_TURN_TIMEOUT + 120))" openclaw agent --local \
+# Its own state directory — openclaw 2026.10 refuses --local on the Gateway's
+# (see agent-state.sh).
+agent_state_env "$SESSION_ID" || true
+${AGENT_STATE_ENV[@]+"${AGENT_STATE_ENV[@]}"} timeout "$((AGENT_TURN_TIMEOUT + 120))" openclaw agent --local \
   "${AGENT_ARGS[@]}" \
   --timeout "$AGENT_TURN_TIMEOUT" \
   --session-id "$SESSION_ID" \

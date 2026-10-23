@@ -139,6 +139,7 @@ _source_lib agent-limits || true
 _source_lib agent-models || true
 _source_lib agent-thinking || true
 _source_lib agent-slot || true
+_source_lib agent-state || true
 _source_lib project-instructions || true
 _source_lib project-kind || true
 
@@ -1093,7 +1094,10 @@ echo "[tester] invoking agent (session-id=$SESSION_ID)"
 # because openclaw rewrites its own argv to "openclaw" (no flags,
 # no session-id), so `pkill -f` against the original invocation
 # matches nothing.
-setsid openclaw agent --local \
+# Its own state directory per session — openclaw 2026.10 refuses --local
+# on the Gateway's (see agent-state.sh).
+if declare -F agent_state_env >/dev/null; then agent_state_env "$SESSION_ID" || true; fi
+${AGENT_STATE_ENV[@]+"${AGENT_STATE_ENV[@]}"} setsid openclaw agent --local \
   ${AGENT_MODEL_ARGS[@]+"${AGENT_MODEL_ARGS[@]}"} \
   --timeout "$AGENT_TURN_TIMEOUT" \
   --session-id "$SESSION_ID" \

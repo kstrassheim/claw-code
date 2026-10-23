@@ -114,6 +114,7 @@ _source_lib agent-limits || true
 _source_lib agent-models || true
 _source_lib agent-thinking || true
 _source_lib agent-slot || true
+_source_lib agent-state || true
 _source_lib project-kind || true
 _source_lib project-instructions || true
 
@@ -3672,6 +3673,9 @@ agent_error_is_fatal() { # $1 = file holding the turn's output
 # Returns the AGENT's exit status, not tee's.
 run_agent_turn() { # $1 = out file, $2 = prompt
   local out="$1" prompt="$2" rc
+  # Its own state directory per session — openclaw 2026.10 refuses --local
+  # on the Gateway's (see agent-state.sh).
+  if declare -F agent_state_env >/dev/null; then agent_state_env "$SESSION_ID" || true; fi
   set +e
   : > "$AGENT_PGID_FILE"
   if [ -n "$SETSID_BIN" ]; then
@@ -3679,7 +3683,7 @@ run_agent_turn() { # $1 = out file, $2 = prompt
     # is reachable as one. The `sh -c` wrapper publishes that group's id —
     # its own pid, which `exec` then keeps as it becomes the agent — because
     # a process in the middle of a pipeline has no $! to ask for.
-    "$SETSID_BIN" $SETSID_WAIT sh -c 'echo $$ >"$1"; shift; exec "$@"' sh "$AGENT_PGID_FILE" \
+    ${AGENT_STATE_ENV[@]+"${AGENT_STATE_ENV[@]}"} "$SETSID_BIN" $SETSID_WAIT sh -c 'echo $$ >"$1"; shift; exec "$@"' sh "$AGENT_PGID_FILE" \
       openclaw agent --local \
         "${AGENT_MODEL_ARGS[@]}" \
         --timeout "$AGENT_TURN_TIMEOUT" \
@@ -3690,7 +3694,7 @@ run_agent_turn() { # $1 = out file, $2 = prompt
     # No setsid: run exactly as before rather than not running. The agent
     # shares this script's group, kill_agent_group refuses to signal it, and
     # the leak stays — which is today's behaviour, not a new failure.
-    openclaw agent --local \
+    ${AGENT_STATE_ENV[@]+"${AGENT_STATE_ENV[@]}"} openclaw agent --local \
       "${AGENT_MODEL_ARGS[@]}" \
       --timeout "$AGENT_TURN_TIMEOUT" \
       --session-id "$SESSION_ID" \

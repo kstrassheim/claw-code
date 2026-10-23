@@ -890,7 +890,7 @@ COPY --chmod=0644 project_allowlist.py planning_docs.py planning_store.py sprint
 # next to the CLI that shares their name — agent-models sources
 # agent-models.sh from its own directory, exactly as the tests arrange it.
 COPY --chmod=0755 agent-limits agent-models agent-thinking security-level llm-quota /usr/local/bin/
-COPY --chmod=0644 agent-limits.sh agent-models.sh agent-thinking.sh agent-slot.sh /usr/local/bin/
+COPY --chmod=0644 agent-limits.sh agent-models.sh agent-thinking.sh agent-slot.sh agent-state.sh /usr/local/bin/
 
 # Permission boundary. Nothing the bot does autonomously touches a repository
 # outside this list.

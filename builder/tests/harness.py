@@ -183,6 +183,7 @@ class ShellTestCase(unittest.TestCase):
         # agent-models.sh from its own directory, exactly as in the image.
         for f in ("agent-limits", "agent-limits.sh",
                   "agent-models", "agent-models.sh", "agent-slot.sh",
+                  "agent-state.sh",
                   "agent-thinking", "agent-thinking.sh",
                   "security-level", "mermaid-render", "telegram-notify",
                   "review-verdict"):

@@ -99,6 +99,7 @@ _source_lib agent-limits || true
 _source_lib agent-models || true
 _source_lib agent-thinking || true
 _source_lib agent-slot || true
+_source_lib agent-state || true
 
 # Runtime-adjustable via `agent-limits`; the reviewer is one-shot, so this cap
 # IS its lifetime.
@@ -915,7 +916,10 @@ export REVIEW_RUN_START_EPOCH="$RUN_START_EPOCH"
 # process group and stop the whole group once the turn-end line appears in the
 # log, or at a hard deadline.
 _log_mark="$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)"
-setsid openclaw agent --local \
+# Its own state directory per session — openclaw 2026.10 refuses --local
+# on the Gateway's (see agent-state.sh).
+if declare -F agent_state_env >/dev/null; then agent_state_env "$SESSION_ID" || true; fi
+${AGENT_STATE_ENV[@]+"${AGENT_STATE_ENV[@]}"} setsid openclaw agent --local \
   "${AGENT_MODEL_ARGS[@]}" \
   --timeout "$AGENT_TIMEOUT" \
   --session-id "$SESSION_ID" \
