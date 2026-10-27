@@ -74,7 +74,10 @@ TEA_VERSION=0.16.0
 GITEA_MCP_VERSION=1.11.0
 AZDO_MCP_VERSION=2.11.0
 
-# GitLab: the CLI and the MCP server TOOLS-gitlab.md names.
+# GitLab: the glab CLI and @yoda.digital/gitlab-mcp-server, the
+# `gitlab_local` MCP TOOLS-gitlab.md documents. Both talk to the GitLab in
+# GITLAB_URL with the bot's GITLAB_API_TOKEN (glab reads the same values as
+# GITLAB_HOST / GITLAB_TOKEN).
 GLAB_VERSION=1.124.0
 GITLAB_MCP_VERSION=0.9.1
 AZ_VERSION=16.4.0

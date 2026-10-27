@@ -166,6 +166,14 @@ data:
             "env": {
               "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
             }
+          },
+          "gitlab_local": {
+            "command": "gitlab-mcp-server",
+            "args": [],
+            "env": {
+              "GITLAB_PERSONAL_ACCESS_TOKEN": "${GITLAB_API_TOKEN}",
+              "GITLAB_API_URL": "${GITLAB_URL}/api/v4"
+            }
           }
         }
       },
@@ -231,7 +239,12 @@ data:
     # node is always there. (jq is being added to builder/Dockerfile for
     # future builds; once that ships we can fold the merge step below
     # back to jq for brevity.)
-    MISTRAL_OK="${MISTRAL_OK:-}" MINIMAX_OK="${MINIMAX_OK:-}" MOONSHOT_OK="${MOONSHOT_OK:-}" node -e '
+    # gitlab_local needs both the GitLab URL and the bot's token; without them
+    # it would start against gitlab.com (the package's default) with an empty
+    # token, so it is removed instead, the same way a provider is.
+    GITLAB_OK=""
+    is_set "${GITLAB_API_TOKEN:-}" && is_set "${GITLAB_URL:-}" && GITLAB_OK=1 || true
+    GITLAB_OK="$GITLAB_OK" MISTRAL_OK="${MISTRAL_OK:-}" MINIMAX_OK="${MINIMAX_OK:-}" MOONSHOT_OK="${MOONSHOT_OK:-}" node -e '
       const fs = require("fs");
       const c = JSON.parse(fs.readFileSync("/template/openclaw.json", "utf8"));
       const drop = (arr, prefix) => (arr || []).filter((m) => !m.startsWith(prefix));
@@ -288,6 +301,10 @@ data:
               : "minimax/MiniMax-M3";
           }
         }
+      }
+      if (!process.env.GITLAB_OK && c.mcp?.servers?.gitlab_local) {
+        console.log("GITLAB_API_TOKEN / GITLAB_URL not set — removing the gitlab_local MCP");
+        delete c.mcp.servers.gitlab_local;
       }
       // Never list the active primary as its own fallback (happens when a
       // stripped provider was ahead of it in the chain) — that would just

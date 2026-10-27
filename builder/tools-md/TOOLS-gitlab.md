@@ -8,54 +8,27 @@
 
 ---
 
-# GitLab — `glab` CLI + `mcp.servers.gitlab_*` instances
+# GitLab — `glab` CLI + `mcp.servers.gitlab_local`
 
-GitLab access is provided via the `@yoda.digital/gitlab-mcp-server`
-MCP package. Up to two MCP instances of the same package can be
-configured, each targeting a different host:
+GitLab access is the on-prem instance the bot already works on — the one in
+`$GITLAB_URL` (the same instance its issues and merge requests live on). Two
+tools reach it, both baked into the image and both authenticated as the bot:
 
-| MCP                          | Targets                              | Env vars                                            |
-|------------------------------|--------------------------------------|-----------------------------------------------------|
-| `mcp.servers.gitlab_cloud`   | `https://gitlab.com`                 | `GITLAB_PERSONAL_ACCESS_TOKEN=$GITLAB_TOKEN`        |
-| `mcp.servers.gitlab_local`   | `$GITLAB_LOCAL_URL` (self-hosted)    | `GITLAB_PERSONAL_ACCESS_TOKEN=$GITLAB_LOCAL_TOKEN`  |
+| Tool                        | How it is wired                                                         |
+|-----------------------------|-------------------------------------------------------------------------|
+| `mcp.servers.gitlab_local`  | `@yoda.digital/gitlab-mcp-server`, pointed at the API of `$GITLAB_URL` with `$GITLAB_API_TOKEN` |
+| `glab` CLI                  | reads `GITLAB_HOST` / `GITLAB_TOKEN` from the pod environment (same instance, same token) |
+
+All four variables come from `claw-code-secrets`, written by the deploy from
+the `GITLAB_API_TOKEN` / `GITLAB_URL` repository secrets. If either is unset,
+render-config removes `gitlab_local` at pod start — then there is no GitLab MCP
+and you must say so rather than guess.
+
+There is **no gitlab.com access** — no MCP and no token for it. A
+`https://gitlab.com/...` project is out of reach; tell the user.
 
 Read TOOLS-gitflow.md for the workflow rules; this doc only
 covers GitLab-specific tools, auth, and shortcuts.
-
-## ⚠️ State: GitLab support is documented but NOT wired in this image
-
-In the current claw-code build, **neither** the `glab` CLI nor the
-GitLab MCP servers are baked into the image, and no GitLab tokens
-are sealed into `claw-code-secrets`. This document describes the
-target shape of GitLab support — it tells you what the MCP names
-will be once the build wires them, and what envs you will need.
-
-Until the Dockerfile installs `glab` + `@yoda.digital/gitlab-mcp-server`
-AND a human seals the secrets below, **don't pretend the bot can
-act on GitLab.** Surface the unconfigured state and ask the user to
-provision the binaries + PATs.
-
-Secrets you will need (once wired):
-
-| Secret              | Purpose                                          |
-|---------------------|--------------------------------------------------|
-| `GITLAB_TOKEN`      | PAT for gitlab.com bot account (scopes: `api`, `read_api`, `read_repository`, `write_repository`) |
-| `GITLAB_LOCAL_TOKEN`| PAT for a self-hosted bot account, same scopes  |
-| `GITLAB_LOCAL_URL`  | Base URL of the self-hosted instance, e.g. `https://gitlab.<your-domain>` (no trailing slash) |
-
-The `gitlab_local` MCP + the two `*_LOCAL_*` envs are optional —
-omit them if you only need gitlab.com access.
-
-## Picking which MCP to use
-
-Look at the project's URL or the issue's URL:
-
-- `https://gitlab.com/<owner>/<project>` → **`mcp.servers.gitlab_cloud`**
-- `<GITLAB_LOCAL_URL>/<owner>/<project>` → **`mcp.servers.gitlab_local`**
-
-If unsure which one the user means, **ask before guessing**.
-Calling the wrong MCP returns `404 Project Not Found` — silent
-failure for you, confusing for the user.
 
 ## Pipeline + job log reading (the critical capability)
 
@@ -81,7 +54,7 @@ versions; expected pattern below):
 GitLab calls reactions "award emoji". The MCP exposes them per
 note id:
 
-- `mcp.servers.gitlab_*.award_emoji` to add 👍 to an issue note
+- `mcp.servers.gitlab_local.award_emoji` to add 👍 to an issue note
   or MR note.
 - Check existing awards first to avoid duplicates and avoid
   self-thumbs (same rule as TOOLS-gitflow.md Step 1.5).
@@ -90,20 +63,18 @@ note id:
 
 ## GitLab-specific translations of TOOLS-gitflow.md steps
 
-`<cloud|local>` = whichever MCP suffix matches the project's host.
-
 | Generic step                  | GitLab tool                                                                                    |
 |-------------------------------|------------------------------------------------------------------------------------------------|
-| Step 1: find assigned issues  | `mcp.servers.gitlab_<cloud|local>.list_issues assignee_id=<me> state="opened"`                 |
-| Step 1: re-verify state       | `mcp.servers.gitlab_*.get_issue project_id=<n> issue_iid=<i>`                                  |
-| Step 1.5: react 👍             | `mcp.servers.gitlab_*.award_emoji` on the note id                                              |
-| Step 4: open MR               | `mcp.servers.gitlab_*.create_merge_request source_branch=<n>-<slug> target_branch=main` |
+| Step 1: find assigned issues  | `mcp.servers.gitlab_local.list_issues assignee_id=<me> state="opened"`                 |
+| Step 1: re-verify state       | `mcp.servers.gitlab_local.get_issue project_id=<n> issue_iid=<i>`                                  |
+| Step 1.5: react 👍             | `mcp.servers.gitlab_local.award_emoji` on the note id                                              |
+| Step 4: open MR               | `mcp.servers.gitlab_local.create_merge_request source_branch=<n>-<slug> target_branch=main` |
 | Step 4: poll pipeline         | `list_pipelines ref=<n>-<slug>` → `list_pipeline_jobs`                                  |
 | Step 4: read failing job log  | `get_job_log` (or `get_job_trace`) `job_id=<k>`                                                |
 | Step 5: address review        | `list_merge_request_notes` + `create_merge_request_note`                                       |
-| Step 6: squash-merge          | `mcp.servers.gitlab_*.accept_merge_request squash=true`                                        |
-| Step 6: delete branch         | `mcp.servers.gitlab_*.delete_branch project_id=<n> branch="<n>-<slug>"`                 |
-| Step 2.5: list bot's branches | `mcp.servers.gitlab_*.list_branches project_id=<n>` + filter to your username                  |
+| Step 6: squash-merge          | `mcp.servers.gitlab_local.accept_merge_request squash=true`                                        |
+| Step 6: delete branch         | `mcp.servers.gitlab_local.delete_branch project_id=<n> branch="<n>-<slug>"`                 |
+| Step 2.5: list bot's branches | `mcp.servers.gitlab_local.list_branches project_id=<n>` + filter to your username                  |
 
 **Branch naming — this is how GitLab links a branch to its issue.** Name the
 branch `<issue-iid>-<short-slug>` (e.g. `42-disable-the-send-button`). GitLab
@@ -118,16 +89,16 @@ above: on GitLab, and only on GitLab, the number comes first.** Put
 
 ## Working copies
 
-Clone source for GitLab projects depends on the host:
+Clone over HTTPS with the bot's token in the URL (`$GITLAB_HOST` is the base
+URL, e.g. `https://gitlab.example.org`):
 
-- Cloud: `git clone https://x-access-token:$GITLAB_TOKEN@gitlab.com/<owner>/<repo>.git ~/.openclaw/workspace/scratch/<owner>/<repo>`
-- Self-hosted: substitute `$GITLAB_LOCAL_TOKEN` + base URL
+- `git clone "https://oauth2:${GITLAB_TOKEN}@${GITLAB_HOST#https://}/<group>/<repo>.git" ~/.openclaw/workspace/scratch/<group>/<repo>`
 
 The git credential helper at the pod level only carries the
 GitHub token. For GitLab pushes from `exec` (which strips
 `GITLAB_TOKEN`), include the token in the remote URL as shown
 above OR run `glab auth login --hostname <host> --token <pat>`
-once per host to populate `~/.config/glab-cli/`.
+once to populate `~/.config/glab-cli/`.
 
 ## glab CLI fallback
 
@@ -135,7 +106,7 @@ Prefer the MCP. Reach for `glab` when:
 
 - One-off shell pipe with `jq` projection.
 - Bulk `glab repo clone --group <name>` style ops.
-- Authenticating to a new self-hosted host once
+- Authenticating once from a shell that lacks `GITLAB_TOKEN`
   (`glab auth login --hostname <host>`).
 
 ⚠️ `glab` from `exec` may fail with "no token" because the exec
@@ -146,10 +117,10 @@ that hits the network.
 
 | Goal                                | How                                                                            |
 |-------------------------------------|--------------------------------------------------------------------------------|
-| Resolve own login (cloud)           | `mcp.servers.gitlab_cloud.get_me`                                              |
-| List my open MRs (cloud)            | `mcp.servers.gitlab_cloud.list_merge_requests assignee_id=<me> state="opened"` |
-| Get pipeline status for MR          | `mcp.servers.gitlab_<cloud|local>.list_pipelines ref=<branch>`                 |
-| Read failing job log                | `mcp.servers.gitlab_<cloud|local>.get_job_log job_id=<k>`                      |
-| Comment on MR                       | `mcp.servers.gitlab_*.create_merge_request_note`                               |
-| Merge MR (when CI green)            | `mcp.servers.gitlab_*.accept_merge_request squash=true`                        |
-| Cross-instance shell op             | `glab --hostname <host> <subcommand>`                                          |
+| Resolve own login                   | `mcp.servers.gitlab_local.get_me`                                              |
+| List my open MRs                    | `mcp.servers.gitlab_local.list_merge_requests assignee_id=<me> state="opened"` |
+| Get pipeline status for MR          | `mcp.servers.gitlab_local.list_pipelines ref=<branch>`                 |
+| Read failing job log                | `mcp.servers.gitlab_local.get_job_log job_id=<k>`                      |
+| Comment on MR                       | `mcp.servers.gitlab_local.create_merge_request_note`                               |
+| Merge MR (when CI green)            | `mcp.servers.gitlab_local.accept_merge_request squash=true`                        |
+| Shell op with `jq`                  | `glab api <path> \| jq ...`                                                     |

@@ -146,6 +146,31 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && /usr/local/bin/tea --version
 
+# glab CLI + GitLab MCP server, for the on-prem GitLab the bot already works
+# on through forge_gitlab. glab reads GITLAB_HOST / GITLAB_TOKEN from the
+# environment; the MCP (`gitlab_local` in openclaw.json) gets GITLAB_URL and
+# GITLAB_API_TOKEN. glab publishes a tar.gz per arch; the MCP is npm and, like
+# the Azure DevOps one below, vendored at build time rather than fetched by
+# npx at run time.
+ARG GLAB_VERSION
+ARG GITLAB_MCP_VERSION
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && ARCH=$(dpkg --print-architecture) \
+ && curl -fsSL -o /tmp/glab.tar.gz \
+      "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${ARCH}.tar.gz" \
+ && mkdir -p /tmp/glab \
+ && tar -xzf /tmp/glab.tar.gz -C /tmp/glab \
+ && install -m 0755 /tmp/glab/bin/glab /usr/local/bin/glab \
+ && rm -rf /tmp/glab /tmp/glab.tar.gz \
+ && apt-get purge -y --auto-remove curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm install -g "@yoda.digital/gitlab-mcp-server@${GITLAB_MCP_VERSION}" \
+ && npm cache clean --force \
+ && /usr/local/bin/glab --version \
+ && command -v gitlab-mcp-server
+
 # Azure DevOps: the `az devops` CLI extension and the official MCP server.
 # The extension rides on the azure-cli installed below rather than being its
 # own binary, so it has no version pin of its own. The MCP is npm and is
