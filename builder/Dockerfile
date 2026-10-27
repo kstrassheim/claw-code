@@ -589,20 +589,20 @@ RUN --mount=type=bind,source=save-ps-modules.ps1,target=/tmp/save-ps-modules.ps1
 # SDK anyway.
 #
 # Installed via Microsoft's dotnet-install.sh, NOT apt: packages.microsoft.com
-# publishes no dotnet-sdk-8.0 for arm64 (the only arch this image is built
+# publishes no dotnet-sdk for arm64 (the only arch this image is built
 # for), so an apt install fails outright. The script is arch-agnostic and takes
 # a CHANNEL, which is what a project's global.json needs — a `rollForward:
-# latestFeature` pin on 8.0.x stays inside 8.0 and will NOT accept a 10.0 SDK.
-# That is why it runs once per channel in DOTNET_SDK_CHANNELS: the SDKs live
-# side by side under one DOTNET_ROOT and each project's global.json picks its
-# own. sqlpackage is installed by the newest of them, so it gets that build.
+# latestFeature` pin stays inside its band and will NOT accept another one.
+# The channel is 10.0 because .NET 8 leaves support on 2026-11-10, so a project
+# the bot builds has to allow 10.0 in its global.json; sqlpackage ships a
+# net10.0 build, and MSBuild.Sdk.SqlProj supports the 10.0 SDK from 3.2.0.
 #
 # The .NET ICU dependency is already satisfied by the libicu the scanner layer
 # above installs version-agnostically.
 #
 # sqlpackage goes to a shared tool root rather than ~/.dotnet/tools so it
 # survives the PVC-mounted home the pod runs with.
-ARG DOTNET_SDK_CHANNELS
+ARG DOTNET_SDK_VERSION
 ARG SQLPACKAGE_VERSION
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
@@ -614,19 +614,11 @@ USER root
 RUN curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 \
       -o /tmp/dotnet-install.sh "https://dot.net/v1/dotnet-install.sh" \
  && chmod +x /tmp/dotnet-install.sh \
- && for channel in $(echo "${DOTNET_SDK_CHANNELS}" | tr ',' ' '); do \
-      /tmp/dotnet-install.sh --channel "$channel" \
-        --install-dir "$DOTNET_ROOT" --no-path || exit 1; \
-    done \
+ && /tmp/dotnet-install.sh --channel "${DOTNET_SDK_VERSION}" \
+      --install-dir "$DOTNET_ROOT" --no-path \
  && rm -f /tmp/dotnet-install.sh \
  && chmod -R a+rX "$DOTNET_ROOT" \
- # Every channel must have produced an SDK — a list that silently installed
- # only some of its bands would break exactly the projects pinned to the rest.
- && for channel in $(echo "${DOTNET_SDK_CHANNELS}" | tr ',' ' '); do \
-      dotnet --list-sdks | grep -q "^${channel}\\." \
-        || { echo "missing .NET SDK for channel ${channel}" >&2; exit 1; }; \
-    done \
- && dotnet --list-sdks \
+ && dotnet --version \
  && dotnet tool install --tool-path "$DOTNET_TOOLS" \
       microsoft.sqlpackage --version "${SQLPACKAGE_VERSION}" \
  && chmod -R a+rX "$DOTNET_TOOLS" \
