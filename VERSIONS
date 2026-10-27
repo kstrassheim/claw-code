@@ -8,7 +8,7 @@
 # update BASE_LAYERS in builder/tests/test_dockerfile_layer_order.py, or a
 # daemon-loaded build fails late with `max depth exceeded` (v2026.10.4 went
 # from 26 to 41).
-OPENCLAW_UPSTREAM=v2026.10.4
+OPENCLAW_UPSTREAM=v2026.10.7
 
 # The upstream bridge release the bridge-state initContainer runs. State written
 # before July 2026 (this project's v2026.7.1 era) must pass through this
@@ -22,23 +22,23 @@ OPENCLAW_BRIDGE=v2026.9.5
 # skips on. Bump the trailing .N for any change to builder/ that must reach the
 # cluster; leave it alone and the deploy reuses the image already in ACR
 # instead of rebuilding it.
-OPENCLAW_VERSION=v2026.10.4.4
+OPENCLAW_VERSION=v2026.10.7.0
 
 # Tools baked into the openclaw image.
-GH_CLI_VERSION=2.102.0
-GITHUB_MCP_SERVER_VERSION=2.0.2
-AWS_CLI_VERSION=2.38.1
-GCLOUD_VERSION=589.0.0
-ALIYUN_CLI_VERSION=3.5.1
-TERRAFORM_VERSION=1.16.6
+GH_CLI_VERSION=2.103.3
+GITHUB_MCP_SERVER_VERSION=2.0.3
+AWS_CLI_VERSION=2.38.6
+GCLOUD_VERSION=590.0.1
+ALIYUN_CLI_VERSION=3.5.2
+TERRAFORM_VERSION=1.17.0
 
 # OpenTofu drives the CI pipelines. Terraform stays pinned above because the
 # BUILDER IMAGE still ships it for terraform-mcp — the agent may be pointed at
 # a Terraform-managed project, and reading one does not mean managing this one
 # with it. The two pins are independent on purpose.
-TOFU_VERSION=1.12.6
-TERRAFORM_MCP_VERSION=1.3.0
-CODE_SERVER_VERSION=4.141.0
+TOFU_VERSION=1.13.2
+TERRAFORM_MCP_VERSION=1.4.1
+CODE_SERVER_VERSION=4.143.1
 
 # ---------------------------------------------------------------------------
 # Pins carried over with the claw-code-local toolchain: the security passes
@@ -48,30 +48,30 @@ CODE_SERVER_VERSION=4.141.0
 BANDIT_VERSION=1.9.4
 DOTNET_SDK_VERSION=8.0
 GITLEAKS_VERSION=8.30.1
-GIT_LFS_VERSION=3.8.0
-KUBELOGIN_VERSION=0.2.21
+GIT_LFS_VERSION=3.8.1
+KUBELOGIN_VERSION=0.2.22
 MERMAID_CLI_VERSION=11.17.0
-NUCLEI_TEMPLATES_VERSION=10.5.0
+NUCLEI_TEMPLATES_VERSION=10.5.1
 NUCLEI_VERSION=3.11.1
 OPENTOFU_MCP_VERSION=0.1.5
-OPENTOFU_VERSION=1.13.1
+OPENTOFU_VERSION=1.13.2
 PESTER_VERSION=6.2.0
 PIP_AUDIT_VERSION=2.10.1
 PSSCRIPTANALYZER_VERSION=1.25.0
-PWSH_VERSION=7.6.7
+PWSH_VERSION=7.6.9
 PYMONGO_VERSION=4.19.0
 SEMGREP_MCP_VERSION=0.9.0
-SEMGREP_VERSION=1.181.0
+SEMGREP_VERSION=1.182.1
 SQLPACKAGE_VERSION=170.5.96
 TESTSSL_VERSION=3.2.4
 
 # Gitea and Azure DevOps: the CLI and MCP for each, added with the forge
 # modules that talk to them.
 TEA_VERSION=0.16.0
-GITEA_MCP_VERSION=1.9.0
-AZDO_MCP_VERSION=2.10.0
+GITEA_MCP_VERSION=1.11.0
+AZDO_MCP_VERSION=2.11.0
 
 # GitLab: the CLI and the MCP server TOOLS-gitlab.md names.
-GLAB_VERSION=1.123.0
+GLAB_VERSION=1.124.0
 GITLAB_MCP_VERSION=0.9.1
 AZ_VERSION=16.4.0
