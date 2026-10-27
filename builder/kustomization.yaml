@@ -74,6 +74,7 @@ configMapGenerator:
       - agent-models.sh=agent-models.sh
       - agent-thinking.sh=agent-thinking.sh
       - agent-slot.sh=agent-slot.sh
+      - agent-state.sh=agent-state.sh
       - project-kind.sh=project-kind.sh
       - project-instructions.sh=project-instructions.sh
       - security_reports.py=security_reports.py

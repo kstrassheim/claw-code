@@ -58,12 +58,21 @@ class TheGeneratorProducesBothHalves(unittest.TestCase):
     def test_the_runner_libraries_travel_with_the_runners(self):
         # _source_lib resolves relative to the runner's own directory, so a
         # runner mounted from the ConfigMap looks for these beside it.
+        #
+        # The list is read from the runners themselves, not written out here.
+        # A hand-kept list let agent-state.sh ship in the image only: the
+        # mounted runners sourced a file that was not beside them, the guarded
+        # callers quietly skipped it, and the feature it carried never ran.
         runner_half = self.src[self.src.index("name: claw-scripts-runner"):]
-        for lib in ("agent-slot.sh", "agent-limits.sh", "agent-models.sh",
-                    "agent-thinking.sh", "project-kind.sh",
-                    "project-instructions.sh"):
+        libs = set()
+        for runner in ("fixer", "tester", "reviewer", "estimate"):
+            src = read(os.path.join(BUILDER, f"{runner}-runner.sh"))
+            libs.update(f"{m}.sh" for m in re.findall(r"^_source_lib ([\w-]+)", src, re.M))
+            libs.update(re.findall(r'^\. "\$LIB_DIR/([\w-]+\.sh)"', src, re.M))
+        self.assertIn("agent-slot.sh", libs)  # the scan itself still matches
+        for lib in sorted(libs):
             with self.subTest(lib=lib):
-                self.assertIn(lib, runner_half)
+                self.assertIn(f"- {lib}={lib}", runner_half)
 
 
 class EveryWorkloadPrefersTheMount(unittest.TestCase):
