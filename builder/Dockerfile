@@ -531,7 +531,11 @@ RUN ARCH=$(dpkg --print-architecture) \
 ARG PESTER_VERSION
 ARG AZ_VERSION
 USER root
-RUN . /etc/os-release \
+# save-ps-modules.ps1 is bind-mounted for this one RUN rather than COPYed: it
+# is only needed while the modules are fetched, and a COPY would cost a layer
+# against the depth limit (see tests/test_dockerfile_layer_order.py).
+RUN --mount=type=bind,source=save-ps-modules.ps1,target=/tmp/save-ps-modules.ps1 \
+    . /etc/os-release \
  && test -s /etc/apt/keyrings/microsoft.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/debian/${VERSION_ID}/prod ${VERSION_CODENAME} main" \
       > /etc/apt/sources.list.d/mssql-release.list \
@@ -548,10 +552,11 @@ RUN . /etc/os-release \
  # teaches people to ignore errors; silencing it with -ErrorAction would
  # have hidden a real failure later instead. The module assertion at the
  # end of this RUN is what actually proves the save worked.
- && pwsh -NoProfile -NonInteractive -Command \
-      "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; \
-       Save-Module -Name Pester -RequiredVersion ${PESTER_VERSION} -Path /usr/local/share/powershell/Modules; \
-       Save-Module -Name Az     -RequiredVersion ${AZ_VERSION}     -Path /usr/local/share/powershell/Modules" \
+ # One package at a time, each retried: the Gallery 404s a share of package
+ # downloads spuriously, which a single `Save-Module -Name Az` over ~100
+ # packages almost never survives (see save-ps-modules.ps1).
+ && PS_MODULE_PATH=/usr/local/share/powershell/Modules \
+      pwsh -NoProfile -NonInteractive -File /tmp/save-ps-modules.ps1 \
  && rm -rf /var/lib/apt/lists/* \
  # Fail the build loudly rather than ship an image whose agent silently cannot
  # reach a database or load the modules its runbook tests import.
