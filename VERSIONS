@@ -22,7 +22,7 @@ OPENCLAW_BRIDGE=v2026.9.5
 # skips on. Bump the trailing .N for any change to builder/ that must reach the
 # cluster; leave it alone and the deploy reuses the image already in ACR
 # instead of rebuilding it.
-OPENCLAW_VERSION=v2026.10.7.0
+OPENCLAW_VERSION=v2026.10.7.1
 
 # Tools baked into the openclaw image.
 GH_CLI_VERSION=2.103.3
@@ -46,7 +46,10 @@ CODE_SERVER_VERSION=4.143.1
 # .NET stacks the reviewer needs, mermaid rendering, kubelogin, and OpenTofu.
 # ---------------------------------------------------------------------------
 BANDIT_VERSION=1.9.4
-DOTNET_SDK_VERSION=8.0
+# A CHANNEL, not a release: dotnet-install.sh takes the newest patch of it.
+# 10.0 because .NET 8 leaves support on 2026-11-10. Projects that pin an SDK in
+# global.json have to allow 10.0 as well.
+DOTNET_SDK_VERSION=10.0
 GITLEAKS_VERSION=8.30.1
 GIT_LFS_VERSION=3.8.1
 KUBELOGIN_VERSION=0.2.22
@@ -71,7 +74,10 @@ TEA_VERSION=0.16.0
 GITEA_MCP_VERSION=1.11.0
 AZDO_MCP_VERSION=2.11.0
 
-# GitLab: the CLI and the MCP server TOOLS-gitlab.md names.
+# GitLab: the glab CLI and @yoda.digital/gitlab-mcp-server, the
+# `gitlab_local` MCP TOOLS-gitlab.md documents. Both talk to the GitLab in
+# GITLAB_URL with the bot's GITLAB_API_TOKEN (glab reads the same values as
+# GITLAB_HOST / GITLAB_TOKEN).
 GLAB_VERSION=1.124.0
 GITLAB_MCP_VERSION=0.9.1
 AZ_VERSION=16.4.0

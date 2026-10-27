@@ -146,6 +146,31 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && /usr/local/bin/tea --version
 
+# glab CLI + GitLab MCP server, for the on-prem GitLab the bot already works
+# on through forge_gitlab. glab reads GITLAB_HOST / GITLAB_TOKEN from the
+# environment; the MCP (`gitlab_local` in openclaw.json) gets GITLAB_URL and
+# GITLAB_API_TOKEN. glab publishes a tar.gz per arch; the MCP is npm and, like
+# the Azure DevOps one below, vendored at build time rather than fetched by
+# npx at run time.
+ARG GLAB_VERSION
+ARG GITLAB_MCP_VERSION
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && ARCH=$(dpkg --print-architecture) \
+ && curl -fsSL -o /tmp/glab.tar.gz \
+      "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${ARCH}.tar.gz" \
+ && mkdir -p /tmp/glab \
+ && tar -xzf /tmp/glab.tar.gz -C /tmp/glab \
+ && install -m 0755 /tmp/glab/bin/glab /usr/local/bin/glab \
+ && rm -rf /tmp/glab /tmp/glab.tar.gz \
+ && apt-get purge -y --auto-remove curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm install -g "@yoda.digital/gitlab-mcp-server@${GITLAB_MCP_VERSION}" \
+ && npm cache clean --force \
+ && /usr/local/bin/glab --version \
+ && command -v gitlab-mcp-server
+
 # Azure DevOps: the `az devops` CLI extension and the official MCP server.
 # The extension rides on the azure-cli installed below rather than being its
 # own binary, so it has no version pin of its own. The MCP is npm and is
@@ -589,10 +614,13 @@ RUN --mount=type=bind,source=save-ps-modules.ps1,target=/tmp/save-ps-modules.ps1
 # SDK anyway.
 #
 # Installed via Microsoft's dotnet-install.sh, NOT apt: packages.microsoft.com
-# publishes no dotnet-sdk-8.0 for arm64 (the only arch this image is built
+# publishes no dotnet-sdk for arm64 (the only arch this image is built
 # for), so an apt install fails outright. The script is arch-agnostic and takes
 # a CHANNEL, which is what a project's global.json needs — a `rollForward:
-# latestFeature` pin on 8.0.x stays inside 8.0 and will NOT accept a 10.0 SDK.
+# latestFeature` pin stays inside its band and will NOT accept another one.
+# The channel is 10.0 because .NET 8 leaves support on 2026-11-10, so a project
+# the bot builds has to allow 10.0 in its global.json; sqlpackage ships a
+# net10.0 build, and MSBuild.Sdk.SqlProj supports the 10.0 SDK from 3.2.0.
 #
 # The .NET ICU dependency is already satisfied by the libicu the scanner layer
 # above installs version-agnostically.

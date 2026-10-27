@@ -313,6 +313,8 @@ jobs:
                      GH_CLI_VERSION \
                      GITEA_MCP_VERSION \
                      GITHUB_MCP_SERVER_VERSION \
+                     GLAB_VERSION \
+                     GITLAB_MCP_VERSION \
                      GITLEAKS_VERSION \
                      GIT_LFS_VERSION \
                      KUBELOGIN_VERSION \
@@ -421,6 +423,8 @@ jobs:
             GH_CLI_VERSION=${{ steps.version.outputs.GH_CLI_VERSION }}
             GITEA_MCP_VERSION=${{ steps.version.outputs.GITEA_MCP_VERSION }}
             GITHUB_MCP_SERVER_VERSION=${{ steps.version.outputs.GITHUB_MCP_SERVER_VERSION }}
+            GLAB_VERSION=${{ steps.version.outputs.GLAB_VERSION }}
+            GITLAB_MCP_VERSION=${{ steps.version.outputs.GITLAB_MCP_VERSION }}
             GITLEAKS_VERSION=${{ steps.version.outputs.GITLEAKS_VERSION }}
             GIT_LFS_VERSION=${{ steps.version.outputs.GIT_LFS_VERSION }}
             KUBELOGIN_VERSION=${{ steps.version.outputs.KUBELOGIN_VERSION }}
@@ -547,6 +551,11 @@ jobs:
           # explicit BOT_GITHUB_TOKEN secret and apply it under the same
           # k8s-side key name (GITHUB_TOKEN) that openclaw expects.
           GITHUB_TOKEN:            ${{ secrets.BOT_GITHUB_TOKEN }}
+          # Optional: set BOTH and glab and the gitlab_local MCP work that GitLab; set
+          # neither and nothing changes. glab and the git credential helper read fixed
+          # names, so the same two values are also written as GITLAB_TOKEN / GITLAB_HOST.
+          GITLAB_URL:              ${{ secrets.GITLAB_URL }}
+          GITLAB_API_TOKEN:        ${{ secrets.GITLAB_API_TOKEN }}
           TELEGRAM_BOT_TOKEN:      ${{ secrets.TELEGRAM_BOT_TOKEN }}
           ENTRA_TENANT_ID:         ${{ secrets.ENTRA_TENANT_ID }}
           ENTRA_USERNAME:          ${{ secrets.ENTRA_USERNAME }}
@@ -562,6 +571,10 @@ jobs:
             --from-literal=MOONSHOT_API_KEY="$MOONSHOT_API_KEY" \
             --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY" \
             --from-literal=GITHUB_TOKEN="$GITHUB_TOKEN" \
+            --from-literal=GITLAB_API_TOKEN="$GITLAB_API_TOKEN" \
+            --from-literal=GITLAB_URL="$GITLAB_URL" \
+            --from-literal=GITLAB_TOKEN="$GITLAB_API_TOKEN" \
+            --from-literal=GITLAB_HOST="$GITLAB_URL" \
             --from-literal=TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
             --from-literal=ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
             --from-literal=ENTRA_USERNAME="$ENTRA_USERNAME" \
