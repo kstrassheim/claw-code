@@ -22,7 +22,7 @@ OPENCLAW_BRIDGE=v2026.9.5
 # skips on. Bump the trailing .N for any change to builder/ that must reach the
 # cluster; leave it alone and the deploy reuses the image already in ACR
 # instead of rebuilding it.
-OPENCLAW_VERSION=v2026.10.7.0
+OPENCLAW_VERSION=v2026.10.7.1
 
 # Tools baked into the openclaw image.
 GH_CLI_VERSION=2.103.3
@@ -46,7 +46,11 @@ CODE_SERVER_VERSION=4.143.1
 # .NET stacks the reviewer needs, mermaid rendering, kubelogin, and OpenTofu.
 # ---------------------------------------------------------------------------
 BANDIT_VERSION=1.9.4
-DOTNET_SDK_VERSION=8.0
+# dotnet-install.sh CHANNELS, comma-separated, installed side by side: each
+# project's global.json picks its own band (a latestFeature pin on 8.0 refuses
+# a 10.0 SDK). 10.0 is the current LTS; drop 8.0 once nothing pins it — it
+# leaves support on 2026-11-10.
+DOTNET_SDK_CHANNELS=10.0,8.0
 GITLEAKS_VERSION=8.30.1
 GIT_LFS_VERSION=3.8.1
 KUBELOGIN_VERSION=0.2.22

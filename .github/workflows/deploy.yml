@@ -308,7 +308,7 @@ jobs:
                      AZ_VERSION \
                      BANDIT_VERSION \
                      CODE_SERVER_VERSION \
-                     DOTNET_SDK_VERSION \
+                     DOTNET_SDK_CHANNELS \
                      GCLOUD_VERSION \
                      GH_CLI_VERSION \
                      GITEA_MCP_VERSION \
@@ -416,7 +416,7 @@ jobs:
             AZ_VERSION=${{ steps.version.outputs.AZ_VERSION }}
             BANDIT_VERSION=${{ steps.version.outputs.BANDIT_VERSION }}
             CODE_SERVER_VERSION=${{ steps.version.outputs.CODE_SERVER_VERSION }}
-            DOTNET_SDK_VERSION=${{ steps.version.outputs.DOTNET_SDK_VERSION }}
+            DOTNET_SDK_CHANNELS=${{ steps.version.outputs.DOTNET_SDK_CHANNELS }}
             GCLOUD_VERSION=${{ steps.version.outputs.GCLOUD_VERSION }}
             GH_CLI_VERSION=${{ steps.version.outputs.GH_CLI_VERSION }}
             GITEA_MCP_VERSION=${{ steps.version.outputs.GITEA_MCP_VERSION }}

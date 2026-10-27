@@ -593,13 +593,16 @@ RUN --mount=type=bind,source=save-ps-modules.ps1,target=/tmp/save-ps-modules.ps1
 # for), so an apt install fails outright. The script is arch-agnostic and takes
 # a CHANNEL, which is what a project's global.json needs — a `rollForward:
 # latestFeature` pin on 8.0.x stays inside 8.0 and will NOT accept a 10.0 SDK.
+# That is why it runs once per channel in DOTNET_SDK_CHANNELS: the SDKs live
+# side by side under one DOTNET_ROOT and each project's global.json picks its
+# own. sqlpackage is installed by the newest of them, so it gets that build.
 #
 # The .NET ICU dependency is already satisfied by the libicu the scanner layer
 # above installs version-agnostically.
 #
 # sqlpackage goes to a shared tool root rather than ~/.dotnet/tools so it
 # survives the PVC-mounted home the pod runs with.
-ARG DOTNET_SDK_VERSION
+ARG DOTNET_SDK_CHANNELS
 ARG SQLPACKAGE_VERSION
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
@@ -611,11 +614,19 @@ USER root
 RUN curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 \
       -o /tmp/dotnet-install.sh "https://dot.net/v1/dotnet-install.sh" \
  && chmod +x /tmp/dotnet-install.sh \
- && /tmp/dotnet-install.sh --channel "${DOTNET_SDK_VERSION}" \
-      --install-dir "$DOTNET_ROOT" --no-path \
+ && for channel in $(echo "${DOTNET_SDK_CHANNELS}" | tr ',' ' '); do \
+      /tmp/dotnet-install.sh --channel "$channel" \
+        --install-dir "$DOTNET_ROOT" --no-path || exit 1; \
+    done \
  && rm -f /tmp/dotnet-install.sh \
  && chmod -R a+rX "$DOTNET_ROOT" \
- && dotnet --version \
+ # Every channel must have produced an SDK — a list that silently installed
+ # only some of its bands would break exactly the projects pinned to the rest.
+ && for channel in $(echo "${DOTNET_SDK_CHANNELS}" | tr ',' ' '); do \
+      dotnet --list-sdks | grep -q "^${channel}\\." \
+        || { echo "missing .NET SDK for channel ${channel}" >&2; exit 1; }; \
+    done \
+ && dotnet --list-sdks \
  && dotnet tool install --tool-path "$DOTNET_TOOLS" \
       microsoft.sqlpackage --version "${SQLPACKAGE_VERSION}" \
  && chmod -R a+rX "$DOTNET_TOOLS" \
