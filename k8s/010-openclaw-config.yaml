@@ -150,9 +150,10 @@ data:
         }
       },
       "plugins": {
-        "allow": ["kimi"],
+        "allow": ["kimi", "memory-core"],
         "entries": {
-          "kimi": { "enabled": true }
+          "kimi": { "enabled": true },
+          "memory-core": { "enabled": true }
         }
       },
       "browser": {
