@@ -131,7 +131,19 @@ case "$FORMAT" in
   svg|png) ;;
   *)       FORMAT=png ;;
 esac
-[ -n "$OUT" ] || OUT="${TMPDIR:-/tmp}/mermaid-$(date +%s)-$$.${FORMAT}"
+# WHERE THE IMAGE GOES BY DEFAULT: under the agent workspace, not /tmp.
+#
+# The point of rendering is that the chat agent then SENDS the image, and
+# openclaw only lets a tool read local media from a fixed set of roots
+# (buildMediaLocalRoots: its own tmp dir, <state>/media, <state>/workspace,
+# canvas, sandboxes). Plain /tmp is not one of them, so every chart rendered
+# to the old default failed with "Local media path is not under an allowed
+# directory" — the numbers came back, the chart never did. --out still wins.
+CHART_DIR="${MERMAID_RENDER_DIR:-${HOME:-/home/node}/.openclaw/workspace/charts}"
+if [ -z "$OUT" ]; then
+  mkdir -p "$CHART_DIR" 2>/dev/null || CHART_DIR="${TMPDIR:-/tmp}"
+  OUT="$CHART_DIR/mermaid-$(date +%s)-$$.${FORMAT}"
+fi
 
 # A WRITABLE HOME FOR THE BROWSER, and it is not optional.
 #

@@ -68,10 +68,14 @@ WORKER = "worker"
 # relationship is many-to-many and neither side owns the other.
 DEPLOY = "deploy"
 
-# One host today. The KEYS stay host-aware anyway — see the module docstring:
-# adding a second host later must not silently merge two repositories that
-# happen to share an `owner/repo` path.
-HOSTS = ("github",)
+# Both forges the bot works on. The KEYS are host-aware — see the module
+# docstring — so the same `owner/repo` path on two hosts never merges.
+#
+# With only ("github",) here, validate() refused every GitLab story document
+# ("host 'gitlab' is not one of ('github',)") while the bot kept working GitLab
+# projects, so their sizes and costs never reached the store. Kept in step with
+# forge.GITHUB / forge.GITLAB by a test.
+HOSTS = ("github", "gitlab")
 
 # Roles that produce work events. The tester is here even though it does not
 # work a story: it opens them, and its cost is part of what a sprint spent.

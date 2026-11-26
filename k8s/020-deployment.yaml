@@ -322,13 +322,23 @@ spec:
             # and ensures the dir is writable by gid 1000.
             - name: workspace
               mountPath: /home/node/.openclaw
+          # The limit is sized for the kimi-provider plugin install in
+          # render-config.sh, not for the config render itself. That install
+          # only runs when the plugin is missing from the workspace PVC, so
+          # an existing disk never exercises it — but a fresh PVC (a rebuilt
+          # environment) does, and `openclaw plugins install` (node + npm)
+          # was OOMKilled at 256Mi. An OOM kill takes the whole container,
+          # so the script's `|| echo WARN` fallback never ran and the pod
+          # crash-looped. 2Gi matches the migrate-state init container,
+          # which runs the same node CLI. Only the limit grows; the
+          # request stays small, so scheduling is unaffected.
           resources:
             requests:
               cpu: 100m
               memory: 64Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 2Gi
         # Upstream releases can require a state-DB / session-store migration
         # (v2026.10.x refuses to start with "state database schema migration
         # required (audit-events-v2)" and exits 78), so run the safe,
@@ -350,6 +360,9 @@ spec:
           env:
             - name: PATH
               value: "/opt/claw-scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            # Shared with the main container — see NODE_COMPILE_CACHE there.
+            - name: NODE_COMPILE_CACHE
+              value: /home/node/.openclaw/.node-compile-cache
           volumeMounts:
             - name: claw-scripts
               mountPath: /opt/claw-scripts
@@ -384,7 +397,27 @@ spec:
         - name: claw-code
           image: clwcodecodevdev2.azurecr.io/openclaw/claw-code:PLACEHOLDER_IMAGE_TAG
           imagePullPolicy: IfNotPresent
+          # Start the gateway DIRECTLY, not through the image's activation
+          # adapter (/app/docker-entrypoint.mjs). That adapter runs a full
+          # `doctor --fix` before every gateway start — the very repair the
+          # migrate-state init container has just finished, with the same
+          # image, env and volume. Its pre-repair backup is skipped only when
+          # a marker in the CONTAINER's /tmp exists, which a separate init
+          # container can never create here, so every restart paid the whole
+          # repair twice before the gateway listened.
+          #
+          # tini stays PID 1 and supervises the gateway exactly as it would
+          # after the adapter's execve. Repair is NOT skipped: migrate-state
+          # runs it, and fails the pod if it fails.
+          command: ["tini", "-s", "--", "node", "/app/openclaw.mjs", "gateway"]
           env:
+            # Node's on-disk compile cache, on the workspace volume so it
+            # survives restarts. doctor itself recommends it for small hosts:
+            # every `openclaw` CLI start — the gateway, migrate-state, and each
+            # runner's agent invocation — otherwise compiles the same modules
+            # from scratch. Same path in migrate-state, so one warms the other.
+            - name: NODE_COMPILE_CACHE
+              value: /home/node/.openclaw/.node-compile-cache
             # THE MOUNT COMES FIRST, and that ordering is the mechanism: the
             # same scripts exist in the image under /usr/local/bin, so
             # whichever directory PATH names first is what runs. A ConfigMap

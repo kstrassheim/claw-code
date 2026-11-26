@@ -148,6 +148,16 @@ MODEL_PROVIDERS = ("kimi", "minimax", "mistral")
 # human's instruction to the bot and not a fact the bot discovers.
 MODEL_SCOPES = ("model", "ki", "llm", "ai")
 
+# Named shortcuts for one exact model, for the pins people use often enough to
+# want a word instead of an id. Keyed by _key(), so `minimax-flash`,
+# `MiniMax Flash` and `model::minimax_flash` are the same instruction. Unlike a
+# bare vendor name, an alias never drifts to whichever model that vendor lists
+# first: it names one id.
+MODEL_ALIASES = {
+    "minimaxflash": "minimax/MiniMax-M3.1-Flash",
+}
+FLASH_LABEL = "minimax-flash"
+
 _NOISE = re.compile(r"[^a-z0-9]+")
 
 
@@ -372,8 +382,10 @@ def model_of_label(name) -> str:
     scope, value = _scope_and_value(text)
     if scope:
         if _key(scope) in MODEL_SCOPES and value:
-            return value
+            return MODEL_ALIASES.get(_key(value), value)
         return ""
+    if _key(text) in MODEL_ALIASES:
+        return MODEL_ALIASES[_key(text)]
     # A full id (`kimi/k3`) is unambiguous; a bare word must be a vendor we
     # know, or every issue labelled `docs` would be routing instructions.
     if "/" in text:
@@ -516,4 +528,9 @@ def label_definitions() -> list[dict]:
     out.append({
         "name": APPROVAL_LABEL, "color": "d93f0b",
         "description": "A human must approve the merge. The bot never sets or clears this."})
+    # The model pin humans reach for most. Created so it can be APPLIED; like
+    # every pin, the bot never puts it on an issue or takes it off.
+    out.append({
+        "name": FLASH_LABEL, "color": "5319e7",
+        "description": "Runs this story on MiniMax M3.1 Flash. The bot never sets or clears this."})
     return out
