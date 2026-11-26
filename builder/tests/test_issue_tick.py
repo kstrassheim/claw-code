@@ -41,8 +41,20 @@ ALLOWED = "o/r"
 
 
 def issue(number, *, title="a task", labels=(), state="open",
-          closed_as=None, body="", repo=ALLOWED):
-    """One issue in the shape a forge hands back — see forge.py."""
+          closed_as=None, body="", repo=ALLOWED, sized=True):
+    """One issue in the shape a forge hands back — see forge.py.
+
+    SIZED by default (SP::3, unless the labels already carry a size or an
+    estimate request). Unsized issues are no longer the fixer's business at
+    all — they go to the repo's estimate batch first — so the gate and
+    ordering tests below would otherwise be testing estimation. Pass
+    sized=False for an issue that has no number yet.
+    """
+    labels = list(labels)
+    if sized and not any(str(l).lower().startswith(("sp::", "story points::",
+                                                    "estimate"))
+                         for l in labels):
+        labels.append("SP::3")
     return {
         "forge": forge.GITHUB,
         "repo": repo,
@@ -67,6 +79,7 @@ class PlannerTestCase(unittest.TestCase):
         self.allowlist_text = ALLOWED + "\n"
         self.allowlist_readable = True
         self.locked = set()
+        self.estimating = set()     # repos whose estimate batch is running
         self.published = []         # every queue-state snippet handed to exec
 
         self.forge = fakeforge.FakeForge(identity="bot")
@@ -74,7 +87,7 @@ class PlannerTestCase(unittest.TestCase):
         self._saved = {
             k: getattr(tick, k) for k in
             ("kubectl_exec_capture", "k8s_find_openclaw_pod", "_read",
-             "FORGES", "MAX_PER_REPO")
+             "FORGES", "MAX_PER_REPO", "MAX_ESTIMATES_PER_TICK")
         }
         tick.kubectl_exec_capture = self._exec
         tick.k8s_find_openclaw_pod = lambda ns: "openclaw-0"
@@ -117,6 +130,8 @@ class PlannerTestCase(unittest.TestCase):
                     + self.allowlist_text, "")
         if ".fixer-locks" in script:
             return (0, "\n".join(sorted(self.locked)), "")
+        if ".estimate-locks" in script:
+            return (0, "\n".join(sorted(self.estimating)), "")
         if "issue-markers" in script:
             # The awaiting-review / awaiting-human markers the planner ranks
             # on. None here: these tests are about the gates, and the ordering
@@ -307,14 +322,16 @@ class PriorityOrder(PlannerTestCase):
 
 
 class EstimationRouting(PlannerTestCase):
-    """Size first, implement next tick — the model depends on the size."""
+    """What the fixer is told about size, and what goes to the estimator."""
 
-    def test_an_unsized_issue_asks_to_be_estimated(self):
-        self.issues = [issue(1)]
-        entry = self.repo_entry(self.plan())["toSpawn"][0]
-        self.assertIs(entry["needsEstimate"], True)
-        self.assertIs(entry["pointsDefaulted"], True)
-        self.assertEqual(entry["storyPoints"], 8)
+    def estimate_batch(self, plan, repo=ALLOWED):
+        return self.repo_entry(plan, repo)["toEstimate"]
+
+    def test_an_unsized_issue_goes_to_the_estimate_batch_not_the_fixer(self):
+        self.issues = [issue(1, sized=False)]
+        plan = self.plan()
+        self.assertEqual(self.estimate_batch(plan), [1])
+        self.assertEqual(self.spawned(plan), [])
 
     def test_a_sized_issue_carries_its_points_to_the_solver(self):
         self.issues = [issue(1, labels=["SP::3"])]
@@ -326,14 +343,89 @@ class EstimationRouting(PlannerTestCase):
     def test_an_estimate_request_re_sizes_an_already_sized_issue(self):
         # The label is a REQUEST, not a result: it means "size this again".
         self.issues = [issue(1, labels=["SP::3", "estimate"])]
-        entry = self.repo_entry(self.plan())["toSpawn"][0]
-        self.assertIs(entry["needsEstimate"], True)
+        plan = self.plan()
+        self.assertEqual(self.estimate_batch(plan), [1])
+        self.assertEqual(self.spawned(plan), [])
 
     def test_a_hand_typed_size_scope_is_read_rather_than_re_estimated(self):
         self.issues = [issue(1, labels=["story points::5"])]
-        entry = self.repo_entry(self.plan())["toSpawn"][0]
+        plan = self.plan()
+        self.assertEqual(self.estimate_batch(plan), [])
+        entry = self.repo_entry(plan)["toSpawn"][0]
         self.assertIs(entry["needsEstimate"], False)
         self.assertEqual(entry["storyPoints"], 5)
+
+
+class EstimateBeforeWork(PlannerTestCase):
+    """The whole unsized backlog is sized before the repo starts new work.
+
+    Sizing used to take the repo's single fixer slot one issue at a time, so
+    ten unsized stories were sized one per FINISHED story and nothing could be
+    planned on their numbers. The estimator needs no checkout and no lock, so
+    it is not bound by that slot; fresh work waits for it instead.
+    """
+
+    def batch(self, plan):
+        return self.repo_entry(plan)["toEstimate"]
+
+    def test_every_unsized_issue_is_in_one_batch(self):
+        self.issues = [issue(n, sized=False) for n in (1, 2, 3)]
+        self.assertEqual(self.batch(self.plan()), [1, 2, 3])
+
+    def test_the_batch_is_most_urgent_first(self):
+        self.issues = [issue(1, sized=False, labels=["Priority::Low"]),
+                       issue(2, sized=False, labels=["Priority::High"]),
+                       issue(3, sized=False)]
+        self.assertEqual(self.batch(self.plan()), [2, 3, 1])
+
+    def test_fresh_work_waits_while_anything_is_unsized(self):
+        self.issues = [issue(1, labels=["SP::2", "Priority::Very High"]),
+                       issue(2, sized=False)]
+        plan = self.plan()
+        self.assertEqual(self.batch(plan), [2])
+        self.assertEqual(self.spawned(plan), [])
+        self.assertEqual(self.repo_entry(plan)["deferredDueToLimit"], 1)
+
+    def test_work_already_in_flight_continues_while_the_backlog_is_sized(self):
+        # Holding a running merge request hostage to a newly assigned issue
+        # would stall the one thing that is nearly done.
+        self.issues = [issue(1, labels=["SP::5", "status::in-progress"]),
+                       issue(2, sized=False)]
+        plan = self.plan()
+        self.assertEqual(self.batch(plan), [2])
+        self.assertEqual(self.spawned(plan), [1])
+
+    def test_fresh_work_starts_once_everything_is_sized(self):
+        self.issues = [issue(1, labels=["SP::2"]), issue(2, labels=["SP::8"])]
+        plan = self.plan()
+        self.assertEqual(self.batch(plan), [])
+        self.assertEqual(self.spawned(plan), [1])
+
+    def test_no_second_batch_while_one_is_running(self):
+        self.estimating = {ALLOWED}
+        self.issues = [issue(1, sized=False), issue(2, labels=["SP::3"])]
+        plan = self.plan()
+        entry = self.repo_entry(plan)
+        self.assertEqual(entry["toEstimate"], [])
+        self.assertIs(entry["estimating"], True)
+        self.assertEqual(entry["unsized"], 1)
+        # ...and the fresh work still waits for that batch's numbers.
+        self.assertEqual(self.spawned(plan), [])
+
+    def test_the_batch_is_capped_per_tick(self):
+        tick.MAX_ESTIMATES_PER_TICK = 2
+        self.issues = [issue(n, sized=False) for n in (1, 2, 3)]
+        self.assertEqual(self.batch(self.plan()), [1, 2])
+
+    def test_a_locked_repo_is_still_sized(self):
+        # The estimator never touches the checkout the fixer lock guards.
+        self.locked = {ALLOWED}
+        self.issues = [issue(1, sized=False)]
+        self.assertEqual(self.batch(self.plan()), [1])
+
+    def test_an_on_hold_issue_is_not_sized(self):
+        self.issues = [issue(1, sized=False, labels=["On Hold"])]
+        self.assertEqual(self.batch(self.plan()), [])
 
 
 class NextSprintDeferral(PlannerTestCase):
@@ -360,10 +452,10 @@ class NextSprintDeferral(PlannerTestCase):
         # The deferral parks the WORK, not the number: next sprint's planning
         # needs the size in order to decide. Same rule estimate-runner states
         # from the other side.
-        self.issues = [issue(1, labels=["next sprint"])]
-        spawn = self.repo_entry(self.plan())["toSpawn"]
-        self.assertEqual([e["issueNumber"] for e in spawn], [1])
-        self.assertIs(spawn[0]["needsEstimate"], True)
+        self.issues = [issue(1, sized=False, labels=["next sprint"])]
+        plan = self.plan()
+        self.assertEqual(self.repo_entry(plan)["toEstimate"], [1])
+        self.assertEqual(self.spawned(plan), [])
 
     def test_it_is_the_same_instruction_however_it_is_typed(self):
         for spelling in ("Next Sprint", "next-sprint", "next_sprint",

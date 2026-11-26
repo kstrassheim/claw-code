@@ -89,6 +89,11 @@ import story_estimate  # noqa: E402
 from project_allowlist import Allowlist  # noqa: E402
 
 MAX_PER_REPO = int(os.environ.get("HEARTBEAT_MAX_PER_REPO", "1"))
+# How many issues one repo's estimate batch may size in a tick. The batch runs
+# them ONE AFTER ANOTHER (estimate-batch.sh), so this bounds how long a batch
+# holds the repo's fresh work, not how many agents run at once.
+MAX_ESTIMATES_PER_TICK = int(
+    os.environ.get("HEARTBEAT_MAX_ESTIMATES_PER_TICK", "10"))
 TTL_SECONDS = int(os.environ.get("HEARTBEAT_TTL_SECONDS", "3600"))
 # How long the solver's "I asked for a review and am waiting" marker is
 # believed. Past it the wait is ignored — see list_wait_markers.
@@ -672,21 +677,21 @@ def kubectl_exec_capture(namespace: str, pod: str, *cmd: str, timeout: int = 15)
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def list_locked_repos(namespace: str, pod: str) -> set[str]:
-    """Return set of repo full_names with a LIVE in-flight fixer. A lock dir
-    under ~/.openclaw/.fixer-locks/<owner>__<name>/ counts as held only if it
-    is newer than TTL_SECONDS AND its owner PID is still alive in this pod.
-    An orphaned lock (owner died without its EXIT trap firing — e.g. the pod
-    was redeployed mid-fix) is NOT counted, so the repo is eligible again
-    immediately instead of waiting out the TTL. The spawned fixer-runner makes
-    the same stale check before claiming, so this only governs scheduling."""
-    # `find` is faster than a recursive ls; the lock-set is small
-    # (≤ one dir per repo the bot is a collaborator on). Lock
-    # dirs are siblings of the project tree (NOT inside it — a
-    # `.fixer.lock` inside the project dir broke `git clone`). This script
-    # runs INSIDE the openclaw pod, so `kill -0` sees the fixer PIDs.
+def _list_held_locks(namespace: str, pod: str, root_name: str) -> set[str]:
+    """Repo full_names holding a LIVE lock under ~/.openclaw/<root_name>/.
+
+    A lock dir <owner>__<name>/ counts as held only if it is newer than
+    TTL_SECONDS AND its owner PID is still alive in this pod. An orphaned lock
+    (owner died without its EXIT trap firing — e.g. the pod was redeployed
+    mid-run) is NOT counted, so the repo is eligible again immediately instead
+    of waiting out the TTL. The runners make the same stale check before
+    claiming, so this only governs scheduling.
+    """
+    # `find` is faster than a recursive ls; the lock-set is small (≤ one dir
+    # per repo). This script runs INSIDE the openclaw pod, so `kill -0` sees
+    # the runners' PIDs.
     script = (
-        "set -eu; root=$HOME/.openclaw/.fixer-locks; "
+        f"set -eu; root=$HOME/.openclaw/{root_name}; "
         "[ -d $root ] || exit 0; "
         f"now=$(date +%s); ttl={TTL_SECONDS}; "
         "for lock in $(find $root -maxdepth 1 -mindepth 1 -type d 2>/dev/null); do "
@@ -695,15 +700,37 @@ def list_locked_repos(namespace: str, pod: str) -> set[str]:
         "  pid=$(awk 'NR==1{print $1}' \"$lock/owner\" 2>/dev/null || true); "
         # owner PID recorded but no longer alive → orphaned lock, not held
         "  if [ -n \"$pid\" ] && ! kill -0 \"$pid\" 2>/dev/null; then continue; fi; "
-        # Lock dir name is owner__name → emit owner/name
-        "  basename \"$lock\" | sed 's|__|/|'; "
+        # The dir name is the full name with EVERY `/` written as `__`, so a
+        # GitLab subgroup path (acme/team/web) is acme__team__web. Replacing only
+        # the first `__` turned that into acme/team__web, which matched no repo:
+        # the planner never saw a held lock on a nested project.
+        "  basename \"$lock\" | sed 's|__|/|g'; "
         "done"
     )
     rc, out, err = kubectl_exec_capture(namespace, pod, "bash", "-c", script)
     if rc != 0:
-        sys.stderr.write(f"list_locked_repos: exec rc={rc} stderr={err}\n")
+        sys.stderr.write(f"{root_name}: exec rc={rc} stderr={err}\n")
         return set()
     return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def list_locked_repos(namespace: str, pod: str) -> set[str]:
+    """Repos with a LIVE in-flight fixer (see _list_held_locks).
+
+    Lock dirs are siblings of the project tree, NOT inside it — a
+    `.fixer.lock` inside the project dir broke `git clone`.
+    """
+    return _list_held_locks(namespace, pod, ".fixer-locks")
+
+
+def list_estimating_repos(namespace: str, pod: str) -> set[str]:
+    """Repos whose estimate batch is still running (see estimate-batch.sh).
+
+    Read so a slow batch is not doubled by the next tick: the planner sends
+    a repo ONE batch at a time, and holds that repo's fresh work until it is
+    done — the sizes are what the work is planned on.
+    """
+    return _list_held_locks(namespace, pod, ".estimate-locks")
 
 
 def list_wait_markers(namespace: str, pod: str) -> tuple[set, set]:
@@ -802,6 +829,7 @@ def main() -> int:
 
     allowed = read_allowlist(namespace, openclaw_pod)
     locked = list_locked_repos(namespace, openclaw_pod)
+    estimating = list_estimating_repos(namespace, openclaw_pod)
     # What each solver is waiting on. Read once for every repo in the tick,
     # because it is one exec against one directory either way.
     awaiting_review, awaiting_human = list_wait_markers(namespace, openclaw_pod)
@@ -911,12 +939,42 @@ def main() -> int:
 
         issues = workable
         is_locked = repo in locked
+
+        # SIZE EVERYTHING FIRST.
+        #
+        # Every workable issue without a size, or carrying the `estimate`
+        # request, is estimated before the repo starts any NEW work. Sizing
+        # used to take the repo's single fixer slot one issue at a time, so a
+        # backlog of ten unsized stories was sized one per finished story —
+        # and nothing could be planned on numbers that did not exist yet.
+        #
+        # The estimator needs no checkout and no repo lock (estimate-runner),
+        # so this is not bound by MAX_PER_REPO. The whole set goes out as ONE
+        # batch that sizes them one after another (estimate-batch), because
+        # every estimate is a full agent process and ten at once would crowd
+        # the pod. One batch per repo at a time: while one is running, the
+        # next tick sends none.
+        unsized = [i for i in issues
+                   if story_estimate.needs_estimate(i.get("labels"))]
+        sized = [i for i in issues
+                 if not story_estimate.needs_estimate(i.get("labels"))]
+        batch_running = repo in estimating
+        to_estimate = []
+        if unsized and not batch_running:
+            to_estimate = [
+                i["number"] for i in sorted(
+                    unsized,
+                    key=lambda i: (issue_priority.priority_of(i.get("labels")),
+                                   i["number"]))
+            ][:MAX_ESTIMATES_PER_TICK]
+        sizing_pending = bool(unsized)
+
         # MAX_PER_REPO is 1 by design — checkouts can't be shared.
         # If the lock is held, we skip all issues for this repo until
         # the next tick.
-        if is_locked or not issues:
+        if is_locked or not sized:
             to_spawn = []
-            deferred = len(issues) if is_locked else 0
+            deferred = len(sized) if is_locked else 0
         else:
             # With MAX_PER_REPO=1 the planner services ONE issue per tick, so
             # this sort decides which. In order:
@@ -960,11 +1018,18 @@ def main() -> int:
                 return 1 if status_of_issue(i) == issue_status.IN_PROGRESS else 2
 
             ordered = sorted(
-                issues,
+                sized,
                 key=lambda i: (_rank(i),
                                issue_priority.priority_of(i.get("labels")),
                                i["number"]),
             )
+            # While anything in this repo is still to be sized, only work
+            # ALREADY IN FLIGHT continues — an issue in progress, or one
+            # waiting on its own reviewer. Fresh work waits for the sizes:
+            # holding a running merge request hostage to a newly assigned
+            # issue would stall the one thing that is nearly done.
+            if sizing_pending:
+                ordered = [i for i in ordered if _rank(i) <= 1]
             to_spawn = [
                 {
                     "issueNumber": i["number"],
@@ -988,7 +1053,7 @@ def main() -> int:
                 }
                 for i in ordered[:MAX_PER_REPO]
             ]
-            deferred = max(0, len(issues) - MAX_PER_REPO)
+            deferred = len(sized) - len(to_spawn)
 
         plan["repos"].append(
             {
@@ -1002,6 +1067,11 @@ def main() -> int:
                 "awaitingConfirmation": len(questioned),
                 "toSpawn": to_spawn,
                 "deferredDueToLimit": deferred,
+                # Issue numbers for this tick's estimate batch, most urgent
+                # first; empty while a batch is still running.
+                "toEstimate": to_estimate,
+                "estimating": batch_running,
+                "unsized": len(unsized),
             }
         )
 

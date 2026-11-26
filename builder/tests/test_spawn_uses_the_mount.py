@@ -33,7 +33,8 @@ SPAWNERS = ("cron-issue-spawn.sh", "cron-tester-spawn.sh",
             "cron-reviewer-spawn.sh")
 
 # What each spawner must reach through PATH rather than by absolute path.
-LAUNCHED = ("fixer-runner", "estimate-runner", "tester-runner",
+LAUNCHED = ("fixer-runner", "estimate-runner", "estimate-batch",
+            "tester-runner",
             "reviewer-runner", "heartbeat-issue-tick", "tester-tick",
             "reviewer-tick")
 
@@ -67,7 +68,7 @@ class SpawnersUseThePath(unittest.TestCase):
         # that each spawner still names what it starts.
         for name, progs in (("cron-issue-spawn.sh",
                              ("fixer-runner", "estimate-runner",
-                              "heartbeat-issue-tick")),
+                              "estimate-batch", "heartbeat-issue-tick")),
                             ("cron-tester-spawn.sh",
                              ("tester-runner", "tester-tick")),
                             ("cron-reviewer-spawn.sh",
@@ -106,6 +107,17 @@ class TheSpawnCommandSurvivesItsQuoting(unittest.TestCase):
                         line, r'(?<!\\)\$[A-Za-z_]',
                         f"{name}: an unescaped shell variable in the spawn "
                         "command is expanded before Python sees it")
+
+    def test_every_issue_spawn_is_detached_the_same_way(self):
+        # The fixer and the estimate batch both go through detach(): ONE
+        # place that wraps the command in setsid + nohup with stdio
+        # redirected. A second hand-rolled copy is how one of them would end
+        # up SIGHUP'd when the kubectl exec returns.
+        body = code_only(self.embedded("cron-issue-spawn.sh"))
+        self.assertIn("def detach(cmd):", body)
+        self.assertEqual(body.count("nohup"), 1, "a launch bypasses detach()")
+        self.assertIn("detach('estimate-batch ", body)
+        self.assertIn("detach(f'env {env_prefix}{runner} {runner_args}')", body)
 
     def test_the_embedded_python_still_parses(self):
         # Whatever quoting games this file plays, what Python receives has to

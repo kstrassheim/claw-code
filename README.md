@@ -120,8 +120,9 @@ secrets won't resolve).
 | `AZURE_CLIENT_ID` | Yes | Client ID of the deploy-managed identity |
 | `AZURE_TENANT_ID` | Yes | Entra tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | Yes | Subscription ID |
+| `MINIMAX_API_KEY` | One of these two | MiniMax API key — drives the default model, MiniMax M3.1 Flash. See below |
 | `MISTRAL_API_KEY` | One of these two | Mistral API key — see below |
-| `MINIMAX_API_KEY` | One of these two | MiniMax API key — see below |
+| `MOONSHOT_API_KEY` | Optional | Kimi Coding API key — chat fallback. See below |
 | `BOT_GITHUB_TOKEN` | Yes | Bot account PAT for autonomous git/github work |
 | `TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token if the channel is enabled |
 
@@ -328,20 +329,20 @@ API keys are present in `openclaw-secrets`. **Both keys are optional, but at
 least one must be set** — if neither is, the init container fails and the pod
 won't start (loud-fail beats a silent misconfig).
 
-Resulting routing based on which keys are set:
+Resulting routing based on which keys are set. The primary is also the
+**runners' baseline** (`runner-model.default`): every runner key nobody set
+with `agent-models` runs on it.
 
-| `MISTRAL_API_KEY` | `MINIMAX_API_KEY` | Primary chat | Image model | Notes |
+| `MINIMAX_API_KEY` | `MOONSHOT_API_KEY` | `MISTRAL_API_KEY` | Primary (chat + runners) | Image model |
 |---|---|---|---|---|
-| ✓ | ✓ | MiniMax M2.7 (Mistral Large as fallback) | Mistral Large 3 (Medium 3.5 fallback) | MiniMax wins chat priority; vision goes to Mistral because M2.7 is text/reasoning-only |
-| ✓ | ✗ | Mistral Large | Mistral Large 3 (Medium 3.5 fallback) | MiniMax block + registry entries stripped |
-| ✗ | ✓ | MiniMax M2.7 | MiniMax M2.7 (best-effort, may fail) | Mistral stripped. M2.7 likely doesn't accept image content — vision-using chats will probably error. Add `MISTRAL_API_KEY` to fix. |
-| ✗ | ✗ | — | — | `check-llm-secrets` job fails the PR / deploy; init container would also fail-fast |
+| ✓ | any | any | **MiniMax M3.1 Flash** | MiniMax M3.1 Flash |
+| ✗ | ✓ | ✓ | Kimi K3 | Kimi K3 |
+| ✗ | ✗ | ✓ | Mistral Large | Mistral Medium |
+| ✗ | any | ✗ | — | `check-llm-secrets` fails the PR / deploy; the init container also fail-fasts without any key |
 
-> Why is the image model on Mistral when both are set? MiniMax M2.7's
-> public product positioning is "Self-Improvement / Reasoning" — text
-> only. We could not find authoritative docs confirming vision support
-> on the `api.minimax.io/anthropic` endpoint. Mistral Large 3 is
-> explicitly multimodal, so it carries vision unless it's not configured.
+The chat (not the runners) fails over along `model.fallbacks`: MiniMax M3
+first, then whichever of Kimi and Mistral still has a key. A story can be
+pinned to one model with a label — see the planning section.
 
 How the render works (see `010-openclaw-config.yaml` and the
 `render-config` init container in `020-deployment.yaml`):
@@ -420,8 +421,9 @@ GET /issues?filter=assigned     `kubectl exec claw-code-pod -- ls .fixer-locks/`
   (planner-checked on every tick) are ignored, so a crashed fixer
   doesn't permanently hold a repo.
 - **Coding agent**: same Node.js runtime as the chat bot, same
-  rendered `~/.openclaw/openclaw.json` (MiniMax M2.7 primary,
-  Mistral Large fallback), same MCP servers and skills.
+  rendered `~/.openclaw/openclaw.json` (MiniMax M3.1 Flash primary,
+  MiniMax M3, Kimi K3 and Mistral Large as chat fallbacks), same MCP
+  servers and skills.
 
 The watcher CronJob, its service account, RBAC (the cron pod needs
 `pods/exec` on the claw-code deployment's pods), and the chat-skill
@@ -661,10 +663,21 @@ An unconfigured or unreachable store is a supported state: work continues and
 spools. Query it through the `planning` CLI or the `planning` chat skill —
 never directly.
 
-Story size lives in an `SP::<n>` label and nowhere else. Sizing runs on the
-cheap planning model one tick before implementation, so the solver can route
-small stories to a cheaper model; a story at the split ceiling is parked
-rather than started.
+Story size lives in an `SP::<n>` label and nowhere else. A repo's whole
+unsized backlog is estimated before it starts any NEW work: each tick the
+planner hands every unsized story (most urgent first, up to
+`HEARTBEAT_MAX_ESTIMATES_PER_TICK`, default 10) to one `estimate-batch` run,
+which sizes them one after another on the cheap planning model under a
+per-repo lock in `~/.openclaw/.estimate-locks/`. While a repo still has
+unsized stories, only work already in flight (in progress, or waiting on its
+reviewer) continues. The solver routes small stories to a cheaper model, and
+a story at the split ceiling is parked rather than started.
+
+A `model::<id>` label (or `ki::`, `llm::`, `ai::`) pins a story to one model,
+overriding every other choice; a bare `kimi`, `minimax` or `mistral` picks
+that provider's first configured model. **`minimax-flash`** always means
+MiniMax M3.1 Flash, and the bot creates it in a repo alongside its size
+labels so it can be applied. The bot never sets or clears a model pin.
 
 ## What a pull request must pass
 

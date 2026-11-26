@@ -4,14 +4,15 @@
 # whose API key is empty/unset is stripped at pod startup by the
 # `render-config` init container in 020-deployment.yaml.
 #
-# Model routing: Kimi K3 Max (Kimi Coding endpoint, MOONSHOT_API_KEY) is
-# the primary model at high thinking; on failure openclaw fails over to
-# MiniMax M3, then Mistral Large.
+# Model routing: MiniMax M3.1 Flash (MINIMAX_API_KEY) is the primary model,
+# for chat and as the runners' baseline (runner-model.default, written by
+# render-config below); on failure the CHAT fails over to MiniMax M3, then
+# Kimi K3, then Mistral Large. The runners never fail over (see agent-models).
+# A primary whose provider key is missing is demoted by render-config.
 #
-# imageModel routing: vision content goes to MiniMax M3 first (M3 is
-# natively multimodal, unlike M2.7 which was text-only); on failure
-# (auth error if key missing) openclaw fails over to Mistral Large 3,
-# then Medium 3.5.
+# imageModel routing: vision content goes to MiniMax M3.1 Flash first, then
+# M3 (both natively multimodal, unlike M2.7 which was text-only); on failure
+# (auth error if key missing) openclaw fails over to Kimi K3.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,12 +24,12 @@ data:
       "agents": {
         "defaults": {
           "model": {
-            "primary": "mistral/mistral-large-latest",
-            "fallbacks": ["kimi/k3", "minimax/MiniMax-M3"]
+            "primary": "minimax/MiniMax-M3.1-Flash",
+            "fallbacks": ["minimax/MiniMax-M3", "kimi/k3", "mistral/mistral-large-latest"]
           },
           "imageModel": {
-            "primary": "minimax/MiniMax-M3",
-            "fallbacks": ["kimi/k3"]
+            "primary": "minimax/MiniMax-M3.1-Flash",
+            "fallbacks": ["minimax/MiniMax-M3", "kimi/k3"]
           },
           "compaction": {
             "mode": "safeguard"
@@ -37,6 +38,7 @@ data:
           "thinkingDefault": "high",
           "models": {
             "kimi/k3": { "params": { "thinking": "on" } },
+            "minimax/MiniMax-M3.1-Flash": {},
             "minimax/MiniMax-M3": {},
             "minimax/MiniMax-M2.7": {},
             "minimax/MiniMax-M2.7-highspeed": {},
@@ -142,6 +144,7 @@ data:
             "apiKey": "${MINIMAX_API_KEY}",
             "api": "anthropic-messages",
             "models": [
+              {"id": "MiniMax-M3.1-Flash", "name": "MiniMax M3.1 Flash", "input": ["text", "image"], "reasoning": true, "contextWindow": 1000000, "maxTokens": 131072, "params": {"num_ctx": 1000000}},
               {"id": "MiniMax-M3", "name": "MiniMax M3", "input": ["text", "image"], "reasoning": true, "contextWindow": 1000000, "maxTokens": 131072, "params": {"num_ctx": 1000000}},
               {"id": "MiniMax-M2.7", "name": "MiniMax M2.7", "reasoning": true, "contextWindow": 65536, "maxTokens": 8192, "params": {"num_ctx": 65536}},
               {"id": "MiniMax-M2.7-highspeed", "name": "MiniMax M2.7 HighSpeed", "reasoning": true, "contextWindow": 65536, "maxTokens": 8192, "params": {"num_ctx": 65536}}
@@ -255,7 +258,7 @@ data:
           c.agents.defaults.model.fallbacks = drop(c.agents.defaults.model.fallbacks, "kimi/");
           if ((c.agents.defaults.model.primary || "").startsWith("kimi/")) {
             c.agents.defaults.model.primary = process.env.MINIMAX_OK
-              ? "minimax/MiniMax-M3"
+              ? "minimax/MiniMax-M3.1-Flash"
               : "mistral/mistral-large-latest";
           }
         }
@@ -285,12 +288,12 @@ data:
         delete c.models?.providers?.mistral;
         if (c.agents?.defaults?.model) {
           c.agents.defaults.model.fallbacks = drop(c.agents.defaults.model.fallbacks, "mistral/");
-          // Mistral is the default primary, so without this the pod would boot
-          // pointing at a provider that was just deleted.
+          // A primary demoted to Mistral above would otherwise boot pointing
+          // at a provider that was just deleted.
           if ((c.agents.defaults.model.primary || "").startsWith("mistral/")) {
             c.agents.defaults.model.primary = process.env.MOONSHOT_OK
               ? "kimi/k3"
-              : "minimax/MiniMax-M3";
+              : "minimax/MiniMax-M3.1-Flash";
           }
         }
         if (c.agents?.defaults?.imageModel) {
@@ -298,7 +301,7 @@ data:
           if ((c.agents.defaults.imageModel.primary || "").startsWith("mistral/")) {
             c.agents.defaults.imageModel.primary = process.env.MOONSHOT_OK
               ? "kimi/k3"
-              : "minimax/MiniMax-M3";
+              : "minimax/MiniMax-M3.1-Flash";
           }
         }
       }
@@ -332,6 +335,12 @@ data:
     PERSISTENT_DIR=/home/node/.openclaw
     PERSISTENT_FILE=$PERSISTENT_DIR/openclaw.json
     mkdir -p "$PERSISTENT_DIR"
+
+    # Keep the rendered TEMPLATE before the merge: the runner baseline below
+    # is read from it. Reading it from the merged result would let a chat-side
+    # model switch re-point every runner on the next restart — the exact
+    # coupling agent-models exists to prevent.
+    cp -f /tmp/openclaw.json /tmp/openclaw.template.json 2>/dev/null || true
 
     # Deep-merge with persistent runtime state if jq is available AND
     # a persistent file exists. jq isn't in the openclaw base image yet
@@ -413,6 +422,34 @@ data:
     cp /tmp/openclaw.json "$PERSISTENT_FILE"
     chmod 0600 "$PERSISTENT_FILE"
     echo "Wrote $PERSISTENT_FILE ($(wc -c < "$PERSISTENT_FILE") bytes)"
+
+    # The runners' baseline model, read by builder/agent-models.sh for every
+    # key nobody set explicitly. Without it those keys follow whatever model
+    # the chat happens to be on, so switching the chat to try something out
+    # quietly re-points the issue solver, the tester and the reviewer too.
+    #
+    # Written from the freshly RENDERED template, so it records the
+    # deploy-time decision (including any demotion the render step made when
+    # a provider key was missing) and nothing a chat session does afterwards.
+    RUNNER_MODEL_FILE=$PERSISTENT_DIR/runner-model.default
+    if command -v node >/dev/null 2>&1; then
+      node -e '
+        const fs = require("fs");
+        let p = "/tmp/openclaw.template.json";
+        if (!fs.existsSync(p)) p = "/tmp/openclaw.json";
+        const c = JSON.parse(fs.readFileSync(p, "utf8"));
+        const d = (c.agents && c.agents.defaults) || {};
+        const m = (d.model && d.model.primary) || null;
+        if (m) process.stdout.write(String(m));
+      ' > "$RUNNER_MODEL_FILE.tmp" 2>/dev/null || true
+      if [ -s "$RUNNER_MODEL_FILE.tmp" ]; then
+        mv -f "$RUNNER_MODEL_FILE.tmp" "$RUNNER_MODEL_FILE"
+        echo "Runner baseline model: $(cat "$RUNNER_MODEL_FILE")"
+      else
+        rm -f "$RUNNER_MODEL_FILE.tmp"
+        echo "WARN: could not determine the runner baseline model — runners will inherit"
+      fi
+    fi
 
     # Install the Kimi Coding plugin so kimi/k3 gets its native thinking
     # contract (off|on, incl. K3's max effort). The plugin lives in the

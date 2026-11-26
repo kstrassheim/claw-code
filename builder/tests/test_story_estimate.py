@@ -135,6 +135,19 @@ class SizeWriting(unittest.TestCase):
                 self.assertEqual(add, [])
                 self.assertEqual(remove, [])
 
+    def test_the_estimate_request_is_taken_off_once_the_issue_is_sized(self):
+        # The request label is how a person says "size this". Left on, the
+        # planner would read it as a fresh request every tick and re-size the
+        # issue forever.
+        add, remove = self.e.label_updates(["estimate", "bug"], 5)
+        self.assertEqual(add, ["SP::5"])
+        self.assertEqual(remove, ["estimate"])
+
+    def test_the_request_comes_off_even_when_the_size_is_unchanged(self):
+        add, remove = self.e.label_updates(["SP::5", "estimate"], 5)
+        self.assertEqual(add, [])
+        self.assertEqual(remove, ["estimate"])
+
     def test_a_new_size_replaces_the_old_one(self):
         add, remove = self.e.label_updates(["SP::3"], 8)
         self.assertEqual(add, ["SP::8"])
@@ -271,12 +284,32 @@ class ModelPinIsReadOnly(unittest.TestCase):
             self.e.model_label(["model::kimi/k3", "minimax"]), "kimi/k3")
 
     def test_a_pin_is_never_written(self):
-        # Nothing in this module produces one: it is a human's instruction to
-        # the bot, not a fact the bot discovers.
-        written = {d["name"] for d in self.e.label_definitions()}
-        for name in written:
-            with self.subTest(name=name):
-                self.assertFalse(self.e.is_model_pin(name))
+        # Nothing in this module puts one on an issue: it is a human's
+        # instruction to the bot, not a fact the bot discovers. (A pin may be
+        # CREATED in a fresh repo so a human can apply it — see
+        # test_the_flash_pin_can_be_created.)
+        for current in ([], ["SP::3"], ["estimate"], ["minimax-flash"]):
+            with self.subTest(current=current):
+                add, _ = self.e.label_updates(current, 5)
+                for name in add:
+                    self.assertFalse(self.e.is_model_pin(name))
+
+    def test_the_flash_alias_names_one_exact_model(self):
+        for spelling in ("minimax-flash", "MiniMax Flash", "minimax_flash",
+                         "model::minimax-flash", "KI::MiniMax-Flash"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(self.e.model_label([spelling]),
+                                 "minimax/MiniMax-M3.1-Flash")
+
+    def test_a_bare_vendor_still_reads_as_the_vendor(self):
+        # The alias must not swallow the plain vendor name.
+        self.assertEqual(self.e.model_label(["minimax"]), "minimax")
+
+    def test_the_flash_pin_can_be_created(self):
+        defined = {d["name"] for d in self.e.label_definitions()}
+        self.assertIn(self.e.FLASH_LABEL, defined)
+        self.assertEqual(self.e.model_of_label(self.e.FLASH_LABEL),
+                         "minimax/MiniMax-M3.1-Flash")
 
     def test_a_pin_is_never_cleared(self):
         _, remove = self.e.label_updates(

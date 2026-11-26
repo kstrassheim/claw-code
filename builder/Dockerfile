@@ -892,6 +892,9 @@ COPY --chmod=0755 reviewer-runner.sh       /usr/local/bin/reviewer-runner
 # Estimation — sizes a story on the cheap planning model one tick before the
 # solver picks it up, so the solver can route by size.
 COPY --chmod=0755 estimate-runner.sh       /usr/local/bin/estimate-runner
+# Sizes a repo's whole unsized backlog, one estimate after another, under a
+# per-repo lock the planner reads — see heartbeat-issue-tick.
+COPY --chmod=0755 estimate-batch.sh        /usr/local/bin/estimate-batch
 # The verdict poster, guarded: it refuses a verdict naming a commit the
 # run is not reviewing. Both posters go through it — the agent and the
 # wrapper's fallback.

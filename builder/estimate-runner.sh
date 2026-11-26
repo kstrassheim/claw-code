@@ -372,6 +372,10 @@ else:
 # re-planned as a defaulted 8.
 if [ -n "$ADD_LABELS" ]; then
   ensure_label "SP::$POINTS"
+  # The model pin humans apply most, created with the first size label so it
+  # can be picked from the repo's label list. Created only: like every pin,
+  # the bot never puts it on an issue or takes it off.
+  ensure_label "minimax-flash"
   if "${FORGE[@]}" add-labels --number "$ISSUE_NUM" --labels "$ADD_LABELS"; then
     echo "[estimate] labelled #$ISSUE_NUM SP::$POINTS"
   else

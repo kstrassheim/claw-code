@@ -48,8 +48,18 @@ class KeysAreHostAware(unittest.TestCase):
         pk = self.d.deploy_pk("github", "acme/web", "abcdef1234567890")
         self.assertEqual(pk, "deploy#github#acme/web#abcdef123456")
 
-    def test_the_only_configured_host_is_github(self):
-        self.assertEqual(self.d.HOSTS, ("github",))
+    def test_every_forge_the_bot_works_on_is_a_valid_host(self):
+        # The bot works GitLab projects as well as GitHub ones. A host missing
+        # here is not an error anyone sees: validate() refuses the document,
+        # the store logs one line, and the story's size and cost are simply
+        # never recorded.
+        forge = load("forge")
+        self.assertCountEqual(self.d.HOSTS, (forge.GITHUB, forge.GITLAB))
+
+    def test_a_gitlab_story_document_is_valid(self):
+        doc = self.d.story_doc(host="gitlab", repo="acme/team/web", number=7,
+                               title="t", story_points=5)
+        self.assertEqual(self.d.validate(doc), [])
 
     def test_a_sprint_key_is_just_its_number(self):
         # Sprints are global, so no host: sprint 4 is sprint 4 regardless of

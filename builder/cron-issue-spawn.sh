@@ -130,10 +130,41 @@ errors = [r for r in plan['repos'] if r.get('error')]
 for e in errors:
     print(f\"ERROR {e['repo']}: {e['error']}\", file=sys.stderr)
 
+def detach(cmd):
+    # setsid + redirected stdio detach the runner from the kubectl-exec
+    # connection so it survives past this script's exit (otherwise it would
+    # get SIGHUP'd).
+    remote_cmd = (
+        'setsid bash -c '
+        + shlex.quote(f'nohup {cmd} >/dev/null 2>&1 </dev/null &')
+        + ' >/dev/null 2>&1 </dev/null &'
+    )
+    return subprocess.run(
+        ['kubectl', '-n', NAMESPACE, 'exec', OPENCLAW_POD, '-c', CONTAINER,
+         '--', 'bash', '-c', remote_cmd],
+        capture_output=True, text=True, timeout=30,
+    )
+
 spawned = 0
+estimating = 0
 for r in plan['repos']:
     if r.get('error'):
         continue
+    # Size everything first: the planner hands every unsized issue (and every
+    # explicit estimate request) to ONE batch per repo, which sizes them one
+    # after another — see estimate-batch. Sent before the fixer so the sizes
+    # start landing at once.
+    batch = [str(n) for n in (r.get('toEstimate') or [])]
+    if batch:
+        repo = r['repo']
+        proc = detach('estimate-batch ' + ' '.join(shlex.quote(a) for a in [repo] + batch))
+        if proc.returncode != 0:
+            print(f'ERROR exec estimate batch for {repo}: rc={proc.returncode} stderr={proc.stderr.strip()}', file=sys.stderr)
+        else:
+            print(f'spawned estimate batch for {repo}: #' + ', #'.join(batch))
+            estimating += len(batch)
+    elif r.get('estimating'):
+        print(f'estimate batch still running for {r[\"repo\"]} ({r.get(\"unsized\", 0)} unsized) — fresh work waits')
     for issue in r.get('toSpawn', []):
         repo = r['repo']
         n = issue['issueNumber']
@@ -164,22 +195,8 @@ for r in plan['repos']:
                 str(issue.get('storyPoints') or ''))
             what = 'fixer'
 
-        # Build the exec command. setsid + redirected stdio detach the
-        # runner from the kubectl-exec connection so it survives
-        # past this script's exit (otherwise it would get SIGHUP'd).
         # Args are shell-escaped to survive the bash-c wrapper.
-        remote_cmd = (
-            f'setsid bash -c '
-            + shlex.quote(f'nohup env {env_prefix}{runner} {runner_args} '
-                          f'>/dev/null 2>&1 </dev/null &')
-            + ' >/dev/null 2>&1 </dev/null &'
-        )
-
-        proc = subprocess.run(
-            ['kubectl', '-n', NAMESPACE, 'exec', OPENCLAW_POD, '-c', CONTAINER,
-             '--', 'bash', '-c', remote_cmd],
-            capture_output=True, text=True, timeout=30,
-        )
+        proc = detach(f'env {env_prefix}{runner} {runner_args}')
         if proc.returncode != 0:
             print(f'ERROR exec for {repo}#{n}: rc={proc.returncode} stderr={proc.stderr.strip()}', file=sys.stderr)
         else:
@@ -204,7 +221,8 @@ if plan.get('allowlistAvailable') is False:
           'Check the openclaw pod and ~/.openclaw/projects-allowed.list', file=sys.stderr)
 elif denied:
     print(f'not permitted ({len(denied)}): ' + ', '.join(denied[:10]))
-print(f'tick done: spawned={spawned}, deferred_due_to_limit={deferred}, '
+print(f'tick done: spawned={spawned}, estimating={estimating}, '
+      f'deferred_due_to_limit={deferred}, '
       f'next_sprint={next_sprint}, '
       f'permitted={plan.get(\"allowedProjects\")}')
 "
